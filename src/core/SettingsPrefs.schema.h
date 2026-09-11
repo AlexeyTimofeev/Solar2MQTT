@@ -51,4 +51,7 @@
   X(BOOL,   "device", "solarConnected", solarConnected, true, 0, 1) \
   X(UINT32, "device", "pollIntervalMs", pollIntervalMs, 100, 25, 5000) \
   X(UINT32, "device", "batteryWh", batteryCapacityWh, 0, 0, 200000) \
+  X(UINT16, "device", "batteryReserve", batteryReservePct, 10, 0, 100) \
+  X(UINT16, "device", "inverterIdleW", inverterIdleW, 40, 0, 1000) \
+  X(UINT16, "device", "inverterEfficiency", inverterEfficiencyPct, 95, 50, 100) \
   SETTINGS_ITEMS_TELEGRAM(X)

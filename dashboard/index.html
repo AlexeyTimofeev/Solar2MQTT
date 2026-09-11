@@ -54,7 +54,7 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
       <div id="battNote" class="sm" style="margin-top:4px"></div>
     </div>
   </div>
-  <div id="leftPanel" class="pn row hidden"><span class="lb">⏳ Time left at this load</span><span id="left" class="mid" style="color:var(--warn)"></span></div>
+  <div id="leftPanel" class="pn hidden"><div class="row"><span class="lb">⏳ Time left at this load</span><span id="left" class="mid" style="color:var(--warn)"></span></div><div id="leftNote" class="sm" style="text-align:right;margin-top:2px"></div></div>
   <div class="tiles">
     <div class="pn"><div class="lb">🔌 Load</div><div id="load" class="big"></div><div class="trk"><div id="loadBar"></div></div><div id="loadSub" class="sm" style="margin-top:4px"></div></div>
     <div class="pn"><div class="lb">🏠 Grid</div><div id="grid" class="big"></div><div id="gridSub" class="sm" style="margin-top:12px"></div></div>
@@ -122,7 +122,11 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
   else if (bd > 0) battLine += ' · <span style="color:#f6c549">⬇ ' + Math.round(bd) + ' A</span>';
   $('battLine').innerHTML = battLine;
   $('battNote').textContent = bc > 0 ? 'Charging' + (bv ? ' · ' + Math.round(bv * bc) + ' W' : '') : bd > 0 ? 'Discharging' + (bv ? ' · ' + Math.round(bv * bd) + ' W' : '') : 'Idle';
-  if (wh && gridOff && l > 0 && b !== null) { $('leftPanel').classList.remove('hidden'); $('left').textContent = '≈ ' + dur(wh * b / 100 / l * 3600); }
+  var reserve = num('wr') || 0, idle = num('wi') || 0, eff = (num('we') || 100) / 100;
+  if (wh && gridOff && l !== null && b !== null) {
+    var drawW = Math.max(l, 0) / eff + idle, usable = wh * Math.max(b - reserve, 0) / 100;
+    if (drawW > 0) { $('leftPanel').classList.remove('hidden'); $('left').textContent = '≈ ' + dur(usable / drawW * 3600); $('leftNote').textContent = 'until ' + reserve + ' % · ' + Math.round(drawW) + ' W from the battery'; }
+  }
 
   $('load').textContent = l !== null ? Math.round(l) + ' W' : '–';
   $('loadBar').style.width = Math.min(100, lp || 0) + '%';
@@ -177,7 +181,8 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
   }
   var prio = [q.get('op') ? 'output ' + q.get('op') : '', q.get('cp') ? 'charger ' + q.get('cp') : ''].filter(Boolean).join(' · ');
   $('prio').textContent = prio || '–';
-  $('link').textContent = (num('ok') || 0) + ' replies · ' + (num('na') || 0) + ' timeouts';
+  var na = num('na') || 0;
+  $('link').textContent = (num('ok') || 0) + ' replies · ' + na + (na === 1 ? ' timeout' : ' timeouts');
   $('board').textContent = (q.get('fw') || '?') + ' · Wi-Fi ' + (q.get('rs') || '?') + ' dBm · up ' + dur(num('up') || 0);
 })();
 </script>

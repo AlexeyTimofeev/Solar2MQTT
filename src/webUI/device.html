@@ -66,7 +66,18 @@
 
       <label>Battery capacity [Wh]</label>
       <input name="batteryWh" type="number" min="0" max="200000" step="100">
-      <p class="field-note">Usable battery energy, for example 5120 for a 51.2 V 100 Ah battery. The Telegram dashboard uses it for the time left on battery; leave 0 if unknown.</p>
+      <p class="field-note">Usable battery energy, for example 5120 for a 51.2 V 100 Ah battery. Used for the time left on battery (Telegram summary and dashboard); leave 0 if unknown.</p>
+
+      <label>Battery reserve [%]</label>
+      <input name="batteryReserve" type="number" min="0" max="100" step="1">
+      <p class="field-note">The battery level at which the inverter shuts down (its low-battery cut-off).</p>
+
+      <label>Inverter own consumption [W]</label>
+      <input name="inverterIdleW" type="number" min="0" max="1000" step="1">
+
+      <label>Inverter efficiency [%]</label>
+      <input name="inverterEfficiency" type="number" min="50" max="100" step="1">
+      <p class="field-note">Time left on battery = capacity &times; (battery % &minus; reserve) &divide; (load &divide; efficiency + own consumption).</p>
 
       <div class="detailSplitter">Temperature Sensors</div>
       <label>DS18B20 GPIO</label>

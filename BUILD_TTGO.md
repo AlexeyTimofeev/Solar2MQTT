@@ -57,12 +57,13 @@ MQTT stays available; leave the MQTT host empty if you do not need it.
 
 ## What the bot does
 
-* `/summary`, the persistent **Refresh** keyboard button, or the inline **🔄 Refresh** button under the last
-  summary all send a fresh inverter summary: mode, battery percent/voltage/current, solar watts, load watts and
-  percent, grid voltage/frequency, heatsink temperature, warnings/faults, Wi-Fi RSSI and uptime.
+* The summary (mode, battery, time left on battery, solar, load, grid, temperature, warnings, Wi-Fi, uptime) keeps
+  itself up to date. Its only button is **📊 Dashboard** (plus ⬆️ Upgrade when a newer release is out; a Refresh
+  button appears only when the dashboard link is unavailable). `/summary` sends a fresh one at the bottom.
 * The chat only keeps the latest summary: a new one deletes the previous message (or edits it in place, see
   "Automatic summary"), and your own command message (`/summary`, Refresh, `/diag`, ...) is always removed.
-* `/start` (or `/help`) shows the persistent Summary button and sends a first summary.
+* `/start` (or `/help`) sends a short welcome and a first summary. The persistent Refresh keyboard of older firmware
+  is removed: by `/start`, and once by the board itself after the update.
 * Only the paired chat id is served. Before pairing, any chat that writes to the bot gets its chat id back
   so you can enter it in the web UI. Everything else is ignored.
 * Transport: one long-polling HTTPS connection to `api.telegram.org`, certificate pinned to the Go Daddy Root G2
@@ -74,7 +75,7 @@ MQTT stays available; leave the MQTT host empty if you do not need it.
 1. In Telegram, talk to `@BotFather`, `/newbot`, copy the token.
 2. Open the device web UI, Menu, **Telegram Settings**: paste the token, enable the bot, Save. Leave Chat ID empty.
 3. Open your new bot in Telegram and send `/start`. It replies with your chat id.
-4. Enter that chat id in the web UI, Save. Send `/start` again: you get the Summary button and the first summary.
+4. Enter that chat id in the web UI, Save. Send `/start` again: you get the first summary with its Dashboard button.
 5. "Send summary now" on the settings page pushes a summary to the paired chat for testing.
 
 ## Files added or changed for this variant
@@ -105,7 +106,7 @@ skips the SOLAR page. Setting key: `device.solarConnected`.
 
 Telegram Settings has a "Battery alerts at 30 / 25 / 20 / 15 / 10 %" switch (default off, key `telegram.batteryAlerts`).
 When the battery percentage falls through one of these levels the bot sends a message with the current mode, load and
-battery voltage, plus the inline Summary button. A level re-arms once the battery has climbed 3 points above it, and the
+battery voltage, plus the Dashboard button. A level re-arms once the battery has climbed 3 points above it, and the
 tracking restarts whenever the inverter link drops, so reconnects never produce false alerts. Alerts are delivered
 between long-poll cycles, so expect up to about 20 seconds of delay.
 
@@ -120,7 +121,7 @@ web UI or leave MQTT disabled.
 ## Automatic summary
 
 Telegram Settings has "Automatic summary every minute" (key `telegram.autoSummary`, default off). Every 60 seconds the bot
-edits the last summary in place (no new message, no notification); the inline Refresh button, the first summary after a
+edits the last summary in place (no new message, no notification); the fallback Refresh button, the first summary after a
 restart and the summary after an upgrade attempt do the same. If there is no summary yet or it can no longer be edited
 (for example the user deleted it), a new silent one is sent instead. A typed `/summary` or the keyboard Refresh still
 sends a fresh summary at the bottom and deletes the old one, and alerts (high load, inverter offline) arrive as new
@@ -291,7 +292,10 @@ outages, priorities and link health.
 * History: 96 slots of 15 minutes (battery % at the end, average load in 25 W steps, minutes without grid) in RTC
   memory, so it survives a crash or a firmware update but not a power cut. The board's clock comes from NTP (UTC); the
   page shows times and "today" in the phone's timezone.
-* "Time left on battery" needs Device settings → Battery capacity [Wh]; it stays hidden while that is 0.
+* Time left on battery (dashboard panel, and a "⌛ Time left" line in the Telegram summary while on battery) =
+  capacity × (battery % − reserve) ÷ (load ÷ efficiency + own consumption), all from Device settings: Battery
+  capacity [Wh] (hidden while 0), Battery reserve [%] (the inverter's low-battery cut-off, default 10), Inverter own
+  consumption [W] (default 40) and Inverter efficiency [%] (default 95).
 * Mini App buttons only work in private chats; in a group the button opens the same page in the browser.
 * If Telegram rejects the link (too long), the board halves the history in the next link, and drops the button if
   even a link without history is refused ("[Telegram] Dashboard link rejected" in the log).

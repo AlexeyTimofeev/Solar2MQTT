@@ -542,13 +542,10 @@ struct TelegramService::Impl
             setError("Battery alert dropped: no chat id configured");
             return true;
         }
-        JsonDocument markup;
-        JsonArray rows = markup["inline_keyboard"].to<JsonArray>();
-        JsonObject button = rows.add<JsonArray>().add<JsonObject>();
-        button["text"] = "\xF0\x9F\x94\x84 Refresh";
-        button["callback_data"] = "summary";
         for (const String &chat : targets)
         {
+            JsonDocument markup;
+            buildSummaryMarkup(markup, chat, !dashDisabled.load(), false); // Dashboard button, no Upgrade on alerts
             if (sendText(chat, alert, &markup, nullptr))
             {
                 taskLog("[Telegram] Battery alert sent to " + chat);
@@ -878,14 +875,12 @@ struct TelegramService::Impl
         return true;
     }
 
-    // Refresh and Dashboard on the first row, Upgrade under them when a newer release is out.
-    void buildSummaryMarkup(JsonDocument &markup, const String &chat, bool withDashboard)
+    // The summary's only button is Dashboard (the summary refreshes itself); Refresh appears only when there is no
+    // dashboard link. Upgrade goes on a second row when a newer release is out.
+    void buildSummaryMarkup(JsonDocument &markup, const String &chat, bool withDashboard, bool withUpgrade = true)
     {
         JsonArray rows = markup["inline_keyboard"].to<JsonArray>();
         JsonArray first = rows.add<JsonArray>();
-        JsonObject button = first.add<JsonObject>();
-        button["text"] = "\xF0\x9F\x94\x84 Refresh"; // 🔄
-        button["callback_data"] = "summary";
         String dash;
         if (withDashboard)
         {
@@ -906,7 +901,13 @@ struct TelegramService::Impl
                 dashboard["web_app"]["url"] = dash;
             }
         }
-        if (newVersionOffered().length())
+        else
+        {
+            JsonObject button = first.add<JsonObject>();
+            button["text"] = "\xF0\x9F\x94\x84 Refresh"; // 🔄
+            button["callback_data"] = "summary";
+        }
+        if (withUpgrade && newVersionOffered().length())
         {
             JsonObject upgradeButton = rows.add<JsonArray>().add<JsonObject>(); // second row, under Refresh
             upgradeButton["text"] = "\xE2\xAC\x86\xEF\xB8\x8F Upgrade"; // ⬆️
@@ -1049,22 +1050,37 @@ struct TelegramService::Impl
         }
     }
 
+    // Older firmware showed a persistent "Refresh" keyboard, which stays in the chat until a message removes it: send
+    // one with remove_keyboard and delete it again, once per board.
+    void removeOldKeyboardOnce()
+    {
+        const std::vector<String> ids = chatList();
+        if (ids.empty() || prefs.isKey("kbGone"))
+        {
+            return;
+        }
+        for (const String &id : ids)
+        {
+            JsonDocument markup;
+            markup["remove_keyboard"] = true;
+            int64_t messageId = 0;
+            if (sendText(id, "Keyboard removed", &markup, &messageId, true) && messageId != 0)
+            {
+                deleteMessage(id, messageId);
+            }
+        }
+        prefs.putBool("kbGone", true);
+        taskLog("[Telegram] Old Refresh keyboard removed");
+    }
+
     void sendWelcome(const String &chat)
     {
         JsonDocument markup;
-        JsonArray rows = markup["keyboard"].to<JsonArray>();
-        JsonObject button = rows.add<JsonArray>().add<JsonObject>();
-        button["text"] = "Refresh";
-        markup["resize_keyboard"] = true;
-        markup["is_persistent"] = true;
-        String name;
-        lockTake();
-        name = botUsername;
-        lockGive();
+        markup["remove_keyboard"] = true; // older firmware had a persistent Refresh keyboard
         sendText(chat,
-                 "<b>Solar2MQTT</b> connected.\nPress <b>Refresh</b> below or send /summary to get the latest inverter status. "
-                 "Send /restart to reboot the board, /diag or /log for troubleshooting. "
-                 "Each new summary replaces the previous one.",
+                 "<b>Solar2MQTT</b> connected.\nThe summary below keeps itself up to date; tap <b>Dashboard</b> for charts "
+                 "and details. Send /summary for a fresh one at the bottom, /restart to reboot the board, /diag or /log for "
+                 "troubleshooting.",
                  &markup, nullptr);
     }
 
@@ -1166,6 +1182,7 @@ struct TelegramService::Impl
         autoOn = autoSummary;
         lockGive();
         bootSummaryPending = autoOn || expected.length() > 0;
+        removeOldKeyboardOnce();
     }
 
     // The user's own command message (/summary, Refresh, /diag, ...) is always removed, so the chat only shows the bot's
@@ -1655,6 +1672,31 @@ struct TelegramService::Impl
         return t;
     }
 
+    // Main thread: estimated time until the inverter's low-battery cut-off while it runs on battery. The usable energy
+    // above the reserve is drawn at load / efficiency + the inverter's own consumption (all from Device settings).
+    // Empty when not on battery or the capacity is not set.
+    String timeLeftText(const String &mode, float batteryPct)
+    {
+        const uint32_t capacityWh = _settings.get.batteryCapacityWh();
+        String upper = mode;
+        upper.toUpperCase();
+        float loadW = 0;
+        if (capacityWh == 0 || batteryPct < 0 || upper.indexOf("BATTERY") < 0 || !readNumber(DESCR_AC_Out_Watt, loadW))
+        {
+            return String();
+        }
+        const float reserve = _settings.get.batteryReservePct();
+        const float efficiency = std::max<float>(_settings.get.inverterEfficiencyPct(), 50.0f) / 100.0f;
+        const float drawW = std::max(loadW, 0.0f) / efficiency + _settings.get.inverterIdleW();
+        if (drawW < 1.0f)
+        {
+            return String();
+        }
+        const float usableWh = capacityWh * std::max(batteryPct - reserve, 0.0f) / 100.0f;
+        const uint32_t seconds = static_cast<uint32_t>(usableWh / drawW * 3600.0f);
+        return "\xE2\x89\x88 " + DiagLog::formatDuration(seconds) + " until " + String(static_cast<int>(reserve)) + " %"; // ≈
+    }
+
     void dashInit()
     {
 #ifdef DASH_FAKE_HISTORY
@@ -1835,6 +1877,9 @@ struct TelegramService::Impl
         if (batteryWh)
         {
             add("wh", String(batteryWh));
+            add("wr", String(_settings.get.batteryReservePct()));
+            add("wi", String(_settings.get.inverterIdleW()));
+            add("we", String(_settings.get.inverterEfficiencyPct()));
         }
         JsonObjectConst esp = g_stateDoc["EspData"].as<JsonObjectConst>();
         add("ok", String(esp["PI_Ok"] | 0UL));
@@ -1893,6 +1938,12 @@ struct TelegramService::Impl
             const String percent = num(DESCR_Battery_Percent, 0, "%");
             text += "\xF0\x9F\x94\x8B Battery: " + bar10(okPercent ? static_cast<int>(percentValue + 0.5f) : -1, false) +
                     " (" + percent + ")\n"; // 🔋
+
+            const String left = timeLeftText(modeRaw, okPercent ? percentValue : -1.0f);
+            if (left.length())
+            {
+                text += "\xE2\x8C\x9B Time left: " + left + "\n"; // ⌛
+            }
 
             if (solarConnected)
             {
@@ -2073,6 +2124,7 @@ String TelegramService::statusJson() const
         doc["summariesSent"] = _impl->summariesSent;
         doc["lastSummaryAgo"] = _impl->lastSummaryMs ? static_cast<long>((millis() - _impl->lastSummaryMs) / 1000) : -1;
         doc["dashboardUrl"] = _impl->dashboardUrl;
+        doc["summaryPreview"] = _impl->summarySnapshot; // for checking the summary text from the local web API
         _impl->lockGive();
     }
     String json;

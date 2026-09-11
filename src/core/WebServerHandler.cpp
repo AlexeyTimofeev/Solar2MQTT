@@ -364,6 +364,9 @@ void WebServerHandler::registerRoutes()
         device["pollIntervalMs"] = _settings.get.pollIntervalMs();
         device["solarConnected"] = _settings.get.solarConnected();
         device["batteryWh"] = _settings.get.batteryCapacityWh();
+        device["batteryReserve"] = _settings.get.batteryReservePct();
+        device["inverterIdleW"] = _settings.get.inverterIdleW();
+        device["inverterEfficiency"] = _settings.get.inverterEfficiencyPct();
 #if HAS_TELEGRAM
         JsonObject telegram = doc["telegram"].to<JsonObject>();
         telegram["enabled"] = _settings.get.telegramEnabled();
@@ -777,6 +780,9 @@ void WebServerHandler::registerRoutes()
             else if (name == "pollIntervalMs") _settings.set.pollIntervalMs(value.toInt());
             else if (name == "solarConnected") _settings.set.solarConnected(value.toInt() != 0);
             else if (name == "batteryWh") _settings.set.batteryCapacityWh(static_cast<uint32_t>(value.toInt()));
+            else if (name == "batteryReserve") _settings.set.batteryReservePct(static_cast<uint16_t>(value.toInt()));
+            else if (name == "inverterIdleW") _settings.set.inverterIdleW(static_cast<uint16_t>(value.toInt()));
+            else if (name == "inverterEfficiency") _settings.set.inverterEfficiencyPct(static_cast<uint16_t>(value.toInt()));
         }
 
         _settings.save();
