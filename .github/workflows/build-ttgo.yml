@@ -50,6 +50,9 @@ jobs:
           # upload-artifact skips hidden directories such as .firmware, so publish from dist/
           mkdir -p dist
           cp .firmware/* dist/
+          # Debug symbols, to decode the backtrace in a crash report from the board
+          version=$(sed -nE 's/^custom_source_version[[:space:]]*=[[:space:]]*([^[:space:]]+).*/\1/p' platformio.ini | tr -d '\r')
+          gzip -c .pio/build/ttgo_tdisplay_telegram/firmware.elf > "dist/Solar2MQTT_ttgo_tdisplay_telegram_V${version}.elf.gz"
           ls -l dist
           ls dist/*.bin.ota > /dev/null
 

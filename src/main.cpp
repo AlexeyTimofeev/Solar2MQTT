@@ -2,6 +2,7 @@
 #include <ESPAsyncWebServer.h>
 #include <esp_ota_ops.h>
 
+#include "core/DiagLog.h"
 #include "core/Ds18b20Service.h"
 #include "core/FactoryResetManager.h"
 #include "core/GitHubOtaUpdater.h"
@@ -52,6 +53,9 @@ bool g_pendingInverterReconfigure = false;
 uint32_t g_inverterReconfigureAt = 0;
 uint8_t g_bootBannerRepeats = 0;
 uint32_t g_bootBannerNextAt = 0;
+#ifdef DIAG_CRASH_TEST
+volatile bool g_crashTestRequested = false;
+#endif
 
 SolarState solarState;
 AsyncWebServer server(80);
@@ -139,8 +143,14 @@ static void confirmFirmwareOnce()
 
 void setup()
 {
+    DiagLog::begin(); // first: why the board restarted, and the log that survived the restart
     LogSerial.begin(MONITOR_SPEED);
     printBootBanner();
+    LogSerial.printf("[Diag] Last restart: %s\n", DiagLog::resetReasonText());
+    if (DiagLog::crashReportPending())
+    {
+        LogSerial.printf("[Diag] %s\n", DiagLog::crashReportText().c_str());
+    }
     g_bootBannerRepeats = 1;
     g_bootBannerNextAt = millis() + 1500;
     delay(150);
@@ -155,6 +165,7 @@ void setup()
 
     FactoryResetManager::begin(10000, 6);
     wifiManager.begin();
+    DiagLog::beginNetwork();
     otaUpdater.begin([]() { return wifiManager.getConnectionState(); });
 #if HAS_TELEGRAM
     telegramService.begin([]() { return wifiManager.getConnectionState() && !wifiManager.isInApMode(); });
@@ -197,6 +208,16 @@ void setup()
 
     mqttHandler.begin();
     webServerHandler.begin();
+#ifdef DIAG_CRASH_TEST
+    // Test builds only: "crashtest" typed in the web serial console crashes the board from the main loop, to
+    // exercise crash reports.
+    LogSerial.onMessage([](const std::string &msg) {
+        if (msg.find("crashtest") != std::string::npos)
+        {
+            g_crashTestRequested = true;
+        }
+    });
+#endif
 
     updateRuntimeState();
     webServerHandler.setMqttConnected(mqttHandler.isConnected());
@@ -213,6 +234,15 @@ void loop()
         printBootBanner();
     }
 
+    DiagLog::tick();
+#ifdef DIAG_CRASH_TEST
+    if (g_crashTestRequested)
+    {
+        LogSerial.println("[Diag] Crash test: writing to address 0");
+        volatile uint32_t *bad = nullptr;
+        *bad = 1;
+    }
+#endif
     FactoryResetManager::loop();
     wifiManager.loop();
     if (g_pendingNetworkReconfigure && static_cast<int32_t>(millis() - g_networkReconfigureAt) >= 0)

@@ -5,13 +5,16 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <Preferences.h>
+#include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <esp_ota_ops.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
 #include <vector>
 
+#include "core/DiagLog.h"
 #include "core/GitHubOtaUpdater.h"
 #include "core/LogSerial.h"
 #include "core/SettingsPrefs.h"
@@ -214,6 +217,11 @@ struct TelegramService::Impl
     bool firstReadyHandled = false;
     bool bootSummaryPending = false;       // first summary after a restart, posted kBootSummaryDelayMs after boot (bot task)
     uint32_t lastUpdateCheckMs = 0;        // main thread: periodic firmware check
+    std::atomic<bool> diagRequested {false}; // /diag: the bot task asks, the main thread builds diagText
+    std::atomic<bool> diagReady {false};
+    String diagText;                         // under lock
+    uint8_t crashReportTries = 0;            // bot task
+    uint32_t lastCrashTryMs = 0;
 
     String summarySnapshot;
     uint32_t snapshotMs = 0;
@@ -523,6 +531,37 @@ struct TelegramService::Impl
     // POST <method> with a JSON body; fills `out` with the parsed response. Reuses the TLS connection.
     bool api(const char *method, const JsonDocument &body, JsonDocument &out, uint32_t timeoutMs)
     {
+        String payload;
+        serializeJson(body, payload);
+        return post(method, "application/json", reinterpret_cast<const uint8_t *>(payload.c_str()), payload.length(), out, timeoutMs);
+    }
+
+    // sendDocument with a text file (multipart upload), for /log and crash reports.
+    bool sendDocument(const String &chat, const String &fileName, const String &content, const String &caption)
+    {
+        static const char kBoundary[] = "solar2mqtt-4f1c9a7e";
+        String body;
+        body.reserve(content.length() + caption.length() + 400);
+        auto field = [&](const char *name, const String &value) {
+            body += String("--") + kBoundary + "\r\nContent-Disposition: form-data; name=\"" + name + "\"\r\n\r\n" + value + "\r\n";
+        };
+        field("chat_id", chat);
+        if (caption.length())
+        {
+            field("caption", caption);
+            field("parse_mode", "HTML");
+        }
+        body += String("--") + kBoundary + "\r\nContent-Disposition: form-data; name=\"document\"; filename=\"" + fileName +
+                "\"\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n";
+        body += content;
+        body += String("\r\n--") + kBoundary + "--\r\n";
+        JsonDocument out;
+        return post("sendDocument", String("multipart/form-data; boundary=") + kBoundary,
+                    reinterpret_cast<const uint8_t *>(body.c_str()), body.length(), out, kSendHttpTimeoutMs);
+    }
+
+    bool post(const char *method, const String &contentType, const uint8_t *payload, size_t length, JsonDocument &out, uint32_t timeoutMs)
+    {
         String tokenCopy;
         lockTake();
         tokenCopy = token;
@@ -537,10 +576,8 @@ struct TelegramService::Impl
             setError(String("HTTP begin failed for ") + method);
             return false;
         }
-        http.addHeader("Content-Type", "application/json");
-        String payload;
-        serializeJson(body, payload);
-        const int code = http.POST(payload);
+        http.addHeader("Content-Type", contentType);
+        const int code = http.POST(const_cast<uint8_t *>(payload), length);
         if (code <= 0)
         {
             setError(String(method) + ": " + http.errorToString(code));
@@ -593,6 +630,12 @@ struct TelegramService::Impl
         JsonObject upgrade = list.add<JsonObject>();
         upgrade["command"] = "upgrade";
         upgrade["description"] = "Install new firmware if available";
+        JsonObject diag = list.add<JsonObject>();
+        diag["command"] = "diag";
+        diag["description"] = "Board diagnostics";
+        JsonObject logCommand = list.add<JsonObject>();
+        logCommand["command"] = "log";
+        logCommand["description"] = "Recent board log as a file";
         JsonDocument ignore;
         api("setMyCommands", commands, ignore, kSendHttpTimeoutMs);
 
@@ -765,7 +808,7 @@ struct TelegramService::Impl
         JsonObject button = rows.add<JsonArray>().add<JsonObject>();
         button["text"] = "\xF0\x9F\x94\x84 Refresh"; // 🔄
         button["callback_data"] = "summary";
-        if (upgradeStage.load() == 0 && newVersionOffered().length()) // hidden while an upgrade is running
+        if (newVersionOffered().length())
         {
             JsonObject upgradeButton = rows.add<JsonArray>().add<JsonObject>(); // second row, under Refresh
             upgradeButton["text"] = "\xE2\xAC\x86\xEF\xB8\x8F Upgrade"; // ⬆️
@@ -822,7 +865,7 @@ struct TelegramService::Impl
         lockGive();
         sendText(chat,
                  "<b>Solar2MQTT</b> connected.\nPress <b>Refresh</b> below or send /summary to get the latest inverter status. "
-                 "Send /restart to reboot the board. "
+                 "Send /restart to reboot the board, /diag or /log for troubleshooting. "
                  "Each new summary replaces the previous one.",
                  &markup, nullptr);
     }
@@ -925,6 +968,91 @@ struct TelegramService::Impl
         autoOn = autoSummary;
         lockGive();
         bootSummaryPending = autoOn || expected.length() > 0;
+    }
+
+    void removeTriggerMessage(const String &chat, int64_t messageId)
+    {
+        bool remove;
+        lockTake();
+        remove = deleteTrigger;
+        lockGive();
+        if (remove && messageId != 0)
+        {
+            deleteMessage(chat, messageId);
+        }
+    }
+
+    // /diag: the main thread builds the text (it owns the shared state); give it up to 3 s.
+    void sendDiag(const String &chat)
+    {
+        diagReady = false;
+        diagRequested = true;
+        for (int i = 0; i < 60 && !diagReady.load(); ++i)
+        {
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+        String text;
+        if (diagReady.load())
+        {
+            lockTake();
+            text = diagText;
+            diagText = "";
+            lockGive();
+        }
+        else
+        {
+            diagRequested = false;
+            text = "\xF0\x9F\xA9\xBA <b>Diagnostics</b>\nThe main loop did not answer within 3 s, it may be stuck. Up " +
+                   DiagLog::formatDuration(millis() / 1000) + ", " + String(ESP.getFreeHeap() / 1024) + " KB free.";
+        }
+        sendText(chat, text, nullptr, nullptr);
+        taskLog("[Telegram] Diagnostics sent");
+    }
+
+    // /log: the recent board log (the RTC ring buffer) as a text file.
+    void sendLog(const String &chat)
+    {
+        const String log = DiagLog::recent(8192);
+        if (log.length() == 0)
+        {
+            sendText(chat, "The log is empty.", nullptr, nullptr);
+            return;
+        }
+        const String caption = "\xF0\x9F\x93\x9C Board log, firmware " + runningVersion() + ", up " + DiagLog::formatDuration(millis() / 1000); // 📜
+        const bool ok = sendDocument(chat, "solar2mqtt-log.txt", log, caption);
+        taskLog(ok ? "[Telegram] Log sent (" + String(log.length()) + " bytes)" : String("[Telegram] Sending the log failed"));
+    }
+
+    // After a crash, watchdog or brownout restart: tell every chat why, with the log from before the restart.
+    void sendCrashReport()
+    {
+        if (!DiagLog::crashReportPending() || (lastCrashTryMs != 0 && millis() - lastCrashTryMs < 30000))
+        {
+            return;
+        }
+        const std::vector<String> ids = chatList();
+        if (ids.empty() || crashReportTries >= 3)
+        {
+            DiagLog::crashReportSent();
+            return;
+        }
+        ++crashReportTries;
+        lastCrashTryMs = millis();
+        const String &log = DiagLog::crashReportLog();
+        const String caption = "\xF0\x9F\x92\xA5 <b>Unexpected restart</b>\n" + htmlEscape(DiagLog::crashReportText()) + "\nFirmware " +
+                               runningVersion(); // 💥
+        bool ok = true;
+        for (const String &id : ids)
+        {
+            const bool sent = log.length() ? sendDocument(id, "solar2mqtt-crash-log.txt", log, caption + ". The log from before it is attached.")
+                                           : sendText(id, caption, nullptr, nullptr);
+            ok = ok && sent;
+        }
+        taskLog(String("[Telegram] Crash report ") + (ok ? "sent" : "failed") + "\n" + DiagLog::crashReportText());
+        if (ok)
+        {
+            DiagLog::crashReportSent();
+        }
     }
 
     static bool isSummaryText(String text)
@@ -1030,17 +1158,24 @@ struct TelegramService::Impl
             }
             return;
         }
+        if (command.startsWith("/diag"))
+        {
+            taskLog("[Telegram] Diagnostics requested from chat " + chat);
+            removeTriggerMessage(chat, messageId);
+            sendDiag(chat);
+            return;
+        }
+        if (command.startsWith("/log"))
+        {
+            taskLog("[Telegram] Log requested from chat " + chat);
+            removeTriggerMessage(chat, messageId);
+            sendLog(chat);
+            return;
+        }
         if (command.startsWith("/upgrade"))
         {
             taskLog("[Telegram] Upgrade requested from chat " + chat);
-            bool removeTrigger;
-            lockTake();
-            removeTrigger = deleteTrigger;
-            lockGive();
-            if (removeTrigger && messageId != 0)
-            {
-                deleteMessage(chat, messageId);
-            }
+            removeTriggerMessage(chat, messageId);
             startUpgrade(chat); // silent like the button; progressUpgrade() re-posts the summary if nothing is installed
             return;
         }
@@ -1158,9 +1293,17 @@ struct TelegramService::Impl
             }
 
             handleFirstReady();
+            sendCrashReport();
             if (progressUpgrade())
             {
                 continue; // hand the connection to the updater now instead of starting a long poll
+            }
+            if (updater != nullptr && updater->isBusy())
+            {
+                // The updater's task is about to pause this connection; a 20 s long poll now would hold it up (it did
+                // delay the download after the Upgrade button by 19 s).
+                vTaskDelay(pdMS_TO_TICKS(200));
+                continue;
             }
 
             if (summaryRequested.exchange(false))
@@ -1222,7 +1365,9 @@ struct TelegramService::Impl
                 lockTake();
                 autoOn = autoSummary;
                 lockGive();
-                if (autoOn && !chatList().empty())
+                // None while an upgrade runs: the summary with the Upgrade button stays until the new firmware replaces
+                // it, so the version line and the button change together.
+                if (autoOn && !chatList().empty() && upgradeStage.load() == 0)
                 {
                     const uint32_t since = millis() - lastAutoSummaryMs;
                     if (lastAutoSummaryMs == 0 || since >= kAutoSummaryIntervalMs)
@@ -1251,6 +1396,81 @@ struct TelegramService::Impl
     {
         static_cast<Impl *>(arg)->taskLoop();
         vTaskDelete(nullptr);
+    }
+
+    String updateStatusText()
+    {
+        if (updater == nullptr)
+        {
+            return String("not available");
+        }
+        switch (updater->state())
+        {
+        case GitHubOtaUpdater::State::Idle:
+            return String("not checked yet");
+        case GitHubOtaUpdater::State::Checking:
+            return String("checking");
+        case GitHubOtaUpdater::State::UpToDate:
+            return String("up to date");
+        case GitHubOtaUpdater::State::UpdateAvailable:
+            return "version " + updater->latestVersion() + " available";
+        case GitHubOtaUpdater::State::Downloading:
+            return String("downloading");
+        case GitHubOtaUpdater::State::Success:
+            return String("installed, restart pending");
+        case GitHubOtaUpdater::State::Error:
+            return "last check failed: " + htmlEscape(updater->lastError());
+        }
+        return String("?");
+    }
+
+    // Main thread: the /diag text. It reads the shared state document, so it must not run on the bot task.
+    String buildDiag(bool inverterConnected)
+    {
+        JsonObjectConst esp = g_stateDoc["EspData"].as<JsonObjectConst>();
+        JsonObjectConst status = g_stateDoc["Status"].as<JsonObjectConst>();
+        const esp_partition_t *partition = esp_ota_get_running_partition();
+        String t;
+        t.reserve(1024);
+        t += "\xF0\x9F\xA9\xBA <b>Diagnostics</b>\n"; // 🩺
+        t += "Firmware " + runningVersion();
+        if (partition != nullptr)
+        {
+            t += String(" (") + partition->label + ")";
+        }
+        t += ", up " + DiagLog::formatDuration(millis() / 1000) + "\n";
+        t += "Last restart: " + String(DiagLog::resetReasonText()) + ", boot " + String(DiagLog::bootsSincePowerOn()) + " since power-on";
+        if (DiagLog::crashesSincePowerOn() > 0)
+        {
+            t += " (" + String(DiagLog::crashesSincePowerOn()) + " unexpected)";
+        }
+        t += "\n";
+        t += "Wi-Fi: " + htmlEscape(WiFi.SSID()) + ", " + String(WiFi.RSSI()) + " dBm, channel " + String(WiFi.channel()) + ", " +
+             WiFi.localIP().toString() + ", " + String(DiagLog::wifiDrops()) + " drops";
+        const String drop = DiagLog::lastWifiDrop();
+        if (drop.length())
+        {
+            t += " (last: " + htmlEscape(drop) + ")";
+        }
+        t += "\n";
+        t += "Memory: " + String(ESP.getFreeHeap() / 1024) + " KB free, largest block " + String(ESP.getMaxAllocHeap() / 1024) +
+             " KB, lowest " + String(ESP.getMinFreeHeap() / 1024) + " KB\n";
+        t += "Inverter: " + String(inverterConnected ? "connected" : "<b>not connected</b>") + ", " +
+             htmlEscape(String(status["protocol"] | "?")) + "\n";
+        t += "  replies " + String(esp["PI_Ok"] | 0UL) + ", no answer " + String(esp["PI_NoAnswer"] | 0UL) + ", CRC errors " +
+             String(esp["PI_CrcError"] | 0UL) + ", saved by retry " + String(esp["PI_RetrySaved"] | 0UL) + ", backoffs " +
+             String(esp["PI_Backoffs"] | 0UL) + "\n";
+        t += "  longest silence " + String((esp["PI_LongestSilenceMs"] | 0UL) / 1000.0f, 1) + " s, battery readings rejected " +
+             String(esp["PI_BattRejected"] | 0UL) + "\n";
+        String err;
+        lockTake();
+        err = lastError;
+        lockGive();
+        t += "Telegram: " + String(summariesSent) + " summaries sent, last error: " + (err.length() ? htmlEscape(err) : String("none")) + "\n";
+        t += "Updates: " + updateStatusText() + "\n";
+        const bool mqttConfigured = strlen(_settings.get.mqttHost()) > 0;
+        t += "MQTT: " + String(!mqttConfigured ? "off" : ((esp["MQTTStatus"] | false) ? "connected" : "not connected"));
+        return t;
     }
 
     // Main thread: build the summary text from live data.
@@ -1330,6 +1550,14 @@ void TelegramService::loop(bool inverterConnected, int wifiRssi)
         return;
     }
     _impl->flushLogs();
+    if (_impl->diagRequested.exchange(false))
+    {
+        const String text = _impl->buildDiag(inverterConnected);
+        _impl->lockTake();
+        _impl->diagText = text;
+        _impl->lockGive();
+        _impl->diagReady = true;
+    }
     const uint32_t now = millis();
     if (_impl->lastSnapshotBuildMs && (now - _impl->lastSnapshotBuildMs) < kSnapshotIntervalMs)
     {

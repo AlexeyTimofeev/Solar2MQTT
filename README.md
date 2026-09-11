@@ -10,7 +10,10 @@ For the upstream project, its documentation and other boards, use the original r
 - **Screen pages** on the T-Display: battery, load, solar and status; the two buttons switch pages.
 - **Telegram bot**: `/summary` or the Refresh button sends an inverter summary and replaces the previous one;
   optional automatic summary every minute; alerts for low battery, high load and a lost inverter connection;
-  several chat IDs; `/restart`.
+  several chat IDs; `/restart`; an Upgrade button under the summary when a newer release is out.
+- **Remote troubleshooting** over Telegram: `/diag` (restart reason, Wi-Fi, memory, inverter link counters), `/log`
+  (the recent board log as a file), and after an unexpected restart an automatic report with the crash details and
+  the log from before it.
 - **More reliable inverter link**: unanswered requests are retried, a short pause lets the inverter resynchronise
   after a run of timeouts, and the connection status tolerates brief gaps. Link counters are in `/api/data`.
 - **Battery guard** against the inverter's occasional stray 0 % reading.
@@ -23,7 +26,8 @@ Firmware files are on the [Releases](../../releases) page.
 - **New board, over USB:** flash `Solar2MQTT_ttgo_tdisplay_telegram_V<version>.bin` at address `0x0`
   (for example with [ESP Web Tool](https://espressif.github.io/esptool-js/) or `esptool.py write_flash 0x0 <file>`).
 - **Board already running Solar2MQTT:** upload the `.bin.ota` file on its Firmware page.
-- **Later updates:** the board's Firmware page checks this fork's releases and installs new versions.
+- **Later updates:** the board checks this fork's releases; install a new version from its Firmware page or with the
+  Upgrade button under a Telegram summary.
 
 After the first start, join the Wi-Fi network `Solar2MQTT-AP` and open `192.168.4.1` to set up Wi-Fi.
 Wiring, the Telegram setup and build instructions are in [BUILD_TTGO.md](BUILD_TTGO.md).

@@ -238,8 +238,8 @@ CI publishes a release of this fork for every `v*` tag, and the board's updater 
 * Summaries end with "New version X available", and get an Upgrade button under Refresh, once the board's own check (2 minutes after start,
   then every 12 hours) has found a newer release.
 * Telegram: the Upgrade button (or `/upgrade`) installs the newer release without any chat messages; the button only
-  shows a short pop-up. After the restart a fresh summary replaces the old one: the version line changes and the
-  button is gone. If nothing was installed (already up to date, or the check or download failed) the summary is simply
+  shows a short pop-up, and no automatic summaries are posted while it installs. After the restart a fresh summary
+  replaces the old one, so the version line and the button change together. If nothing was installed (already up to date, or the check or download failed) the summary is simply
   re-posted, and after a failure it keeps the Upgrade button for a retry. The outcome is in the board log.
 * After any restart, the first summary (automatic summaries, or the one after an upgrade) goes out 45 seconds after
   boot, once the inverter has reported, rather than right away with blank values. A Refresh press is answered at once.
@@ -251,3 +251,17 @@ CI publishes a release of this fork for every `v*` tag, and the board's updater 
   internet connection.
 
 Summaries end with `💾 Version: <version>`, followed by the new-version line when one is available.
+
+## Remote troubleshooting
+
+* `/diag` replies with the firmware and partition, uptime, the reason for the last restart, Wi-Fi (network, signal,
+  channel, drops and the last disconnect reason), memory, the inverter link counters, and the Telegram, update and
+  MQTT status.
+* `/log` sends the recent board log as a text file. The log is a 6 KB ring buffer in RTC memory with an uptime stamp
+  per line; the routine inverter and summary lines are kept once per 5 minutes, so the buffer spans hours. It
+  survives a crash, watchdog or software restart, but not a power cut.
+* After a crash, watchdog reset or brownout, every chat gets "Unexpected restart" with the reason, how long the board
+  had been running, the crash address and backtrace, and the log from before the restart as a file.
+* Each release carries `Solar2MQTT_ttgo_tdisplay_telegram_V<version>.elf.gz` (debug symbols). To decode a backtrace:
+  `xtensa-esp32-elf-addr2line -pfiaC -e firmware.elf <addresses>`.
+* Test builds with `-DDIAG_CRASH_TEST` crash on purpose when `crashtest` is typed in the web serial console.

@@ -1,5 +1,7 @@
 #include "core/LogSerial.h"
 
+#include "core/DiagLog.h"
+
 namespace
 {
 void waitForConsole(unsigned long timeoutMs)
@@ -77,6 +79,7 @@ size_t LogSerialClass::write(uint8_t byte)
 {
     Serial.write(byte);
     webSerial.write(&byte, 1);
+    DiagLog::write(&byte, 1);
     return 1;
 }
 
@@ -84,6 +87,7 @@ size_t LogSerialClass::write(const uint8_t *buffer, size_t size)
 {
     Serial.write(buffer, size);
     webSerial.write(buffer, size);
+    DiagLog::write(buffer, size);
     return size;
 }
 
