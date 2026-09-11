@@ -237,7 +237,7 @@ CI publishes a release of this fork for every `v*` tag, and the board's updater 
 * Web UI: the Firmware page checks for a newer release and installs it.
 * Telegram: `/upgrade` checks for a newer release and installs it. After the restart the bot reports
   "Firmware updated to X", or that the update did not complete.
-* Summaries end with "New version X available, send /upgrade" once the board's own check (2 minutes after start,
+* Summaries end with "New version X available", and get an Upgrade button under Refresh, once the board's own check (2 minutes after start,
   then every 12 hours) has found a newer release.
 * A classic ESP32 cannot hold two TLS sessions at once, so the updater pauses the bot's connection while it talks to
   GitHub; alerts raised meanwhile are sent when the bot is back.
