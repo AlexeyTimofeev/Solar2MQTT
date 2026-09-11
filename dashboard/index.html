@@ -56,7 +56,8 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
       <text x="60" y="53" text-anchor="middle" font-size="20">⚡</text>
       <text id="gridVal" x="60" y="79" text-anchor="middle" font-size="15" font-weight="600" fill="#58b8ff"></text>
       <text x="60" y="124" text-anchor="middle" font-size="13" fill="#8aa0b5">Grid</text>
-      <circle cx="280" cy="60" r="44" fill="#08131d" stroke="#58b8ff" stroke-width="5"/>
+      <circle cx="280" cy="60" r="44" fill="#08131d" stroke="rgba(128,166,201,.25)" stroke-width="4"/>
+      <circle id="homeArc" cx="280" cy="60" r="44" fill="none" stroke="#30c977" stroke-width="4" stroke-linecap="round" stroke-dasharray="276.5" stroke-dashoffset="276.5" transform="rotate(-90 280 60)"/>
       <text x="280" y="53" text-anchor="middle" font-size="20">🏠</text>
       <text id="homeVal" x="280" y="79" text-anchor="middle" font-size="15" font-weight="600" fill="#eef6ff"></text>
       <text x="280" y="124" text-anchor="middle" font-size="13" fill="#8aa0b5">Home</text>
@@ -70,7 +71,7 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
   </div>
   <div id="warnPanel" class="pn hidden" style="color:var(--warn);font-size:13px"></div>
   <div class="pn">
-    <div class="row"><span class="lb" id="histTitle">Last 24 h</span><span class="sm"><span class="key" style="background:var(--blue)"></span>battery %<span class="key" style="background:var(--warn)"></span>load kW</span></div>
+    <div class="row"><span class="lb" id="histTitle">Last 24 h</span><span class="sm"><span class="key" style="background:var(--blue)"></span>battery %<span class="key" style="background:#a78bfa"></span>load kW</span></div>
     <div id="histEmpty" class="sm hidden" style="margin-top:8px">History builds up from now on: one point every 15 minutes.</div>
     <div id="histCharts">
       <div class="chart"><canvas id="cB" role="img" aria-label="Battery percent over time"></canvas></div>
@@ -123,8 +124,8 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
   else if (bd > 0) battLine += ' · <span style="color:#f6c549">⬇ ' + Math.round(bd) + ' A</span>';
   $('battLine').innerHTML = battLine;
 
-  // Power flow: grid -> home, grid -> battery (charging), battery -> home (discharging). The grid ring fills with the power
-  // drawn against the inverter's rating, the battery ring with its charge; both shade from green to red (grid 0.5 -> 5 kW,
+  // Power flow: grid -> home, grid -> battery (charging), battery -> home (discharging). The grid and home rings fill with
+  // power against the inverter's rating, the battery ring with its charge; all shade from green to red (power 0.5 -> 5 kW,
   // battery 80 -> 25 %). Grid power is not reported: appliances + grid share of charging / efficiency + own use.
   if (connected && l !== null) {
     var effF = (num('we') || 100) / 100, idleW = num('wi') || 0, limitW = lr || 6000, reserve = num('wr') || 0;
@@ -143,6 +144,10 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
     $('battArc').setAttribute('stroke', battColor);
     $('battArc').setAttribute('stroke-dashoffset', (263.9 * (1 - Math.min(100, b || 0) / 100)).toFixed(1));
     $('homeVal').textContent = kw(loadW);
+    var homeColor = scale(1 - (loadW - 500) / 4500);
+    $('homeVal').setAttribute('fill', homeColor);
+    $('homeArc').setAttribute('stroke', homeColor);
+    $('homeArc').setAttribute('stroke-dashoffset', (276.5 * (1 - Math.min(1, loadW / limitW))).toFixed(1));
     var bt = $('battVal');
     if (chargeW >= 1) { bt.textContent = '↓ ' + kw(chargeW); bt.setAttribute('fill', '#58b8ff'); }
     else if (dischargeW >= 1) { bt.textContent = '↑ ' + kw(dischargeW); bt.setAttribute('fill', '#f6c549'); }
@@ -161,7 +166,7 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
     var battDrawW = loadW / effF + idleW;
     if (wh && b !== null && battDrawW > 0) {
       var leftS = wh * Math.max(b - reserve, 0) / 100 / battDrawW * 3600;
-      $('flowLimit').innerHTML = '⏳ Battery discharge time: <b>≈ ' + dur(leftS) + '</b>';
+      $('flowLimit').innerHTML = '⏳ Battery discharge time <b>≈ ' + dur(leftS) + '</b>';
       $('flowLimit').style.color = gridOff ? '#f6c549' : '';
     }
   }
@@ -191,7 +196,7 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
       var opts = function (max) { return { responsive: true, maintainAspectRatio: false, animation: false, plugins: { legend: { display: false }, tooltip: { intersect: false, mode: 'index' } }, scales: { x: { display: false }, y: { min: 0, max: max, ticks: { color: tick, font: { size: 11 }, maxTicksLimit: 3 }, grid: { color: gridColor }, border: { display: false } } } }; };
       new Chart($('cB'), { type: 'line', data: { labels: labels, datasets: [{ data: batt, borderColor: '#58b8ff', backgroundColor: 'rgba(88,184,255,.12)', fill: true, borderWidth: 2, pointRadius: 0, tension: .3 }] }, options: opts(100) });
       var peak = Math.max.apply(null, load.map(function (v) { return v || 0; }));
-      new Chart($('cL'), { type: 'bar', data: { labels: labels, datasets: [{ data: load, backgroundColor: '#f6c549', borderRadius: 2, barPercentage: .8, categoryPercentage: 1 }] }, options: opts(Math.max(.5, Math.ceil(peak * 2) / 2)) });
+      new Chart($('cL'), { type: 'bar', data: { labels: labels, datasets: [{ data: load, backgroundColor: '#a78bfa', borderRadius: 2, barPercentage: .8, categoryPercentage: 1 }] }, options: opts(Math.max(.5, Math.ceil(peak * 2) / 2)) });
     }
     var tl = $('tl');
     off.forEach(function (v) { var sp = document.createElement('span'); sp.style.background = v === null ? 'rgba(128,166,201,.18)' : v === 0 ? '#30c977' : v >= 15 ? '#ff6b57' : '#f6c549'; tl.appendChild(sp); });
