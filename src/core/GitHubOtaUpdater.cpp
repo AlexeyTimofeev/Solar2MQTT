@@ -153,7 +153,9 @@ String GitHubOtaUpdater::statusJson() const
 void GitHubOtaUpdater::checkTask(void *param)
 {
     GitHubOtaUpdater *self = static_cast<GitHubOtaUpdater *>(param);
+    if (self->_pauseHook) self->_pauseHook(true);
     self->doCheck();
+    if (self->_pauseHook) self->_pauseHook(false);
     self->clearTask();
     vTaskDelete(nullptr);
 }
@@ -161,7 +163,9 @@ void GitHubOtaUpdater::checkTask(void *param)
 void GitHubOtaUpdater::downloadTask(void *param)
 {
     GitHubOtaUpdater *self = static_cast<GitHubOtaUpdater *>(param);
+    if (self->_pauseHook) self->_pauseHook(true);
     self->doDownload();
+    if (self->_pauseHook) self->_pauseHook(false);
     self->clearTask();
     vTaskDelete(nullptr);
 }
@@ -422,6 +426,30 @@ void GitHubOtaUpdater::scheduleRestart(uint32_t delayMs)
     {
         ESP.restart();
     }
+}
+
+GitHubOtaUpdater::State GitHubOtaUpdater::state() const
+{
+    lock();
+    const State value = _state;
+    unlock();
+    return value;
+}
+
+String GitHubOtaUpdater::latestVersion() const
+{
+    lock();
+    const String value = _latestVersion;
+    unlock();
+    return value;
+}
+
+String GitHubOtaUpdater::lastError() const
+{
+    lock();
+    const String value = _lastError;
+    unlock();
+    return value;
 }
 
 void GitHubOtaUpdater::setState(State state, const String &error)

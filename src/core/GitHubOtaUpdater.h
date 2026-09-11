@@ -27,6 +27,13 @@ public:
     bool startUpdate();
     String statusJson() const;
     bool isBusy() const;
+    // Called with true before the updater opens its TLS connection and with false afterwards, so other TLS
+    // users (the Telegram bot) can release their memory first; two sessions do not fit on a classic ESP32.
+    void setNetworkPauseHook(std::function<void(bool)> hook) { _pauseHook = std::move(hook); }
+    State state() const;
+    String latestVersion() const;
+    String lastError() const;
+    const String &currentVersion() const { return _currentVersion; }
 
 private:
     static void checkTask(void *param);
@@ -62,4 +69,5 @@ private:
     void *_lockHandle = nullptr;
     void *_task = nullptr;
     std::function<bool()> _networkConnected;
+    std::function<void(bool)> _pauseHook;
 };
