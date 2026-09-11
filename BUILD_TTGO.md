@@ -1,13 +1,13 @@
 # Solar2MQTT V2.0.4 — TTGO T-Display variant
 
-Custom build variant `ttgo_tdisplay` for the LilyGO / TTGO T-Display (classic ESP32, 1.14" ST7789 135x240).
+Build variant `ttgo_tdisplay_telegram` for the LilyGO / TTGO T-Display (classic ESP32, 1.14" ST7789 135x240).
 Everything else is the unmodified Solar2MQTT V2.0.4 source (softwarecrash/Solar2MQTT).
 
 ## What was changed
 
 | File | Change |
 |---|---|
-| `platformio.ini` | New `[env:ttgo_tdisplay]` (board `lilygo-t-display`, `HAS_TFT=1`, own pin defaults, LovyanGFX dependency) |
+| `platformio.ini` | New `[env:ttgo_tdisplay_telegram]` (board `lilygo-t-display`, `HAS_TFT=1`, own pin defaults, LovyanGFX dependency) |
 | `src/pins.h` | `HAS_TFT` defaults to 0 for all other variants |
 | `src/core/DisplayService.h/.cpp` | New: TFT pages and button handling (compiled to a stub when `HAS_TFT=0`) |
 | `src/main.cpp` | Creates the display service, `begin()` after state init, `loop()` next to the status LED |
@@ -39,8 +39,8 @@ Build flags you may want to change: `TFT_ROTATION` (1 or 3 flips the screen), `T
 ## Build and flash
 
     export PATH="$HOME/.local/bin:$PATH"
-    pio run -e ttgo_tdisplay                       # compile
-    pio run -e ttgo_tdisplay -t upload             # flash over USB (auto-detects the port)
+    pio run -e ttgo_tdisplay_telegram              # compile
+    pio run -e ttgo_tdisplay_telegram -t upload    # flash over USB (auto-detects the port)
 
 Outputs after a build:
 
@@ -52,7 +52,7 @@ The built-in GitHub update check cannot find a release asset for this variant, s
 
 # Telegram variant (`ttgo_tdisplay_telegram`)
 
-Same hardware and screen as `ttgo_tdisplay`, plus a Telegram bot built into the firmware (`HAS_TELEGRAM=1`).
+The T-Display build includes a Telegram bot (`HAS_TELEGRAM=1`).
 MQTT stays available; leave the MQTT host empty if you do not need it.
 
 ## What the bot does
@@ -225,7 +225,7 @@ sends a single message for the lowest one (previously one message per level, and
 
 # Maintained builds (2026-09-11)
 
-Only the T-Display builds are maintained: `ttgo_tdisplay_telegram` (running on the board at the inverter) and the plain
-`ttgo_tdisplay`. The CrowPanel and Sunton builds are parked in `parked-boards.ini`, which PlatformIO does not read; see
+Only `ttgo_tdisplay_telegram` is maintained (running on the board at the inverter). The plain `ttgo_tdisplay` build
+without the bot is parked as well, since the bot can simply be switched off in the settings. The CrowPanel and Sunton builds are parked in `parked-boards.ini`, which PlatformIO does not read; see
 that file's header to revive one when the board is available. Their board classes remain in `DisplayService.cpp`,
 compiled out, and their hardware research stays in the `docs-*.md` files.

@@ -43,7 +43,7 @@ jobs:
           fi
 
       - name: Build
-        run: pio run -e ttgo_tdisplay_telegram -e ttgo_tdisplay
+        run: pio run -e ttgo_tdisplay_telegram
 
       - name: Collect firmware files
         run: |
