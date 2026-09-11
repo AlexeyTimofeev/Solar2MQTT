@@ -43,6 +43,7 @@ constexpr int kBatteryAlertLevels[] = {30, 25, 20, 15, 10};
 constexpr size_t kBatteryAlertCount = sizeof(kBatteryAlertLevels) / sizeof(kBatteryAlertLevels[0]);
 constexpr int kBatteryRearmMargin = 3;
 constexpr uint32_t kBatteryConfirmMs = 30000; // a level must stay crossed this long before it alerts
+constexpr uint32_t kGridConfirmMs = 60000;    // grid off / back must last this long before it is announced
 constexpr uint32_t kAutoSummaryIntervalMs = 15000; // also refreshes the Dashboard button's data
 constexpr uint32_t kBootSummaryDelayMs = 45000; // first summary after a restart, once the inverter values are in
 constexpr uint32_t kFirstUpdateCheckMs = 120000;                 // first look for new firmware after boot
@@ -71,6 +72,11 @@ struct DashHistory
     uint8_t off[kDashSlots];  // minutes without grid in the slot
 };
 RTC_NOINIT_ATTR DashHistory dashHist;
+
+#ifdef GRID_ALERT_TEST
+// Test builds only: "gridoff" / "gridon" / "gridreal" typed in the web serial console force the grid state.
+std::atomic<uint8_t> g_gridTest {0};
+#endif
 
 // Unix time from SNTP, or 0 until the clock has been set.
 int64_t unixNow()
@@ -322,7 +328,6 @@ struct TelegramService::Impl
     HTTPClient http;
     Preferences prefs;
     std::vector<String> pendingLogs; // written by the task, flushed by loop() on the main thread
-    std::vector<String> pendingAlerts; // written by loop() on the main thread, sent by the task
     int lastBatteryPercent = -1;
     bool loadAlertArmed = true;
     std::atomic<bool> loudSummaryRequested {false};
@@ -343,13 +348,117 @@ struct TelegramService::Impl
     int slotBatt = -1;
     bool gridWasOff = false;
     uint32_t outageStartMs = 0;
+    bool gridStateKnown = false;     // grid on/off alerts (main thread)
+    bool gridAnnouncedOff = false;
+    uint32_t gridPendingSinceMs = 0; // a change has been seen but not yet confirmed
+    uint32_t gridOffStartMs = 0;
+    bool gridOffStartKnown = false;
 
+    // A new summary with sound and a headline; headlines requested before it goes out are combined.
     void requestLoud(const String &headline)
     {
         lockTake();
-        loudHeadline = headline;
+        loudHeadline = (loudSummaryRequested.load() && loudHeadline.length()) ? loudHeadline + "\n" + headline : headline;
         lockGive();
         loudSummaryRequested = true;
+    }
+
+    // Main thread: the grid counts as off while the inverter runs on battery or reports no AC input.
+    static bool gridIsOff()
+    {
+#ifdef GRID_ALERT_TEST
+        if (g_gridTest.load() != 0)
+        {
+            return g_gridTest.load() == 1;
+        }
+#endif
+        String mode = readText(DESCR_Inverter_Operation_Mode);
+        mode.toUpperCase();
+        float acIn = 0;
+        return mode.indexOf("BATTERY") >= 0 || (readNumber(DESCR_AC_In_Voltage, acIn) && acIn < 90.0f);
+    }
+
+    // Main thread: the summary's grid value, "off for 2h 13m" during an outage.
+    String gridText()
+    {
+        if (!gridIsOff())
+        {
+            return num(DESCR_AC_In_Voltage, 1, " V");
+        }
+        const int64_t unix = unixNow();
+        uint32_t seconds = 0;
+        if (dashHist.outageStart != 0 && unix > dashHist.outageStart)
+        {
+            seconds = static_cast<uint32_t>(unix - dashHist.outageStart);
+        }
+        else if (gridWasOff)
+        {
+            seconds = (millis() - outageStartMs) / 1000;
+        }
+        return seconds ? "<b>off</b> for " + DiagLog::formatDuration(seconds) : String("<b>off</b>");
+    }
+
+    // Main thread: a summary with sound and a "Grid off" / "Grid back" headline once the grid has changed and the new
+    // state has lasted kGridConfirmMs, so short dips are ignored. Judged only while the inverter is reachable; the state
+    // found at boot is taken as it is, without an announcement.
+    void checkGridChange(bool inverterConnected)
+    {
+        if (!inverterConnected)
+        {
+            gridPendingSinceMs = 0;
+            return;
+        }
+        const bool off = gridIsOff();
+        const uint32_t now = millis();
+        if (!gridStateKnown)
+        {
+            gridStateKnown = true;
+            gridAnnouncedOff = off;
+            const int64_t unix = unixNow();
+            gridOffStartKnown = off && dashHist.outageStart != 0 && unix >= dashHist.outageStart;
+            if (gridOffStartKnown)
+            {
+                gridOffStartMs = now - static_cast<uint32_t>(unix - dashHist.outageStart) * 1000UL; // began before the restart
+            }
+            return;
+        }
+        if (off == gridAnnouncedOff)
+        {
+            gridPendingSinceMs = 0;
+            return;
+        }
+        if (gridPendingSinceMs == 0)
+        {
+            gridPendingSinceMs = now | 1u;
+            return;
+        }
+        if (now - gridPendingSinceMs < kGridConfirmMs)
+        {
+            return;
+        }
+        const uint32_t changedAt = gridPendingSinceMs;
+        gridPendingSinceMs = 0;
+        gridAnnouncedOff = off;
+        String headline;
+        if (off)
+        {
+            gridOffStartMs = changedAt;
+            gridOffStartKnown = true;
+            headline = "\xF0\x9F\x94\xB4 <b>Grid off</b>"; // 🔴
+        }
+        else
+        {
+            headline = "\xF0\x9F\x9F\xA2 <b>Grid back</b>"; // 🟢
+            if (gridOffStartKnown)
+            {
+                headline += " after " + DiagLog::formatDuration((changedAt - gridOffStartMs) / 1000);
+            }
+            gridOffStartKnown = false;
+        }
+        if (_settings.get.telegramGridAlerts())
+        {
+            requestLoud(headline);
+        }
     }
 
     // Main thread: one loud summary when the inverter link stays down for 15 s (max one per 5 min).
@@ -382,16 +491,6 @@ struct TelegramService::Impl
     }
     bool alertArmed[kBatteryAlertCount] = {true, true, true, true, true};
     uint32_t lowSinceMs[kBatteryAlertCount] = {0, 0, 0, 0, 0};
-
-    void queueAlert(const String &text)
-    {
-        lockTake();
-        if (pendingAlerts.size() < 4)
-        {
-            pendingAlerts.push_back(text);
-        }
-        lockGive();
-    }
 
     std::vector<String> chatList()
     {
@@ -489,11 +588,7 @@ struct TelegramService::Impl
         {
             return;
         }
-        String text = "\xF0\x9F\x94\x8B <b>Battery " + String(current) + "%</b>, below " + String(fireLevel) + "%\n"; // 🔋
-        const String mode = htmlEscape(readText(DESCR_Inverter_Operation_Mode));
-        text += "Mode: " + (mode.length() ? mode : String("?")) + "  Load " + num(DESCR_AC_Out_Watt, 0, " W") + "  " +
-                num(DESCR_Battery_Voltage, 1, " V");
-        queueAlert(text);
+        requestLoud("\xF0\x9F\xAA\xAB <b>Battery below " + String(fireLevel) + " %</b>"); // 🪫 a summary with sound, no extra message
     }
 
     // Main thread: one loud summary when the load rises above 80 %, re-armed below 70 %.
@@ -519,39 +614,6 @@ struct TelegramService::Impl
         {
             loadAlertArmed = true;
         }
-    }
-
-    // Task: deliver one queued alert; returns true when something was sent.
-    bool sendPendingAlert()
-    {
-        String alert;
-        lockTake();
-        if (!pendingAlerts.empty())
-        {
-            alert = pendingAlerts.front();
-            pendingAlerts.erase(pendingAlerts.begin());
-        }
-        lockGive();
-        if (alert.length() == 0)
-        {
-            return false;
-        }
-        const std::vector<String> targets = chatList();
-        if (targets.empty())
-        {
-            setError("Battery alert dropped: no chat id configured");
-            return true;
-        }
-        for (const String &chat : targets)
-        {
-            JsonDocument markup;
-            buildSummaryMarkup(markup, chat, !dashDisabled.load(), false); // Dashboard button, no Upgrade on alerts
-            if (sendText(chat, alert, &markup, nullptr))
-            {
-                taskLog("[Telegram] Battery alert sent to " + chat);
-            }
-        }
-        return true;
     }
 
     // LogSerial forwards to WebSerial (async web socket) and must only be used from the main thread,
@@ -1534,10 +1596,6 @@ struct TelegramService::Impl
                 continue;
             }
 
-            if (sendPendingAlert())
-            {
-                continue;
-            }
 
             // Automatic summary: send when due, otherwise shorten the long poll so the next one lands on time.
             uint32_t pollTimeout = kLongPollSeconds;
@@ -1877,10 +1935,10 @@ struct TelegramService::Impl
         if (batteryWh)
         {
             add("wh", String(batteryWh));
-            add("wr", String(_settings.get.batteryReservePct()));
-            add("wi", String(_settings.get.inverterIdleW()));
-            add("we", String(_settings.get.inverterEfficiencyPct()));
         }
+        add("wr", String(_settings.get.batteryReservePct()));
+        add("wi", String(_settings.get.inverterIdleW()));        // also used by the power flow panel
+        add("we", String(_settings.get.inverterEfficiencyPct()));
         JsonObjectConst esp = g_stateDoc["EspData"].as<JsonObjectConst>();
         add("ok", String(esp["PI_Ok"] | 0UL));
         add("na", String(esp["PI_NoAnswer"] | 0UL));
@@ -1955,7 +2013,7 @@ struct TelegramService::Impl
             const bool okLoad = readNumber(DESCR_AC_Out_Percent, loadPercent);
             text += "\xF0\x9F\x94\x8C Load: " + bar10(okLoad ? static_cast<int>(loadPercent + 0.5f) : -1, true) +
                     " (" + num(DESCR_AC_Out_Percent, 0, "%") + ")\n"; // 🔌
-            text += "\xF0\x9F\x8F\xA0 Grid: " + num(DESCR_AC_In_Voltage, 1, " V") + "\n"; // 🏠
+            text += "\xF0\x9F\x8F\xA0 Grid: " + gridText() + "\n"; // 🏠
             text += "\xF0\x9F\x8C\xA1 Temp: " + num(DESCR_Inverter_Bus_Temperature, 0, " \xC2\xB0" "C") + "\n"; // 🌡
 
             String modeUpper = mode;
@@ -1964,8 +2022,7 @@ struct TelegramService::Impl
             const String warning = filterAlerts(readText(DESCR_Warning_Code), solarConnected, onBattery);
             const String fault = filterAlerts(readText(DESCR_Fault_Code), solarConnected, onBattery);
             alerts = (warning.length() && fault.length()) ? warning + "; " + fault : warning + fault;
-            float acIn = 0;
-            gridOff = onBattery || (readNumber(DESCR_AC_In_Voltage, acIn) && acIn < 90.0f);
+            gridOff = gridIsOff();
             readNumber(DESCR_AC_Out_Watt, loadW);
             if (warning.length() || fault.length())
             {
@@ -2016,6 +2073,18 @@ void TelegramService::loop(bool inverterConnected, int wifiRssi)
     {
         return;
     }
+#ifdef GRID_ALERT_TEST
+    static bool gridTestHooked = false; // registered here because the web server replaces the handler during setup()
+    if (!gridTestHooked)
+    {
+        gridTestHooked = true;
+        LogSerial.onMessage([](const std::string &msg) {
+            if (msg.find("gridoff") != std::string::npos) g_gridTest = 1;
+            else if (msg.find("gridon") != std::string::npos) g_gridTest = 2;
+            else if (msg.find("gridreal") != std::string::npos) g_gridTest = 0;
+        });
+    }
+#endif
     _impl->flushLogs();
     if (_impl->diagRequested.exchange(false))
     {
@@ -2034,6 +2103,7 @@ void TelegramService::loop(bool inverterConnected, int wifiRssi)
     _impl->buildSnapshot(inverterConnected, wifiRssi);
     _impl->checkBatteryAlerts(inverterConnected);
     _impl->checkLoadAlert(inverterConnected);
+    _impl->checkGridChange(inverterConnected);
     _impl->checkInverterLink(inverterConnected);
 
     // Look for new firmware 2 minutes after start and then twice a day, for the summary's "new version" line.

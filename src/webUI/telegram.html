@@ -45,7 +45,7 @@
         <span>Battery alerts at 30 / 25 / 20 / 15 / 10 %</span>
         <input type="checkbox" id="telegramBatteryAlerts" name="batteryAlerts" value="1" class="ea-switch">
       </label>
-      <p class="field-note">Sends a message when the battery percentage drops through one of these levels. A level re-arms after the battery climbs 3 points back above it.</p>
+      <p class="field-note">Sends a summary with notification sound and a "Battery below …" headline when the battery percentage drops through one of these levels. A level re-arms after the battery climbs 3 points back above it.</p>
 
       <label class="switch-row" for="telegramAutoSummary">
         <span>Automatic summary every 15 seconds</span>
@@ -58,6 +58,12 @@
         <input type="checkbox" id="telegramLoadAlert" name="loadAlert" value="1" class="ea-switch">
       </label>
       <p class="field-note">Sends one immediate summary with notification sound and a "High load" headline when the load goes above 80 %. It re-arms once the load falls below 70 %.</p>
+
+      <label class="switch-row" for="telegramGridAlerts">
+        <span>Summary with sound when the grid goes off or comes back</span>
+        <input type="checkbox" id="telegramGridAlerts" name="gridAlerts" value="1" class="ea-switch">
+      </label>
+      <p class="field-note">Sends a new summary with notification sound and a "Grid off" or "Grid back after …" headline once the change has lasted a minute; shorter dips are ignored. The previous summary is removed, so the chat still holds only the summary.</p>
 
       <div class="button-stack actions">
         <button type="submit" class="btn">Save</button>

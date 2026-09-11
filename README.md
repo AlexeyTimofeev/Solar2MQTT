@@ -9,9 +9,9 @@ For the upstream project, its documentation and other boards, use the original r
 
 - **Screen pages** on the T-Display: battery, load, solar and status; the two buttons switch pages.
 - **Telegram bot**: an inverter summary that keeps itself up to date (edited in place every 15 seconds), with the time
-  left on battery during a power cut; alerts for low battery, high load and a lost inverter connection; several chat
+  left on battery during a power cut; alerts for grid off / back, low battery, high load and a lost inverter connection (each as a summary with sound); several chat
   IDs; `/summary`, `/restart`; an Upgrade button under the summary when a newer release is out.
-- **📊 Dashboard** (Telegram Mini App, the summary's button): battery gauge, load, grid, output, time left on
+- **📊 Dashboard** (Telegram Mini App, the summary's button): power flow between grid, home and battery against the inverter's rating, battery gauge, load, grid, output, time left on
   battery, 24 h charts of battery and load, a grid on/off strip, today's usage and outages. A static page on GitHub
   Pages; the board puts the data into the button link, so no server is involved.
 - **Remote troubleshooting** over Telegram: `/diag` (restart reason, Wi-Fi, memory, inverter link counters), `/log`

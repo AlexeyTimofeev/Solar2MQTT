@@ -10,7 +10,8 @@
   X(STRING, "telegram", "chatId", telegramChatId, "", 0, 0) \
   X(BOOL,   "telegram", "batteryAlerts", telegramBatteryAlerts, false, 0, 1) \
   X(BOOL,   "telegram", "autoSummary", telegramAutoSummary, false, 0, 1) \
-  X(BOOL,   "telegram", "loadAlert", telegramLoadAlert, false, 0, 1)
+  X(BOOL,   "telegram", "loadAlert", telegramLoadAlert, false, 0, 1) \
+  X(BOOL,   "telegram", "gridAlerts", telegramGridAlerts, true, 0, 1)
 #else
 #define SETTINGS_ITEMS_TELEGRAM(X)
 #endif

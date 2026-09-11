@@ -105,10 +105,20 @@ skips the SOLAR page. Setting key: `device.solarConnected`.
 ## Battery alerts
 
 Telegram Settings has a "Battery alerts at 30 / 25 / 20 / 15 / 10 %" switch (default off, key `telegram.batteryAlerts`).
-When the battery percentage falls through one of these levels the bot sends a message with the current mode, load and
-battery voltage, plus the Dashboard button. A level re-arms once the battery has climbed 3 points above it, and the
+When the battery percentage falls through one of these levels the bot sends a new summary with sound and a
+"🪫 Battery below 25 %" headline; the previous summary is removed, so there are no separate alert messages. A level re-arms once the battery has climbed 3 points above it, and the
 tracking restarts whenever the inverter link drops, so reconnects never produce false alerts. Alerts are delivered
 between long-poll cycles, so expect up to about 20 seconds of delay.
+
+## Grid alerts
+
+Telegram Settings has "Summary with sound when the grid goes off or comes back" (key `telegram.gridAlerts`, default
+on). When the inverter runs on battery (or reports no AC input) for a minute, the bot sends a new summary with sound and
+a "🔴 Grid off" headline; when the grid has been back for a minute, one with "🟢 Grid back after 2h 13m". Shorter
+dips are ignored, nothing is announced while the inverter itself is unreachable, and the state found at boot is not
+announced. During an outage the summary's grid line reads "off for 2h 13m". As with every alert, the previous summary
+is removed, so the chat still holds only the summary. Test builds with `-DGRID_ALERT_TEST` accept `gridoff`, `gridon`
+and `gridreal` in the web serial console.
 
 ## Memory notes
 
@@ -286,6 +296,10 @@ The summary has a 📊 Dashboard button next to Refresh. It opens `dashboard/ind
 output, temperature, time left on battery, 24 h charts of battery and load, a grid on/off strip, today's usage and
 outages, priorities and link health.
 
+* Power flow panel: Grid → Home, Grid → Battery (charging) and Battery → Home (discharging) with moving dots, faster
+  for more power. The grid circle's ring fills against the inverter's rated power (AC_Out_Rating_Active_Power, 6 kW
+  here): blue, amber above 80 %, red with "over the limit" above 100 %. The inverter does not report grid power, so
+  the page estimates it as appliances + (battery charging − solar) ÷ efficiency + own consumption.
 * The page is static and gets no data from any server: the board puts the values and the history into the button's
   link after `#` (the fragment, which browsers never send), rebuilt every 2 s and refreshed with every summary edit.
   The page shows the data of the latest summary; reopening the button gives newer values.

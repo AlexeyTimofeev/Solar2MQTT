@@ -375,6 +375,7 @@ void WebServerHandler::registerRoutes()
         telegram["batteryAlerts"] = _settings.get.telegramBatteryAlerts();
         telegram["autoSummary"] = _settings.get.telegramAutoSummary();
         telegram["loadAlert"] = _settings.get.telegramLoadAlert();
+        telegram["gridAlerts"] = _settings.get.telegramGridAlerts();
 #endif
 
         String json;
@@ -707,6 +708,7 @@ void WebServerHandler::registerRoutes()
             else if (name == "batteryAlerts") _settings.set.telegramBatteryAlerts(value.toInt() != 0);
             else if (name == "autoSummary") _settings.set.telegramAutoSummary(value.toInt() != 0);
             else if (name == "loadAlert") _settings.set.telegramLoadAlert(value.toInt() != 0);
+            else if (name == "gridAlerts") _settings.set.telegramGridAlerts(value.toInt() != 0);
         }
 
         _settings.save();
