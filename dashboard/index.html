@@ -44,18 +44,8 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
   </div>
   <div class="tiles">
     <div class="pn"><div class="lb">🏠 Grid</div><div id="grid" class="big" style="margin-top:6px"></div><div id="gridSub" class="sm" style="margin-top:6px"></div></div>
-    <div class="pn" style="text-align:center">
-      <div class="lb" style="text-align:left">🔋 Battery</div>
-      <svg width="80" height="80" viewBox="0 0 96 96" aria-hidden="true" style="margin-top:4px">
-        <circle cx="48" cy="48" r="40" fill="none" stroke="rgba(128,166,201,.18)" stroke-width="9"/>
-        <circle id="ring" cx="48" cy="48" r="40" fill="none" stroke="#30c977" stroke-width="9" stroke-linecap="round" stroke-dasharray="251.3" stroke-dashoffset="251.3" transform="rotate(-90 48 48)"/>
-        <text id="ringTxt" x="48" y="55" text-anchor="middle" font-size="21" font-weight="600" fill="#eef6ff">–</text>
-      </svg>
-      <div id="battLine" style="font-size:14px;margin-top:2px"></div>
-      <div id="battNote" class="sm"></div>
-    </div>
+    <div class="pn"><div class="lb">🔋 Battery</div><div id="battPct" class="big" style="margin-top:6px">–</div><div id="battLine" class="sm" style="margin-top:6px"></div></div>
   </div>
-  <div id="leftPanel" class="pn hidden"><div class="row"><span class="lb">⏳ Time left at this load</span><span id="left" class="mid" style="color:var(--warn)"></span></div><div id="leftNote" class="sm" style="text-align:right;margin-top:2px"></div></div>
   <div id="flowPanel" class="pn hidden">
     <svg viewBox="0 0 340 228" width="100%" role="img" aria-label="Power flow between grid, home and battery">
       <path id="fGH" d="M104,60 H236" fill="none" stroke-width="2"/>
@@ -70,12 +60,13 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
       <text x="280" y="53" text-anchor="middle" font-size="20">🏠</text>
       <text id="homeVal" x="280" y="79" text-anchor="middle" font-size="15" font-weight="600" fill="#eef6ff"></text>
       <text x="280" y="124" text-anchor="middle" font-size="13" fill="#8aa0b5">Home</text>
-      <circle cx="170" cy="158" r="42" fill="#08131d" stroke="#3ccfb4" stroke-width="4"/>
+      <circle cx="170" cy="158" r="42" fill="#08131d" stroke="rgba(128,166,201,.25)" stroke-width="4"/>
+      <circle id="battArc" cx="170" cy="158" r="42" fill="none" stroke="#30c977" stroke-width="4" stroke-linecap="round" stroke-dasharray="263.9" stroke-dashoffset="263.9" transform="rotate(-90 170 158)"/>
       <text x="170" y="151" text-anchor="middle" font-size="20">🔋</text>
       <text id="battVal" x="170" y="177" text-anchor="middle" font-size="15" font-weight="600"></text>
       <text x="170" y="220" text-anchor="middle" font-size="13" fill="#8aa0b5">Battery</text>
     </svg>
-    <div id="flowLimit" class="sm" style="text-align:center"></div>
+    <div id="flowLimit" style="text-align:center;font-size:14px;color:var(--muted);margin-top:2px"></div>
   </div>
   <div id="warnPanel" class="pn hidden" style="color:var(--warn);font-size:13px"></div>
   <div class="pn">
@@ -126,38 +117,31 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
   else if (gridOff) { pill.textContent = 'On battery' + (outFor !== null ? ' · grid out for ' + dur(outFor) : ''); pill.style.background = '#3d2a10'; pill.style.color = '#f6c549'; }
   else { pill.textContent = 'On grid' + (bc > 0 ? ' · charging' : ''); pill.style.background = '#123b27'; pill.style.color = '#6ee7a6'; }
 
-  if (b !== null) {
-    var ring = $('ring');
-    ring.setAttribute('stroke-dashoffset', (251.3 * (1 - Math.min(100, b) / 100)).toFixed(1));
-    ring.setAttribute('stroke', b >= 50 ? '#30c977' : b >= 25 ? '#f6c549' : '#ff6b57');
-    $('ringTxt').textContent = Math.round(b) + '%';
-  }
+  $('battPct').textContent = b !== null ? Math.round(b) + '%' : '–';
   var battLine = (bv !== null ? bv.toFixed(1) + ' V' : '–');
   if (bc > 0) battLine += ' · <span style="color:#6ee7a6">⬆ ' + Math.round(bc) + ' A</span>';
   else if (bd > 0) battLine += ' · <span style="color:#f6c549">⬇ ' + Math.round(bd) + ' A</span>';
   $('battLine').innerHTML = battLine;
-  $('battNote').textContent = bc > 0 ? 'Charging' + (bv ? ' · ' + Math.round(bv * bc) + ' W' : '') : bd > 0 ? 'Discharging' + (bv ? ' · ' + Math.round(bv * bd) + ' W' : '') : 'Idle';
-  var reserve = num('wr') || 0, idle = num('wi') || 0, eff = (num('we') || 100) / 100;
-  if (wh && gridOff && l !== null && b !== null) {
-    var drawW = Math.max(l, 0) / eff + idle, usable = wh * Math.max(b - reserve, 0) / 100;
-    if (drawW > 0) { $('leftPanel').classList.remove('hidden'); $('left').textContent = '≈ ' + dur(usable / drawW * 3600); $('leftNote').textContent = 'until ' + reserve + ' % · ' + Math.round(drawW) + ' W from the battery'; }
-  }
 
-  // Power flow: grid -> home, grid -> battery (charging), battery -> home (discharging), and what the inverter draws in
-  // total against its rated power. Grid power is not reported: appliances + grid share of charging / efficiency + own use.
+  // Power flow: grid -> home, grid -> battery (charging), battery -> home (discharging). The grid ring fills with the power
+  // drawn against the inverter's rating, the battery ring with its charge; both shade from green to red (grid 3 -> 5 kW,
+  // battery 60 -> 25 %). Grid power is not reported: appliances + grid share of charging / efficiency + own use.
   if (connected && l !== null) {
-    var effF = (num('we') || 100) / 100, idleW = num('wi') || 0, limitW = lr || 6000;
+    var effF = (num('we') || 100) / 100, idleW = num('wi') || 0, limitW = lr || 6000, reserve = num('wr') || 0;
     var loadW = Math.max(l, 0), chargeW = (bv !== null && bc > 0) ? bv * bc : 0;
     var gridChargeW = gridOff ? 0 : Math.max(0, chargeW - (pv || 0)) / effF;
     var dischargeW = (bv !== null && bd > 0) ? bv * bd : (gridOff ? loadW / effF + idleW : 0);
-    var gridW = gridOff ? 0 : loadW + gridChargeW + idleW, totalW = gridOff ? dischargeW : gridW, pct = totalW / limitW * 100;
+    var gridW = gridOff ? 0 : loadW + gridChargeW + idleW;
     var kw = function (w) { return w >= 1000 ? (w / 1000).toFixed(1) + ' kW' : Math.round(w) + ' W'; };
-    var levelColor = pct > 100 ? '#ff6b57' : pct > 80 ? '#f6c549' : '#58b8ff';
+    var scale = function (t) { return 'hsl(' + Math.round(120 * Math.max(0, Math.min(1, t))) + ',75%,52%)'; }; // 1 green, 0 red
+    var gridColor = scale(1 - (gridW - 3000) / 2000), battColor = b === null ? '#8aa0b5' : scale((b - 25) / 35);
     $('flowPanel').classList.remove('hidden');
     $('gridVal').textContent = gridOff ? 'off' : '→ ' + kw(gridW);
-    $('gridVal').setAttribute('fill', gridOff ? '#ff8a78' : levelColor);
-    $('gridArc').setAttribute('stroke', levelColor);
+    $('gridVal').setAttribute('fill', gridOff ? '#ff8a78' : gridColor);
+    $('gridArc').setAttribute('stroke', gridColor);
     $('gridArc').setAttribute('stroke-dashoffset', (276.5 * (1 - Math.min(1, gridW / limitW))).toFixed(1));
+    $('battArc').setAttribute('stroke', battColor);
+    $('battArc').setAttribute('stroke-dashoffset', (263.9 * (1 - Math.min(100, b || 0) / 100)).toFixed(1));
     $('homeVal').textContent = kw(loadW);
     var bt = $('battVal');
     if (chargeW >= 1) { bt.textContent = '↓ ' + kw(chargeW); bt.setAttribute('fill', '#58b8ff'); }
@@ -173,8 +157,13 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
       anim.setAttribute('dur', Math.max(0.8, 4 - f[3] / 1500).toFixed(1) + 's'); anim.setAttribute('repeatCount', 'indefinite');
       mp.setAttribute('href', '#' + f[0]); anim.appendChild(mp); dot.appendChild(anim); svg.appendChild(dot);
     });
-    $('flowLimit').textContent = (gridOff ? 'From the battery ≈ ' : 'From the grid ≈ ') + kw(totalW) + ' · ' + Math.round(pct) + ' % of ' + kw(limitW) + (pct > 100 ? ' · over the limit' : '');
-    $('flowLimit').style.color = pct > 100 ? '#ff8a78' : pct > 80 ? '#f6c549' : '';
+    // Estimated time until the inverter's low-battery cut-off at this load; on grid: how long the battery would last now.
+    var battDrawW = loadW / effF + idleW;
+    if (wh && b !== null && battDrawW > 0) {
+      var leftS = wh * Math.max(b - reserve, 0) / 100 / battDrawW * 3600;
+      $('flowLimit').innerHTML = (gridOff ? '⏳ Battery lasts <b>≈ ' : '⏳ On battery it would last <b>≈ ') + dur(leftS) + '</b> at this load, until ' + reserve + ' %';
+      $('flowLimit').style.color = gridOff ? '#f6c549' : '';
+    }
   }
   if (gridOff) { $('grid').textContent = 'Off'; $('grid').style.color = '#ff8a78'; $('gridSub').textContent = os ? 'since ' + hhmm(os) : (outFor !== null ? 'for ' + dur(outFor) : ''); }
   else { $('grid').textContent = gv !== null ? Math.round(gv) + ' V' : '–'; $('gridSub').textContent = gf !== null ? gf.toFixed(1) + ' Hz' : ''; }
