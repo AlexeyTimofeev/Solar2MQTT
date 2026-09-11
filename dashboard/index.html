@@ -29,7 +29,6 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
 .kv span:first-child{color:var(--muted);white-space:nowrap}
 .kv span:last-child{text-align:right}
 .chart{position:relative;height:110px;margin-top:6px}
-.chart.small{height:70px}
 .key{display:inline-block;width:9px;height:9px;border-radius:2px;margin:0 4px 0 10px}
 .hidden{display:none!important}
 .empty{text-align:center;color:var(--muted);padding-top:35vh}
@@ -71,11 +70,10 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
   </div>
   <div id="warnPanel" class="pn hidden" style="color:var(--warn);font-size:13px"></div>
   <div class="pn">
-    <div class="row"><span class="lb" id="histTitle">Last 24 h</span><span class="sm"><span class="key" style="background:var(--blue)"></span>battery %<span class="key" style="background:#a78bfa"></span>load kW</span></div>
+    <div class="row"><span class="lb" id="histTitle">Last 24 h</span><span class="sm"><span class="key" style="background:var(--blue)"></span>battery %<span class="key" style="background:#a78bfa"></span>load %</span></div>
     <div id="histEmpty" class="sm hidden" style="margin-top:8px">History builds up from now on: one point every 15 minutes.</div>
     <div id="histCharts">
-      <div class="chart"><canvas id="cB" role="img" aria-label="Battery percent over time"></canvas></div>
-      <div class="chart small"><canvas id="cL" role="img" aria-label="Average load per 15 minutes"></canvas></div>
+      <div class="chart" style="height:150px"><canvas id="cB" role="img" aria-label="Battery percent and average load per 15 minutes as percent of the inverter rating"></canvas></div>
       <div class="lb" style="margin-top:10px">Grid <span style="color:#6ee7a6">on</span> / <span style="color:var(--warn)">partly off</span> / <span style="color:#ff8a78">off</span></div>
       <div id="tl" class="tl"></div>
       <div id="tlAxis" class="row sm" style="margin-top:4px"></div>
@@ -194,11 +192,20 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
     }
     $('histTitle').textContent = 'Last ' + (n * s >= 3600 ? Math.round(n * s / 3600) + ' h' : dur(n * s));
     if (window.Chart) {
-      var gridColor = 'rgba(128,166,201,.14)', tick = '#8aa0b5';
-      var opts = function (max) { return { responsive: true, maintainAspectRatio: false, animation: false, plugins: { legend: { display: false }, tooltip: { intersect: false, mode: 'index' } }, scales: { x: { display: false }, y: { min: 0, max: max, ticks: { color: tick, font: { size: 11 }, maxTicksLimit: 3 }, grid: { color: gridColor }, border: { display: false } } } }; };
-      new Chart($('cB'), { type: 'line', data: { labels: labels, datasets: [{ data: batt, borderColor: '#58b8ff', backgroundColor: 'rgba(88,184,255,.12)', fill: true, borderWidth: 2, pointRadius: 0, tension: .3 }] }, options: opts(100) });
-      var peak = Math.max.apply(null, load.map(function (v) { return v || 0; }));
-      new Chart($('cL'), { type: 'bar', data: { labels: labels, datasets: [{ data: load, backgroundColor: '#a78bfa', borderRadius: 2, barPercentage: .8, categoryPercentage: 1 }] }, options: opts(Math.max(.5, Math.ceil(peak * 2) / 2)) });
+      // One 0-100 % chart: the battery charge as a line over the load as bars against the inverter rating.
+      var ratingW = lr || 6000, loadPct = load.map(function (v) { return v === null ? null : Math.min(100, v * 100000 / ratingW); });      var gridColor = 'rgba(128,166,201,.14)', tick = '#8aa0b5';
+      new Chart($('cB'), {
+        type: 'bar',
+        data: { labels: labels, datasets: [
+          { type: 'line', label: 'Battery', data: batt, order: 0, borderColor: '#58b8ff', backgroundColor: 'rgba(88,184,255,.10)', fill: true, borderWidth: 2, pointRadius: 0, tension: .3 },
+          { type: 'bar', label: 'Load', data: loadPct, order: 1, backgroundColor: 'rgba(167,139,250,.75)', borderRadius: 2, barPercentage: .8, categoryPercentage: 1 }] },
+        options: { responsive: true, maintainAspectRatio: false, animation: false,
+          plugins: { legend: { display: false }, tooltip: { intersect: false, mode: 'index', callbacks: { label: function (c) {
+            if (c.raw === null) return null;
+            return c.dataset.label === 'Load' ? 'Load ' + Math.round(c.raw) + ' % · ' + load[c.dataIndex].toFixed(1) + ' kW' : 'Battery ' + Math.round(c.raw) + ' %';
+          } } } },
+          scales: { x: { display: false }, y: { min: 0, max: 100, ticks: { color: tick, font: { size: 11 }, stepSize: 50, callback: function (v) { return v + '%'; } }, grid: { color: gridColor }, border: { display: false } } } }
+      });
     }
     var tl = $('tl');
     off.forEach(function (v) { var sp = document.createElement('span'); sp.style.background = v === null ? 'rgba(128,166,201,.18)' : v === 0 ? '#30c977' : v >= 15 ? '#ff6b57' : '#f6c549'; tl.appendChild(sp); });
