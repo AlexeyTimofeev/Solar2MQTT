@@ -656,7 +656,7 @@ struct TelegramService::Impl
         text += "\n<i>\xF0\x9F\x92\xBE Version: " + runningVersion() + "</i>"; // 💾
         if (updater != nullptr && updater->state() == GitHubOtaUpdater::State::UpdateAvailable)
         {
-            text += "\n\xF0\x9F\x86\x95 <b>New version " + updater->latestVersion() + " available</b>, send /upgrade"; // 🆕
+            text += "\n\xF0\x9F\x86\x95 <b>New version " + updater->latestVersion() + " available</b>"; // 🆕
         }
         return text;
     }
@@ -741,6 +741,12 @@ struct TelegramService::Impl
         JsonObject button = rows.add<JsonArray>().add<JsonObject>();
         button["text"] = "\xF0\x9F\x94\x84 Refresh"; // 🔄
         button["callback_data"] = "summary";
+        if (updater != nullptr && updater->state() == GitHubOtaUpdater::State::UpdateAvailable)
+        {
+            JsonObject upgradeButton = rows.add<JsonArray>().add<JsonObject>(); // second row, under Refresh
+            upgradeButton["text"] = "\xE2\xAC\x86\xEF\xB8\x8F Upgrade"; // ⬆️
+            upgradeButton["callback_data"] = "upgrade";
+        }
 
         int64_t newId = 0;
         String body = snapshotWithFooter();
@@ -971,6 +977,12 @@ struct TelegramService::Impl
             if (callbackData == "summary")
             {
                 sendSummary(chat, 0, callbackId);
+            }
+            else if (callbackData == "upgrade")
+            {
+                answerCallback(callbackId, nullptr);
+                taskLog("[Telegram] Upgrade button pressed in chat " + chat);
+                startUpgrade(chat);
             }
             else
             {
