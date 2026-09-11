@@ -50,4 +50,5 @@
   X(UINT16, "device", "statusLedBrightness", statusLedBrightness, 128, 0, 255) \
   X(BOOL,   "device", "solarConnected", solarConnected, true, 0, 1) \
   X(UINT32, "device", "pollIntervalMs", pollIntervalMs, 100, 25, 5000) \
+  X(UINT32, "device", "batteryWh", batteryCapacityWh, 0, 0, 200000) \
   SETTINGS_ITEMS_TELEGRAM(X)

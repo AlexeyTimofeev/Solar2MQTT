@@ -363,6 +363,7 @@ void WebServerHandler::registerRoutes()
         device["statusLedBrightness"] = _settings.get.statusLedBrightness();
         device["pollIntervalMs"] = _settings.get.pollIntervalMs();
         device["solarConnected"] = _settings.get.solarConnected();
+        device["batteryWh"] = _settings.get.batteryCapacityWh();
 #if HAS_TELEGRAM
         JsonObject telegram = doc["telegram"].to<JsonObject>();
         telegram["enabled"] = _settings.get.telegramEnabled();
@@ -775,6 +776,7 @@ void WebServerHandler::registerRoutes()
             else if (name == "statusLedBrightness") _settings.set.statusLedBrightness(static_cast<uint16_t>(value.toInt()));
             else if (name == "pollIntervalMs") _settings.set.pollIntervalMs(value.toInt());
             else if (name == "solarConnected") _settings.set.solarConnected(value.toInt() != 0);
+            else if (name == "batteryWh") _settings.set.batteryCapacityWh(static_cast<uint32_t>(value.toInt()));
         }
 
         _settings.save();

@@ -8,10 +8,12 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <esp_ota_ops.h>
+#include <time.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
+#include <algorithm>
 #include <vector>
 
 #include "core/DiagLog.h"
@@ -47,6 +49,74 @@ constexpr uint32_t kFirstUpdateCheckMs = 120000;                 // first look f
 constexpr uint32_t kUpdateCheckIntervalMs = 12UL * 3600UL * 1000UL; // then twice a day
 constexpr int kLoadAlertOnPercent = 80;
 constexpr int kLoadAlertOffPercent = 70;
+
+#ifndef DASHBOARD_URL
+#define DASHBOARD_URL ""
+#endif
+constexpr uint32_t kDashSlotSeconds = 900; // dashboard history: one slot per 15 minutes
+constexpr size_t kDashSlots = 96;           // 24 hours
+constexpr uint32_t kDashMagic = 0x44534831; // "DSH1"
+constexpr uint8_t kDashNone = 255;          // slot without data
+
+// Dashboard history in RTC memory: survives a crash, watchdog or software restart (firmware update), not a power cut.
+struct DashHistory
+{
+    uint32_t magic;
+    uint32_t count;           // slots in use
+    uint32_t head;            // next slot to write
+    int64_t lastSlotEnd;      // unix time the newest slot closed, 0 when the clock was unknown
+    int64_t outageStart;      // unix time the grid went off, 0 while the grid is on or the start is unknown
+    uint8_t batt[kDashSlots]; // battery % at the end of the slot
+    uint8_t load[kDashSlots]; // average load in 25 W steps
+    uint8_t off[kDashSlots];  // minutes without grid in the slot
+};
+RTC_NOINIT_ATTR DashHistory dashHist;
+
+// Unix time from SNTP, or 0 until the clock has been set.
+int64_t unixNow()
+{
+    const time_t now = time(nullptr);
+    return now > 1700000000 ? static_cast<int64_t>(now) : 0;
+}
+
+String base64Url(const uint8_t *data, size_t len)
+{
+    static const char kAlphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    String out;
+    out.reserve((len + 2) / 3 * 4);
+    for (size_t i = 0; i < len; i += 3)
+    {
+        const uint32_t n = (static_cast<uint32_t>(data[i]) << 16) | (i + 1 < len ? static_cast<uint32_t>(data[i + 1]) << 8 : 0) |
+                           (i + 2 < len ? data[i + 2] : 0);
+        out += kAlphabet[(n >> 18) & 63];
+        out += kAlphabet[(n >> 12) & 63];
+        if (i + 1 < len) out += kAlphabet[(n >> 6) & 63];
+        if (i + 2 < len) out += kAlphabet[n & 63];
+    }
+    return out;
+}
+
+String urlEncode(const String &in)
+{
+    static const char kHex[] = "0123456789ABCDEF";
+    String out;
+    out.reserve(in.length() + 8);
+    for (size_t i = 0; i < in.length(); ++i)
+    {
+        const uint8_t c = static_cast<uint8_t>(in[i]);
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~')
+        {
+            out += static_cast<char>(c);
+        }
+        else
+        {
+            out += '%';
+            out += kHex[c >> 4];
+            out += kHex[c & 15];
+        }
+    }
+    return out;
+}
 
 String htmlEscape(const String &in)
 {
@@ -98,6 +168,17 @@ String readText(const char *key)
         return String();
     }
     return value.as<String>();
+}
+
+// Rated values and settings read from the inverter (QPIRI), e.g. the output source priority.
+String readStaticText(const char *key)
+{
+    if (staticData.isNull())
+    {
+        return String();
+    }
+    JsonVariant value = staticData[key];
+    return value.isNull() ? String() : value.as<String>();
 }
 
 String num(const char *key, uint8_t decimals, const char *unit, bool *ok = nullptr)
@@ -250,6 +331,18 @@ struct TelegramService::Impl
     uint32_t inverterDownSinceMs = 0;
     bool inverterOfflineNotified = false;
     uint32_t lastOfflineNoticeMs = 0;
+
+    // Dashboard button: the main thread records the history and builds the link, the bot task reads it under lock.
+    String dashboardUrl;
+    std::atomic<uint8_t> dashSlotsAllowed {static_cast<uint8_t>(kDashSlots)}; // halves when Telegram rejects the link
+    std::atomic<bool> dashDisabled {false};
+    uint32_t slotStartMs = 0;
+    uint32_t slotLoadSum = 0;
+    uint16_t slotSamples = 0;
+    uint16_t slotOffSeconds = 0;
+    int slotBatt = -1;
+    bool gridWasOff = false;
+    uint32_t outageStartMs = 0;
 
     void requestLoud(const String &headline)
     {
@@ -785,6 +878,70 @@ struct TelegramService::Impl
         return true;
     }
 
+    // Refresh and Dashboard on the first row, Upgrade under them when a newer release is out.
+    void buildSummaryMarkup(JsonDocument &markup, const String &chat, bool withDashboard)
+    {
+        JsonArray rows = markup["inline_keyboard"].to<JsonArray>();
+        JsonArray first = rows.add<JsonArray>();
+        JsonObject button = first.add<JsonObject>();
+        button["text"] = "\xF0\x9F\x94\x84 Refresh"; // 🔄
+        button["callback_data"] = "summary";
+        String dash;
+        if (withDashboard)
+        {
+            lockTake();
+            dash = dashboardUrl;
+            lockGive();
+        }
+        if (dash.length())
+        {
+            JsonObject dashboard = first.add<JsonObject>();
+            dashboard["text"] = "\xF0\x9F\x93\x8A Dashboard"; // 📊
+            if (chat.startsWith("-"))
+            {
+                dashboard["url"] = dash; // Mini App buttons only work in private chats; groups get a browser link
+            }
+            else
+            {
+                dashboard["web_app"]["url"] = dash;
+            }
+        }
+        if (newVersionOffered().length())
+        {
+            JsonObject upgradeButton = rows.add<JsonArray>().add<JsonObject>(); // second row, under Refresh
+            upgradeButton["text"] = "\xE2\xAC\x86\xEF\xB8\x8F Upgrade"; // ⬆️
+            upgradeButton["callback_data"] = "upgrade";
+        }
+    }
+
+    // Telegram refused the summary because of the Dashboard button (link too long or not allowed): shorten the history
+    // in the next link, or drop the button when even a link without history is refused.
+    bool dashboardRejected()
+    {
+        String err;
+        lockTake();
+        err = lastError;
+        lockGive();
+        String upper = err;
+        upper.toUpperCase();
+        if (upper.indexOf("BUTTON") < 0 && upper.indexOf("URL") < 0 && upper.indexOf("WEB_APP") < 0)
+        {
+            return false;
+        }
+        const uint8_t slots = dashSlotsAllowed.load();
+        if (slots == 0)
+        {
+            dashDisabled = true;
+        }
+        else
+        {
+            dashSlotsAllowed = slots > 12 ? slots / 2 : 0;
+        }
+        taskLog("[Telegram] Dashboard link rejected (" + err + "); history now " + String(dashSlotsAllowed.load()) + " slots" +
+                (dashDisabled.load() ? ", button off" : ""));
+        return true;
+    }
+
     // editMessageText for a summary; "message is not modified" (nothing changed since the last edit) counts as success.
     bool editText(const String &chat, int64_t messageId, const String &text, JsonDocument *replyMarkup)
     {
@@ -834,18 +991,6 @@ struct TelegramService::Impl
             return;
         }
 
-        JsonDocument markup;
-        JsonArray rows = markup["inline_keyboard"].to<JsonArray>();
-        JsonObject button = rows.add<JsonArray>().add<JsonObject>();
-        button["text"] = "\xF0\x9F\x94\x84 Refresh"; // 🔄
-        button["callback_data"] = "summary";
-        if (newVersionOffered().length())
-        {
-            JsonObject upgradeButton = rows.add<JsonArray>().add<JsonObject>(); // second row, under Refresh
-            upgradeButton["text"] = "\xE2\xAC\x86\xEF\xB8\x8F Upgrade"; // ⬆️
-            upgradeButton["callback_data"] = "upgrade";
-        }
-
         String body = snapshotWithFooter();
         if (headline.length())
         {
@@ -853,12 +998,32 @@ struct TelegramService::Impl
         }
         int64_t newId = 0;
         bool edited = false;
-        if (edit && state.lastMsgId != 0 && editText(chat, state.lastMsgId, body, &markup))
+        bool sent = false;
+        bool withDashboard = !dashDisabled.load();
+        for (int attempt = 0; attempt < 2 && !sent; ++attempt)
         {
-            newId = state.lastMsgId;
-            edited = true;
+            JsonDocument markup;
+            buildSummaryMarkup(markup, chat, withDashboard);
+            if (edit && state.lastMsgId != 0 && editText(chat, state.lastMsgId, body, &markup))
+            {
+                newId = state.lastMsgId;
+                edited = true;
+                sent = true;
+            }
+            else if (sendText(chat, body, &markup, &newId, silent))
+            {
+                sent = true;
+            }
+            else if (withDashboard && dashboardRejected())
+            {
+                withDashboard = false; // this summary goes out without the button; the next link is shorter
+            }
+            else
+            {
+                break;
+            }
         }
-        else if (!sendText(chat, body, &markup, &newId, silent))
+        if (!sent)
         {
             answerCallback(callbackId, "Failed to send summary");
             return;
@@ -1490,12 +1655,228 @@ struct TelegramService::Impl
         return t;
     }
 
+    void dashInit()
+    {
+#ifdef DASH_FAKE_HISTORY
+        // Test builds only: a full day of made-up history, to check that Telegram accepts the longest Dashboard link.
+        // It uses a different magic, so the next normal build discards it.
+        if (dashHist.magic != kDashMagic + 1)
+        {
+            memset(&dashHist, 0, sizeof(dashHist));
+            for (size_t i = 0; i < kDashSlots; ++i)
+            {
+                dashHist.batt[i] = static_cast<uint8_t>(60 + (i * 7) % 40);
+                dashHist.load[i] = static_cast<uint8_t>(10 + (i * 13) % 50);
+                dashHist.off[i] = static_cast<uint8_t>(i >= 70 && i < 90 ? 15 : 0);
+            }
+            dashHist.count = kDashSlots;
+            dashHist.magic = kDashMagic + 1;
+        }
+        slotStartMs = millis();
+        return;
+#endif
+        if (dashHist.magic != kDashMagic || dashHist.count > kDashSlots || dashHist.head >= kDashSlots)
+        {
+            memset(&dashHist, 0, sizeof(dashHist));
+            dashHist.magic = kDashMagic;
+        }
+        slotStartMs = millis();
+    }
+
+    void dashPush(uint8_t batt, uint8_t load, uint8_t off)
+    {
+        dashHist.batt[dashHist.head] = batt;
+        dashHist.load[dashHist.head] = load;
+        dashHist.off[dashHist.head] = off;
+        dashHist.head = (dashHist.head + 1) % kDashSlots;
+        if (dashHist.count < kDashSlots)
+        {
+            ++dashHist.count;
+        }
+    }
+
+    // Main thread, every snapshot (2 s): fold the live values into the current 15 minute slot and track how long the
+    // grid has been out.
+    void dashRecord(bool inverterConnected, bool gridOff, int batteryPct, float loadW)
+    {
+        const uint32_t now = millis();
+        const int64_t unix = unixNow();
+        if (inverterConnected)
+        {
+            slotLoadSum += loadW > 0 ? static_cast<uint32_t>(loadW) : 0;
+            ++slotSamples;
+            if (batteryPct >= 0)
+            {
+                slotBatt = batteryPct;
+            }
+            if (gridOff)
+            {
+                slotOffSeconds += kSnapshotIntervalMs / 1000;
+                if (!gridWasOff)
+                {
+                    gridWasOff = true;
+                    outageStartMs = now;
+                    if (dashHist.outageStart == 0)
+                    {
+                        dashHist.outageStart = unix; // after a restart the RTC keeps the real start
+                    }
+                }
+                else if (dashHist.outageStart == 0 && unix != 0)
+                {
+                    dashHist.outageStart = unix - (now - outageStartMs) / 1000; // the clock was set after the outage began
+                }
+            }
+            else
+            {
+                gridWasOff = false;
+                dashHist.outageStart = 0;
+            }
+        }
+        if (now - slotStartMs < kDashSlotSeconds * 1000UL)
+        {
+            return;
+        }
+        if (unix != 0 && dashHist.lastSlotEnd != 0 && unix > dashHist.lastSlotEnd)
+        {
+            const int64_t missing = (unix - dashHist.lastSlotEnd) / kDashSlotSeconds - 1; // slots lost while the board was off
+            for (int64_t i = 0; i < missing && i < static_cast<int64_t>(kDashSlots); ++i)
+            {
+                dashPush(kDashNone, kDashNone, kDashNone);
+            }
+        }
+        if (slotSamples > 0)
+        {
+            dashPush(slotBatt >= 0 ? static_cast<uint8_t>(std::min(slotBatt, 100)) : kDashNone,
+                     static_cast<uint8_t>(std::min<uint32_t>(slotLoadSum / slotSamples / 25, 254)),
+                     static_cast<uint8_t>(std::min<uint32_t>((slotOffSeconds + 30) / 60, 15)));
+        }
+        else
+        {
+            dashPush(kDashNone, kDashNone, kDashNone);
+        }
+        dashHist.lastSlotEnd = unix;
+        slotStartMs = now;
+        slotLoadSum = 0;
+        slotSamples = 0;
+        slotOffSeconds = 0;
+        slotBatt = -1;
+    }
+
+    // Main thread: the Dashboard link. Everything after '#' stays on the phone (browsers never send the fragment), so
+    // the static page on GitHub Pages never sees the data.
+    String buildDashboardUrl(bool inverterConnected, const String &mode, const String &alerts, bool solarConnected)
+    {
+        if (strlen(DASHBOARD_URL) == 0 || dashDisabled.load())
+        {
+            return String();
+        }
+        String u;
+        u.reserve(1200);
+        u += DASHBOARD_URL;
+        u += "#v=1";
+        auto add = [&u](const char *key, const String &value) {
+            u += '&';
+            u += key;
+            u += '=';
+            u += urlEncode(value);
+        };
+        auto addNumber = [&add](const char *key, const char *descr, float scale) {
+            float value = 0;
+            if (readNumber(descr, value))
+            {
+                add(key, String(lroundf(value * scale)));
+            }
+        };
+        const int64_t unix = unixNow();
+        add("t", String(static_cast<unsigned long>(unix)));
+        add("c", inverterConnected ? "1" : "0");
+        if (inverterConnected)
+        {
+            add("m", mode);
+            addNumber("b", DESCR_Battery_Percent, 1);
+            addNumber("bv", DESCR_Battery_Voltage, 10);
+            addNumber("bc", DESCR_Battery_Charge_Current, 1);
+            addNumber("bd", DESCR_Battery_Discharge_Current, 1);
+            addNumber("l", DESCR_AC_Out_Watt, 1);
+            addNumber("lp", DESCR_AC_Out_Percent, 1);
+            addNumber("va", DESCR_AC_Out_VA, 1);
+            addNumber("gv", DESCR_AC_In_Voltage, 10);
+            addNumber("gf", DESCR_AC_In_Frequency, 10);
+            addNumber("ov", DESCR_AC_Out_Voltage, 10);
+            addNumber("of", DESCR_AC_Out_Frequency, 10);
+            addNumber("tc", DESCR_Inverter_Bus_Temperature, 1);
+            if (solarConnected)
+            {
+                addNumber("pv", DESCR_PV_Charging_Power, 1);
+            }
+            if (alerts.length())
+            {
+                add("w", alerts);
+            }
+        }
+        const String rating = readStaticText(DESCR_AC_Out_Rating_Active_Power);
+        if (rating.length()) add("lr", rating);
+        const String outputPriority = readStaticText(DESCR_Output_Source_Priority);
+        if (outputPriority.length()) add("op", outputPriority);
+        const String chargerPriority = readStaticText(DESCR_Charger_Source_Priority);
+        if (chargerPriority.length()) add("cp", chargerPriority);
+        if (gridWasOff)
+        {
+            if (dashHist.outageStart != 0)
+            {
+                add("os", String(static_cast<unsigned long>(dashHist.outageStart)));
+            }
+            else
+            {
+                add("oa", String((millis() - outageStartMs) / 1000));
+            }
+        }
+        const uint32_t batteryWh = _settings.get.batteryCapacityWh();
+        if (batteryWh)
+        {
+            add("wh", String(batteryWh));
+        }
+        JsonObjectConst esp = g_stateDoc["EspData"].as<JsonObjectConst>();
+        add("ok", String(esp["PI_Ok"] | 0UL));
+        add("na", String(esp["PI_NoAnswer"] | 0UL));
+        add("rs", String(WiFi.RSSI()));
+        add("fw", runningVersion());
+        add("up", String(millis() / 1000));
+        const size_t n = std::min<size_t>(dashHist.count, dashSlotsAllowed.load());
+        if (n)
+        {
+            uint8_t bytes[3 * kDashSlots];
+            const size_t first = (dashHist.head + kDashSlots - n) % kDashSlots;
+            for (size_t i = 0; i < n; ++i)
+            {
+                const size_t k = (first + i) % kDashSlots;
+                bytes[i] = dashHist.batt[k];
+                bytes[n + i] = dashHist.load[k];
+                bytes[2 * n + i] = dashHist.off[k];
+            }
+            add("s", String(kDashSlotSeconds));
+            add("n", String(n));
+            if (dashHist.lastSlotEnd != 0)
+            {
+                add("he", String(static_cast<unsigned long>(dashHist.lastSlotEnd)));
+            }
+            u += "&h=";
+            u += base64Url(bytes, 3 * n);
+        }
+        return u;
+    }
+
     // Main thread: build the summary text from live data.
     void buildSnapshot(bool inverterConnected, int rssi)
     {
         const bool solarConnected = _settings.get.solarConnected();
         String text;
         text.reserve(512);
+        String modeRaw;
+        String alerts;
+        bool gridOff = false;
+        int batteryPct = -1;
+        float loadW = 0;
         if (!inverterConnected)
         {
             text += "\xE2\x9A\xA0\xEF\xB8\x8F Inverter not connected\n"; // ⚠️
@@ -1507,6 +1888,8 @@ struct TelegramService::Impl
 
             float percentValue = -1;
             const bool okPercent = readNumber(DESCR_Battery_Percent, percentValue);
+            batteryPct = okPercent ? static_cast<int>(percentValue + 0.5f) : -1;
+            modeRaw = readText(DESCR_Inverter_Operation_Mode);
             const String percent = num(DESCR_Battery_Percent, 0, "%");
             text += "\xF0\x9F\x94\x8B Battery: " + bar10(okPercent ? static_cast<int>(percentValue + 0.5f) : -1, false) +
                     " (" + percent + ")\n"; // 🔋
@@ -1528,6 +1911,10 @@ struct TelegramService::Impl
             const bool onBattery = modeUpper.indexOf("BATTERY") >= 0;
             const String warning = filterAlerts(readText(DESCR_Warning_Code), solarConnected, onBattery);
             const String fault = filterAlerts(readText(DESCR_Fault_Code), solarConnected, onBattery);
+            alerts = (warning.length() && fault.length()) ? warning + "; " + fault : warning + fault;
+            float acIn = 0;
+            gridOff = onBattery || (readNumber(DESCR_AC_In_Voltage, acIn) && acIn < 90.0f);
+            readNumber(DESCR_AC_Out_Watt, loadW);
             if (warning.length() || fault.length())
             {
                 text += "\xE2\x9A\xA0\xEF\xB8\x8F";
@@ -1543,6 +1930,12 @@ struct TelegramService::Impl
         summarySnapshot = text;
         snapshotMs = millis();
         lockGive();
+
+        dashRecord(inverterConnected, gridOff, batteryPct, loadW);
+        const String url = buildDashboardUrl(inverterConnected, modeRaw, alerts, solarConnected);
+        lockTake();
+        dashboardUrl = url;
+        lockGive();
     }
 };
 
@@ -1556,6 +1949,8 @@ void TelegramService::begin(std::function<bool()> networkConnected)
     _impl->lock = xSemaphoreCreateMutex();
     _impl->networkConnected = std::move(networkConnected);
     _impl->loadSettings();
+    _impl->dashInit();
+    configTime(0, 0, "pool.ntp.org", "time.google.com"); // UTC for the dashboard; the page shows the phone's local time
     if (xTaskCreate(Impl::taskEntry, "telegram", kTaskStack, _impl, 1, &_impl->task) != pdPASS)
     {
         LogSerial.printf("[Telegram] Failed to start task\n");
@@ -1677,6 +2072,7 @@ String TelegramService::statusJson() const
         doc["chatCount"] = _impl->chatIds.size();
         doc["summariesSent"] = _impl->summariesSent;
         doc["lastSummaryAgo"] = _impl->lastSummaryMs ? static_cast<long>((millis() - _impl->lastSummaryMs) / 1000) : -1;
+        doc["dashboardUrl"] = _impl->dashboardUrl;
         _impl->lockGive();
     }
     String json;

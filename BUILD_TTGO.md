@@ -277,3 +277,24 @@ Summaries end with `💾 Version: <version>`, followed by the new-version line w
 * Each release carries `Solar2MQTT_ttgo_tdisplay_telegram_V<version>.elf.gz` (debug symbols). To decode a backtrace:
   `xtensa-esp32-elf-addr2line -pfiaC -e firmware.elf <addresses>`.
 * Test builds with `-DDIAG_CRASH_TEST` crash on purpose when `crashtest` is typed in the web serial console.
+
+## Dashboard (Telegram Mini App)
+
+The summary has a 📊 Dashboard button next to Refresh. It opens `dashboard/index.html` (repository root), served by GitHub Pages
+(`custom_dashboard_url` in platformio.ini, build flag `DASHBOARD_URL`), inside Telegram: battery gauge, load, grid,
+output, temperature, time left on battery, 24 h charts of battery and load, a grid on/off strip, today's usage and
+outages, priorities and link health.
+
+* The page is static and gets no data from any server: the board puts the values and the history into the button's
+  link after `#` (the fragment, which browsers never send), rebuilt every 2 s and refreshed with every summary edit.
+  The page shows the data of the latest summary; reopening the button gives newer values.
+* History: 96 slots of 15 minutes (battery % at the end, average load in 25 W steps, minutes without grid) in RTC
+  memory, so it survives a crash or a firmware update but not a power cut. The board's clock comes from NTP (UTC); the
+  page shows times and "today" in the phone's timezone.
+* "Time left on battery" needs Device settings → Battery capacity [Wh]; it stays hidden while that is 0.
+* Mini App buttons only work in private chats; in a group the button opens the same page in the browser.
+* If Telegram rejects the link (too long), the board halves the history in the next link, and drops the button if
+  even a link without history is refused ("[Telegram] Dashboard link rejected" in the log).
+* One-time setup: GitHub → repository Settings → Pages → Deploy from a branch → the branch, folder `/ (root)`;
+  `.nojekyll` makes Pages serve the files as they are. The page is then at `https://<owner>.github.io/<repo>/dashboard/`.
+  (The upstream `Docs/` folder has a capital D, which Pages does not accept as its docs folder.)

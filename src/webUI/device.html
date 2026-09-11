@@ -64,6 +64,10 @@
       </label>
       <p class="field-note">Switch off while no PV is connected: PV warnings are hidden from the Telegram summary and the Solar page is skipped on the display.</p>
 
+      <label>Battery capacity [Wh]</label>
+      <input name="batteryWh" type="number" min="0" max="200000" step="100">
+      <p class="field-note">Usable battery energy, for example 5120 for a 51.2 V 100 Ah battery. The Telegram dashboard uses it for the time left on battery; leave 0 if unknown.</p>
+
       <div class="detailSplitter">Temperature Sensors</div>
       <label>DS18B20 GPIO</label>
       <input name="ds18b20Pin" type="number">

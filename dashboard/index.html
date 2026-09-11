@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Solar2MQTT dashboard</title>
+<link rel="icon" href="data:,">
+<!-- Opened from the bot's Dashboard button. The data is in the link after '#', which browsers never send to a server. -->
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+:root{--bg:#08131d;--panel:#102131;--border:rgba(128,166,201,.22);--text:#eef6ff;--muted:#8aa0b5;--ok:#30c977;--warn:#f6c549;--err:#ff6b57;--blue:#58b8ff}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text)}
+body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;padding:12px 12px 28px;max-width:520px;margin:0 auto}
+.pn{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:12px;margin-top:10px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.lb,.sm{font-size:12px;color:var(--muted)}
+.big{font-size:26px;font-weight:600;line-height:1.2}
+.mid{font-size:18px;font-weight:600}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+.tiles .pn{margin-top:0}
+.trk{height:8px;border-radius:4px;background:rgba(128,166,201,.18);overflow:hidden;margin-top:8px}
+.trk div{height:100%;border-radius:4px;background:var(--warn)}
+.pill{font-size:13px;padding:4px 10px;border-radius:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tl{display:flex;gap:1px;margin-top:8px;height:14px}
+.tl span{flex:1;border-radius:2px}
+.kv{display:flex;justify-content:space-between;gap:12px;font-size:13px;padding:3px 0}
+.kv span:first-child{color:var(--muted);white-space:nowrap}
+.kv span:last-child{text-align:right}
+.chart{position:relative;height:110px;margin-top:6px}
+.chart.small{height:70px}
+.key{display:inline-block;width:9px;height:9px;border-radius:2px;margin:0 4px 0 10px}
+.hidden{display:none!important}
+.empty{text-align:center;color:var(--muted);padding-top:35vh}
+</style>
+</head>
+<body>
+<div id="empty" class="empty hidden">Open this page with the 📊 Dashboard button under the Solar2MQTT summary in Telegram.</div>
+<main id="app" class="hidden">
+  <div class="row">
+    <span id="pill" class="pill"></span>
+    <span id="age" class="sm"></span>
+  </div>
+  <div class="pn row" style="justify-content:flex-start;gap:14px">
+    <svg width="96" height="96" viewBox="0 0 96 96" aria-hidden="true">
+      <circle cx="48" cy="48" r="40" fill="none" stroke="rgba(128,166,201,.18)" stroke-width="9"/>
+      <circle id="ring" cx="48" cy="48" r="40" fill="none" stroke="#30c977" stroke-width="9" stroke-linecap="round" stroke-dasharray="251.3" stroke-dashoffset="251.3" transform="rotate(-90 48 48)"/>
+      <text id="ringTxt" x="48" y="55" text-anchor="middle" font-size="21" font-weight="600" fill="#eef6ff">–</text>
+    </svg>
+    <div>
+      <div class="lb">🔋 Battery</div>
+      <div id="battLine" style="font-size:15px;margin-top:4px"></div>
+      <div id="battNote" class="sm" style="margin-top:4px"></div>
+    </div>
+  </div>
+  <div id="leftPanel" class="pn row hidden"><span class="lb">⏳ Time left at this load</span><span id="left" class="mid" style="color:var(--warn)"></span></div>
+  <div class="tiles">
+    <div class="pn"><div class="lb">🔌 Load</div><div id="load" class="big"></div><div class="trk"><div id="loadBar"></div></div><div id="loadSub" class="sm" style="margin-top:4px"></div></div>
+    <div class="pn"><div class="lb">🏠 Grid</div><div id="grid" class="big"></div><div id="gridSub" class="sm" style="margin-top:12px"></div></div>
+    <div class="pn"><div class="lb">⚡ Output</div><div id="out" class="mid" style="margin-top:2px"></div><div id="outSub" class="sm"></div></div>
+    <div class="pn"><div class="lb">🌡 Inverter</div><div id="temp" class="mid" style="margin-top:2px"></div><div id="tempSub" class="sm"></div></div>
+    <div id="solarTile" class="pn hidden"><div class="lb">☀️ Solar</div><div id="solar" class="mid" style="margin-top:2px"></div></div>
+  </div>
+  <div id="warnPanel" class="pn hidden" style="color:var(--warn);font-size:13px"></div>
+  <div class="pn">
+    <div class="row"><span class="lb" id="histTitle">Last 24 h</span><span class="sm"><span class="key" style="background:var(--blue)"></span>battery %<span class="key" style="background:var(--warn)"></span>load kW</span></div>
+    <div id="histEmpty" class="sm hidden" style="margin-top:8px">History builds up from now on: one point every 15 minutes.</div>
+    <div id="histCharts">
+      <div class="chart"><canvas id="cB" role="img" aria-label="Battery percent over time"></canvas></div>
+      <div class="chart small"><canvas id="cL" role="img" aria-label="Average load per 15 minutes"></canvas></div>
+      <div class="lb" style="margin-top:10px">Grid <span style="color:#6ee7a6">on</span> / <span style="color:var(--warn)">partly off</span> / <span style="color:#ff8a78">off</span></div>
+      <div id="tl" class="tl"></div>
+      <div id="tlAxis" class="row sm" style="margin-top:4px"></div>
+    </div>
+  </div>
+  <div class="pn">
+    <div class="kv" id="todayRow"><span>Today</span><span id="today"></span></div>
+    <div class="kv"><span>Priorities</span><span id="prio"></span></div>
+    <div class="kv"><span>Inverter link</span><span id="link"></span></div>
+    <div class="kv"><span>Board</span><span id="board"></span></div>
+  </div>
+  <p class="sm" style="text-align:center;margin-top:14px">Data from the latest summary. Close and tap 📊 Dashboard again for newer values.</p>
+</main>
+<script>
+(function () {
+  var tg = window.Telegram && window.Telegram.WebApp;
+  if (tg) { try { tg.ready(); tg.expand(); tg.setHeaderColor('#08131d'); tg.setBackgroundColor('#08131d'); } catch (e) {} }
+  var q = new URLSearchParams(location.hash.slice(1));
+  var $ = function (id) { return document.getElementById(id); };
+  if (!q.has('v')) { $('empty').classList.remove('hidden'); return; }
+  $('app').classList.remove('hidden');
+
+  function num(k, div) { var v = q.get(k); if (v === null || v === '') return null; var n = Number(v); return isFinite(n) ? n / (div || 1) : null; }
+  function dur(s) { s = Math.max(0, Math.round(s)); var d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60); return d ? d + ' d ' + h + ' h' : h ? h + ' h ' + m + ' m' : m + ' m'; }
+  function hhmm(ts) { return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+  function b64(s) { s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; var bin = atob(s), out = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; }
+
+  var now = Date.now() / 1000, t = num('t'), age = t ? Math.max(0, now - t) : 0;
+  var connected = q.get('c') === '1', mode = q.get('m') || '';
+  var b = num('b'), bv = num('bv', 10), bc = num('bc'), bd = num('bd');
+  var l = num('l'), lp = num('lp'), lr = num('lr'), va = num('va');
+  var gv = num('gv', 10), gf = num('gf', 10), ov = num('ov', 10), of = num('of', 10), tc = num('tc'), pv = num('pv');
+  var wh = num('wh'), os = num('os'), oa = num('oa');
+  var gridOff = /battery/i.test(mode) || (gv !== null && gv < 90);
+  var outFor = os ? now - os : (oa !== null ? oa + age : null);
+
+  $('age').textContent = t ? (age < 90 ? 'updated just now' : 'updated ' + dur(age) + ' ago') : '';
+  var pill = $('pill');
+  if (!connected) { pill.textContent = 'Inverter not connected'; pill.style.background = '#3d1a16'; pill.style.color = '#ff8a78'; }
+  else if (gridOff) { pill.textContent = 'On battery' + (outFor !== null ? ' · grid out for ' + dur(outFor) : ''); pill.style.background = '#3d2a10'; pill.style.color = '#f6c549'; }
+  else { pill.textContent = 'On grid' + (bc > 0 ? ' · charging' : ''); pill.style.background = '#123b27'; pill.style.color = '#6ee7a6'; }
+
+  if (b !== null) {
+    var ring = $('ring');
+    ring.setAttribute('stroke-dashoffset', (251.3 * (1 - Math.min(100, b) / 100)).toFixed(1));
+    ring.setAttribute('stroke', b >= 50 ? '#30c977' : b >= 25 ? '#f6c549' : '#ff6b57');
+    $('ringTxt').textContent = Math.round(b) + '%';
+  }
+  var battLine = (bv !== null ? bv.toFixed(1) + ' V' : '–');
+  if (bc > 0) battLine += ' · <span style="color:#6ee7a6">⬆ ' + Math.round(bc) + ' A</span>';
+  else if (bd > 0) battLine += ' · <span style="color:#f6c549">⬇ ' + Math.round(bd) + ' A</span>';
+  $('battLine').innerHTML = battLine;
+  $('battNote').textContent = bc > 0 ? 'Charging' + (bv ? ' · ' + Math.round(bv * bc) + ' W' : '') : bd > 0 ? 'Discharging' + (bv ? ' · ' + Math.round(bv * bd) + ' W' : '') : 'Idle';
+  if (wh && gridOff && l > 0 && b !== null) { $('leftPanel').classList.remove('hidden'); $('left').textContent = '≈ ' + dur(wh * b / 100 / l * 3600); }
+
+  $('load').textContent = l !== null ? Math.round(l) + ' W' : '–';
+  $('loadBar').style.width = Math.min(100, lp || 0) + '%';
+  $('loadSub').textContent = (lp !== null ? lp + ' %' : '') + (lr ? ' of ' + (lr / 1000).toFixed(lr % 1000 ? 1 : 0) + ' kW' : '');
+  if (gridOff) { $('grid').textContent = 'Off'; $('grid').style.color = '#ff8a78'; $('gridSub').textContent = os ? 'since ' + hhmm(os) : (outFor !== null ? 'for ' + dur(outFor) : ''); }
+  else { $('grid').textContent = gv !== null ? Math.round(gv) + ' V' : '–'; $('gridSub').textContent = gf !== null ? gf.toFixed(1) + ' Hz' : ''; }
+  $('out').textContent = ov !== null ? Math.round(ov) + ' V' + (of !== null ? ' · ' + of.toFixed(1) + ' Hz' : '') : '–';
+  $('outSub').textContent = va !== null ? va + ' VA' : '';
+  $('temp').textContent = tc !== null ? tc + ' °C' : '–';
+  $('tempSub').textContent = tc === null ? '' : tc < 60 ? 'normal' : tc < 75 ? 'warm' : 'hot';
+  if (pv !== null) { $('solarTile').classList.remove('hidden'); $('solar').textContent = pv + ' W'; }
+  var w = q.get('w'); if (w) { $('warnPanel').classList.remove('hidden'); $('warnPanel').textContent = '⚠️ ' + w; }
+
+  var n = num('n') || 0, s = num('s') || 900, he = num('he'), h = q.get('h');
+  if (!n || !h) {
+    $('histEmpty').classList.remove('hidden'); $('histCharts').classList.add('hidden'); $('todayRow').classList.add('hidden');
+  } else {
+    var bytes = b64(h), batt = [], load = [], off = [], labels = [], ends = [];
+    for (var i = 0; i < n; i++) {
+      var bb = bytes[i], lb = bytes[n + i], ob = bytes[2 * n + i];
+      batt.push(bb === 255 ? null : bb);
+      load.push(lb === 255 ? null : lb * 25 / 1000);
+      off.push(ob === 255 ? null : ob);
+      var end = he ? he - (n - 1 - i) * s : null;
+      ends.push(end);
+      labels.push(end ? hhmm(end) : '−' + dur((n - 1 - i) * s));
+    }
+    $('histTitle').textContent = 'Last ' + (n * s >= 3600 ? Math.round(n * s / 3600) + ' h' : dur(n * s));
+    if (window.Chart) {
+      var gridColor = 'rgba(128,166,201,.14)', tick = '#8aa0b5';
+      var opts = function (max) { return { responsive: true, maintainAspectRatio: false, animation: false, plugins: { legend: { display: false }, tooltip: { intersect: false, mode: 'index' } }, scales: { x: { display: false }, y: { min: 0, max: max, ticks: { color: tick, font: { size: 11 }, maxTicksLimit: 3 }, grid: { color: gridColor }, border: { display: false } } } }; };
+      new Chart($('cB'), { type: 'line', data: { labels: labels, datasets: [{ data: batt, borderColor: '#58b8ff', backgroundColor: 'rgba(88,184,255,.12)', fill: true, borderWidth: 2, pointRadius: 0, tension: .3 }] }, options: opts(100) });
+      var peak = Math.max.apply(null, load.map(function (v) { return v || 0; }));
+      new Chart($('cL'), { type: 'bar', data: { labels: labels, datasets: [{ data: load, backgroundColor: '#f6c549', borderRadius: 2, barPercentage: .8, categoryPercentage: 1 }] }, options: opts(Math.max(.5, Math.ceil(peak * 2) / 2)) });
+    }
+    var tl = $('tl');
+    off.forEach(function (v) { var sp = document.createElement('span'); sp.style.background = v === null ? 'rgba(128,166,201,.18)' : v === 0 ? '#30c977' : v >= 15 ? '#ff6b57' : '#f6c549'; tl.appendChild(sp); });
+    var axis = $('tlAxis');
+    [0, .25, .5, .75, 1].forEach(function (f) { var sp = document.createElement('span'); sp.textContent = labels[Math.round(f * (n - 1))]; axis.appendChild(sp); });
+    if (he) {
+      var midnight = new Date(); midnight.setHours(0, 0, 0, 0); var from = midnight.getTime() / 1000;
+      var kwh = 0, outages = 0, offMin = 0;
+      for (var j = 0; j < n; j++) {
+        if (ends[j] === null || ends[j] <= from) continue;
+        if (load[j] !== null) kwh += load[j] * s / 3600;
+        if (off[j]) { offMin += off[j]; if (j === 0 || !off[j - 1]) outages++; }
+      }
+      $('today').textContent = 'used ≈ ' + kwh.toFixed(1) + ' kWh · ' + (outages ? outages + (outages > 1 ? ' outages, ' : ' outage, ') + dur(offMin * 60) + ' without grid' : 'no outages');
+    } else {
+      $('todayRow').classList.add('hidden');
+    }
+  }
+  var prio = [q.get('op') ? 'output ' + q.get('op') : '', q.get('cp') ? 'charger ' + q.get('cp') : ''].filter(Boolean).join(' · ');
+  $('prio').textContent = prio || '–';
+  $('link').textContent = (num('ok') || 0) + ' replies · ' + (num('na') || 0) + ' timeouts';
+  $('board').textContent = (q.get('fw') || '?') + ' · Wi-Fi ' + (q.get('rs') || '?') + ' dBm · up ' + dur(num('up') || 0);
+})();
+</script>
+</body>
+</html>
