@@ -94,7 +94,7 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
 
   function num(k, div) { var v = q.get(k); if (v === null || v === '') return null; var n = Number(v); return isFinite(n) ? n / (div || 1) : null; }
   function dur(s) { s = Math.max(0, Math.round(s)); var d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60); return d ? d + ' d ' + h + ' h' : h ? h + ' h ' + m + ' m' : m + ' m'; }
-  function hhmm(ts) { return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+  function hhmm(ts) { var d = new Date(ts * 1000), m = d.getMinutes(); return d.getHours() + ':' + (m < 10 ? '0' : '') + m; }
   function b64(s) { s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; var bin = atob(s), out = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; }
 
   var now = Date.now() / 1000, t = num('t'), age = t ? Math.max(0, now - t) : 0;
@@ -209,7 +209,14 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
               return v === null ? '' : v === 0 ? 'Grid on' : v >= slotMin ? 'Grid off' : 'Grid off ' + v + ' m';
             } } } },
           scales: {
-            x: { ticks: { color: tick, font: { size: 11 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 5 }, grid: { display: false }, border: { display: false } },
+            // Whole hours (24 h clock) under the slot in which each hour starts; every 2nd/3rd hour when the chart is too narrow.
+            x: { ticks: { color: tick, font: { size: 11 }, maxRotation: 0, autoSkip: false, callback: function (v, i) {
+              if (i === 0 || !ends[i] || !ends[i - 1]) return null;
+              var hour = new Date(ends[i] * 1000).getHours();
+              if (hour === new Date(ends[i - 1] * 1000).getHours()) return null;
+              var perHour = (this.chart.width - 40) / (n * s / 3600), step = [1, 2, 3, 4, 6].filter(function (k) { return k * perHour >= 22; })[0] || 6;
+              return hour % step ? null : hour;
+            } }, grid: { display: false }, border: { display: false } },
             y: { min: 0, max: 100, ticks: { color: tick, font: { size: 11 }, stepSize: 25, callback: function (v) { return v + '%'; } }, grid: { color: gridColor }, border: { display: false } } } }
       });
     }
