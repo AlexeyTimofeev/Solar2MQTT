@@ -1,6 +1,37 @@
-> **Fork notice:** personal fork of [softwarecrash/Solar2MQTT](https://github.com/softwarecrash/Solar2MQTT) at V2.0.4,
-> adding a LilyGO T-Display build with on-screen pages, a Telegram bot, and inverter-link and battery-reading fixes.
-> See [BUILD_TTGO.md](BUILD_TTGO.md). All credit for Solar2MQTT goes to its author; the original licence applies.
+# Solar2MQTT for the LilyGO T-Display, with a Telegram bot
+
+This is a personal fork of [softwarecrash/Solar2MQTT](https://github.com/softwarecrash/Solar2MQTT), based on its
+V2.0.4 release, for a LilyGO / TTGO T-Display (ESP32 with a 1.14" screen) connected to a PI30 inverter
+(tested with a PowMr VMII-6000). All credit for Solar2MQTT goes to its author, and the original licence applies.
+For the upstream project, its documentation and other boards, use the original repository.
+
+## What this fork adds
+
+- **Screen pages** on the T-Display: battery, load, solar and status; the two buttons switch pages.
+- **Telegram bot**: `/summary` or the Refresh button sends an inverter summary and replaces the previous one;
+  optional automatic summary every minute; alerts for low battery, high load and a lost inverter connection;
+  several chat IDs; `/restart`.
+- **More reliable inverter link**: unanswered requests are retried, a short pause lets the inverter resynchronise
+  after a run of timeouts, and the connection status tolerates brief gaps. Link counters are in `/api/data`.
+- **Battery guard** against the inverter's occasional stray 0 % reading.
+- **Settings** for all of the above in the web interface (Telegram page, solar on/off switch).
+
+## Install and update
+
+Firmware files are on the [Releases](../../releases) page.
+
+- **New board, over USB:** flash `Solar2MQTT_ttgo_tdisplay_telegram_V<version>.bin` at address `0x0`
+  (for example with [ESP Web Tool](https://espressif.github.io/esptool-js/) or `esptool.py write_flash 0x0 <file>`).
+- **Board already running Solar2MQTT:** upload the `.bin.ota` file on its Firmware page.
+- **Later updates:** the board's Firmware page checks this fork's releases and installs new versions.
+
+After the first start, join the Wi-Fi network `Solar2MQTT-AP` and open `192.168.4.1` to set up Wi-Fi.
+Wiring, the Telegram setup and build instructions are in [BUILD_TTGO.md](BUILD_TTGO.md).
+Inverter link on the T-Display: GPIO26 (TX) and GPIO27 (RX) through a MAX3232 RS232 level shifter.
+
+---
+
+*The original Solar2MQTT README follows.*
 
 # Solar2MQTT [![GitHub release](https://img.shields.io/github/release/softwarecrash/Solar2MQTT?include_prereleases=&sort=semver&color=blue)](https://github.com/softwarecrash/Solar2MQTT/releases/latest) [![Discord](https://img.shields.io/discord/1007020337482973254?logo=discord&label=Discord)](https://discord.gg/fb2nZWDExz)
 
