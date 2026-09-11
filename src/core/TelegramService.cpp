@@ -657,6 +657,7 @@ struct TelegramService::Impl
         {
             text += "\n\xF0\x9F\x86\x95 <b>New version " + updater->latestVersion() + " available</b>, send /upgrade"; // 🆕
         }
+        text += "\n<i>\xF0\x9F\x92\xBE Firmware: " + runningVersion() + "</i>"; // 💾, always the last line
         return text;
     }
 

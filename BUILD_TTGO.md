@@ -245,3 +245,5 @@ CI publishes a release of this fork for every `v*` tag, and the board's updater 
   bootloader roll back to the previous firmware. Power-cycling the board in that window therefore also rolls back.
 * The board shares GitHub's limit of 60 unauthenticated API requests per hour with every other device on the same
   internet connection.
+
+Summaries end with `💾 Firmware: <version>`, below the optional new-version line.
