@@ -158,12 +158,12 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
       anim.setAttribute('dur', Math.max(0.8, 4 - f[3] / 1500).toFixed(1) + 's'); anim.setAttribute('repeatCount', 'indefinite');
       mp.setAttribute('href', '#' + f[0]); anim.appendChild(mp); dot.appendChild(anim); svg.appendChild(dot);
     });
-    // Estimated time until the inverter's low-battery cut-off at this load; on grid: how long the battery would last now.
+    // During an outage: estimated time until the inverter's low-battery cut-off at this load (nothing while on grid).
     var battDrawW = loadW / effF + idleW;
-    if (wh && b !== null && battDrawW > 0) {
+    if (gridOff && wh && b !== null && battDrawW > 0) {
       var leftS = wh * Math.max(b - reserve, 0) / 100 / battDrawW * 3600;
       $('flowLimit').innerHTML = '⏳ Battery discharge time <b>≈ ' + dur(leftS) + '</b>';
-      $('flowLimit').style.color = gridOff ? '#f6c549' : '';
+      $('flowLimit').style.color = '#f6c549';
     }
   }
   if (gridOff) { $('grid').textContent = 'Off'; $('grid').style.color = '#ff8a78'; $('gridSub').textContent = os ? 'since ' + hhmm(os) : (outFor !== null ? 'for ' + dur(outFor) : ''); }
