@@ -235,10 +235,14 @@ compiled out, and their hardware research stays in the `docs-*.md` files.
 CI publishes a release of this fork for every `v*` tag, and the board's updater reads `AlexeyTimofeev/Solar2MQTT`.
 
 * Web UI: the Firmware page checks for a newer release and installs it.
-* Telegram: `/upgrade` checks for a newer release and installs it. After the restart the bot reports
-  "Firmware updated to X", or that the update did not complete.
 * Summaries end with "New version X available", and get an Upgrade button under Refresh, once the board's own check (2 minutes after start,
   then every 12 hours) has found a newer release.
+* Telegram: the Upgrade button (or `/upgrade`) installs the newer release without any chat messages; the button only
+  shows a short pop-up. After the restart a fresh summary replaces the old one: the version line changes and the
+  button is gone. If nothing was installed (already up to date, or the check or download failed) the summary is simply
+  re-posted, and after a failure it keeps the Upgrade button for a retry. The outcome is in the board log.
+* After any restart, the first summary (automatic summaries, or the one after an upgrade) goes out 45 seconds after
+  boot, once the inverter has reported, rather than right away with blank values. A Refresh press is answered at once.
 * A classic ESP32 cannot hold two TLS sessions at once, so the updater pauses the bot's connection while it talks to
   GitHub; alerts raised meanwhile are sent when the bot is back.
 * A newly installed image runs on probation: until the bot has connected, or for three minutes, a restart makes the

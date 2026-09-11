@@ -39,6 +39,7 @@ constexpr size_t kBatteryAlertCount = sizeof(kBatteryAlertLevels) / sizeof(kBatt
 constexpr int kBatteryRearmMargin = 3;
 constexpr uint32_t kBatteryConfirmMs = 30000; // a level must stay crossed this long before it alerts
 constexpr uint32_t kAutoSummaryIntervalMs = 60000;
+constexpr uint32_t kBootSummaryDelayMs = 45000; // first summary after a restart, once the inverter values are in
 constexpr uint32_t kFirstUpdateCheckMs = 120000;                 // first look for new firmware after boot
 constexpr uint32_t kUpdateCheckIntervalMs = 12UL * 3600UL * 1000UL; // then twice a day
 constexpr int kLoadAlertOnPercent = 80;
@@ -207,9 +208,11 @@ struct TelegramService::Impl
     std::atomic<bool> pauseRequested {false};
     std::atomic<bool> pausedAck {false};
     GitHubOtaUpdater *updater = nullptr;
-    std::atomic<uint8_t> upgradeStage {0}; // /upgrade: 0 idle, 1 checking, 2 installing (bot task writes)
+    std::atomic<uint8_t> upgradeStage {0}; // Upgrade button or /upgrade: 0 idle, 1 checking, 2 installing (bot task writes)
     String upgradeChat;
-    bool upgradeNoticeChecked = false;
+    String offeredVersion;                 // newest release the updater has seen; survives a failed download (bot task)
+    bool firstReadyHandled = false;
+    bool bootSummaryPending = false;       // first summary after a restart, posted kBootSummaryDelayMs after boot (bot task)
     uint32_t lastUpdateCheckMs = 0;        // main thread: periodic firmware check
 
     String summarySnapshot;
@@ -640,6 +643,26 @@ struct TelegramService::Impl
         }
     }
 
+    // Newest release the updater has seen (empty when up to date). Kept through a failed download or check, so the
+    // Upgrade button stays for a retry.
+    String newVersionOffered()
+    {
+        if (updater == nullptr)
+        {
+            return String();
+        }
+        const GitHubOtaUpdater::State st = updater->state();
+        if (st == GitHubOtaUpdater::State::UpdateAvailable)
+        {
+            offeredVersion = updater->latestVersion();
+        }
+        else if (st == GitHubOtaUpdater::State::UpToDate)
+        {
+            offeredVersion = "";
+        }
+        return offeredVersion;
+    }
+
     String snapshotWithFooter()
     {
         String text;
@@ -654,9 +677,10 @@ struct TelegramService::Impl
         }
         text += "\n<i>\xF0\x9F\x95\x92 Updated: " + String(age) + "s ago</i>"; // 🕒
         text += "\n<i>\xF0\x9F\x92\xBE Version: " + runningVersion() + "</i>"; // 💾
-        if (updater != nullptr && updater->state() == GitHubOtaUpdater::State::UpdateAvailable)
+        const String offered = newVersionOffered();
+        if (offered.length())
         {
-            text += "\n\xF0\x9F\x86\x95 <b>New version " + updater->latestVersion() + " available</b>"; // 🆕
+            text += "\n\xF0\x9F\x86\x95 <b>New version " + offered + " available</b>"; // 🆕
         }
         return text;
     }
@@ -741,7 +765,7 @@ struct TelegramService::Impl
         JsonObject button = rows.add<JsonArray>().add<JsonObject>();
         button["text"] = "\xF0\x9F\x94\x84 Refresh"; // 🔄
         button["callback_data"] = "summary";
-        if (updater != nullptr && updater->state() == GitHubOtaUpdater::State::UpdateAvailable)
+        if (upgradeStage.load() == 0 && newVersionOffered().length()) // hidden while an upgrade is running
         {
             JsonObject upgradeButton = rows.add<JsonArray>().add<JsonObject>(); // second row, under Refresh
             upgradeButton["text"] = "\xE2\xAC\x86\xEF\xB8\x8F Upgrade"; // ⬆️
@@ -808,31 +832,27 @@ struct TelegramService::Impl
         return updater != nullptr ? String(updater->currentVersion()) : String(STRVERSION);
     }
 
-    // /upgrade step 1 (bot task): announce, then ask the updater to look for a newer release. The updater pauses
+    // Upgrade button or /upgrade, step 1 (bot task): ask the updater for the newest release. No chat messages: the
+    // summary is the status (after the restart it shows the new version and the button is gone). The updater pauses
     // this connection while it talks to GitHub; progressUpgrade() picks up the result once the bot is back.
-    void startUpgrade(const String &chat)
+    bool startUpgrade(const String &chat)
     {
-        if (updater == nullptr)
+        if (updater == nullptr || upgradeStage.load() != 0 || updater->isBusy())
         {
-            sendText(chat, "Firmware updates are not available in this build.", nullptr, nullptr);
-            return;
+            return false;
         }
-        if (upgradeStage.load() != 0 || updater->isBusy())
-        {
-            sendText(chat, "An update check is already running.", nullptr, nullptr);
-            return;
-        }
-        sendText(chat, "\xF0\x9F\x94\x8E Checking for new firmware (running " + runningVersion() + ")...", nullptr, nullptr); // 🔎
         upgradeChat = chat;
         upgradeStage = 1;
         if (!updater->requestCheck())
         {
             upgradeStage = 0;
-            sendText(chat, "\xE2\x9A\xA0\xEF\xB8\x8F Could not start the update check.", nullptr, nullptr); // ⚠️
+            return false;
         }
+        return true;
     }
 
-    // /upgrade steps 2 and 3 (bot task). Returns true when it has just handed the network to the updater.
+    // Steps 2 and 3 (bot task). Returns true when it has just handed the network to the updater. When it ends without
+    // an install, the summary is re-posted quietly: same version, and after a failure the Upgrade button again.
     bool progressUpgrade()
     {
         const uint8_t stage = upgradeStage.load();
@@ -841,77 +861,70 @@ struct TelegramService::Impl
             return false;
         }
         const GitHubOtaUpdater::State st = updater->state();
-        if (stage == 1)
-        {
-            upgradeStage = 0;
-            if (st == GitHubOtaUpdater::State::UpdateAvailable)
-            {
-                const String latest = updater->latestVersion();
-                prefs.putString("upgChat", upgradeChat); // the new firmware reports back to this chat
-                prefs.putString("upgVer", latest);
-                sendText(upgradeChat, "\xE2\xAC\x87\xEF\xB8\x8F <b>Installing " + latest + "</b> (running " + runningVersion() +
-                                          ").\nThe board restarts when it is done; the bot is back in about a minute.",
-                         nullptr, nullptr); // ⬇️
-                for (int attempt = 0; attempt < 3; ++attempt)
-                {
-                    if (updater->startUpdate())
-                    {
-                        upgradeStage = 2;
-                        return true;
-                    }
-                    vTaskDelay(pdMS_TO_TICKS(500));
-                }
-                prefs.remove("upgChat");
-                prefs.remove("upgVer");
-                sendText(upgradeChat, "\xE2\x9A\xA0\xEF\xB8\x8F Could not start the download.", nullptr, nullptr);
-            }
-            else if (st == GitHubOtaUpdater::State::UpToDate)
-            {
-                sendText(upgradeChat, "\xE2\x9C\x85 Already on the latest version " + runningVersion() + ".", nullptr, nullptr); // ✅
-            }
-            else
-            {
-                sendText(upgradeChat, "\xE2\x9A\xA0\xEF\xB8\x8F Update check failed: " + htmlEscape(updater->lastError()), nullptr, nullptr);
-            }
-            return false;
-        }
-        if (st == GitHubOtaUpdater::State::Success)
+        if (stage == 2 && st == GitHubOtaUpdater::State::Success)
         {
             return false; // restart pending
         }
         upgradeStage = 0;
-        prefs.remove("upgChat");
-        prefs.remove("upgVer");
-        sendText(upgradeChat, "\xE2\x9A\xA0\xEF\xB8\x8F Update failed: " + htmlEscape(updater->lastError()), nullptr, nullptr);
-        return false;
-    }
-
-    // After a restart, tell the chat that ran /upgrade whether the new version is running.
-    void sendUpgradeResultOnce()
-    {
-        if (upgradeNoticeChecked)
+        if (stage == 1 && st == GitHubOtaUpdater::State::UpdateAvailable)
         {
-            return;
+            const String latest = updater->latestVersion();
+            prefs.putString("upgVer", latest); // the new firmware logs the result and posts a fresh summary
+            for (int attempt = 0; attempt < 3; ++attempt)
+            {
+                if (updater->startUpdate())
+                {
+                    upgradeStage = 2;
+                    taskLog("[Telegram] Upgrade: installing " + latest + " (running " + runningVersion() + ")");
+                    return true;
+                }
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
+            prefs.remove("upgVer");
+            taskLog("[Telegram] Upgrade: could not start the download");
         }
-        upgradeNoticeChecked = true;
-        const String chat = prefs.getString("upgChat", "");
-        const String expected = prefs.getString("upgVer", "");
-        if (chat.length() == 0)
+        else if (stage == 1 && st == GitHubOtaUpdater::State::UpToDate)
         {
-            return;
-        }
-        prefs.remove("upgChat");
-        prefs.remove("upgVer");
-        const String running = runningVersion();
-        if (running == expected)
-        {
-            sendText(chat, "\xE2\x9C\x85 <b>Firmware updated to " + running + ".</b>", nullptr, nullptr);
+            taskLog("[Telegram] Upgrade: already on the latest version " + runningVersion());
         }
         else
         {
-            sendText(chat, "\xE2\x9A\xA0\xEF\xB8\x8F The update to " + expected + " did not complete; the board is running " + running + ".",
-                     nullptr, nullptr);
+            if (stage == 2)
+            {
+                prefs.remove("upgVer");
+            }
+            taskLog(String("[Telegram] Upgrade: ") + (stage == 1 ? "check" : "download") + " failed: " + updater->lastError());
         }
+        sendSummary(upgradeChat, 0, String(), true);
+        return false;
+    }
+
+    // Once per boot, when the bot first connects: log the result of an upgrade and schedule the first summary
+    // (after an upgrade, or when automatic summaries are on). It goes out once the inverter has reported.
+    void handleFirstReady()
+    {
+        if (firstReadyHandled)
+        {
+            return;
+        }
+        firstReadyHandled = true;
+        const String expected = prefs.isKey("upgVer") ? prefs.getString("upgVer", "") : String();
+        if (prefs.isKey("upgChat"))
+        {
+            prefs.remove("upgChat"); // written by 2.1.5 and older
+        }
+        if (expected.length())
+        {
+            prefs.remove("upgVer");
+            const String running = runningVersion();
+            taskLog(running == expected ? "[Telegram] Upgrade: now running " + running
+                                        : "[Telegram] Upgrade: the update to " + expected + " did not complete, running " + running);
+        }
+        bool autoOn;
+        lockTake();
+        autoOn = autoSummary;
+        lockGive();
+        bootSummaryPending = autoOn || expected.length() > 0;
     }
 
     static bool isSummaryText(String text)
@@ -980,9 +993,19 @@ struct TelegramService::Impl
             }
             else if (callbackData == "upgrade")
             {
-                answerCallback(callbackId, nullptr);
                 taskLog("[Telegram] Upgrade button pressed in chat " + chat);
-                startUpgrade(chat);
+                const String target = newVersionOffered();
+                if (startUpgrade(chat))
+                {
+                    // A short pop-up on the button, not a chat message.
+                    const String toast = "\xE2\xAC\x86\xEF\xB8\x8F Installing " + (target.length() ? target : String("the new version")) +
+                                         ", the board restarts when done"; // ⬆️
+                    answerCallback(callbackId, toast.c_str());
+                }
+                else
+                {
+                    answerCallback(callbackId, "An upgrade is already running");
+                }
             }
             else
             {
@@ -1010,7 +1033,15 @@ struct TelegramService::Impl
         if (command.startsWith("/upgrade"))
         {
             taskLog("[Telegram] Upgrade requested from chat " + chat);
-            startUpgrade(chat);
+            bool removeTrigger;
+            lockTake();
+            removeTrigger = deleteTrigger;
+            lockGive();
+            if (removeTrigger && messageId != 0)
+            {
+                deleteMessage(chat, messageId);
+            }
+            startUpgrade(chat); // silent like the button; progressUpgrade() re-posts the summary if nothing is installed
             return;
         }
         if (command.startsWith("/restart") || command.equalsIgnoreCase("restart"))
@@ -1126,7 +1157,7 @@ struct TelegramService::Impl
                 ready = true;
             }
 
-            sendUpgradeResultOnce();
+            handleFirstReady();
             if (progressUpgrade())
             {
                 continue; // hand the connection to the updater now instead of starting a long poll
@@ -1168,6 +1199,24 @@ struct TelegramService::Impl
 
             // Automatic summary: send when due, otherwise shorten the long poll so the next one lands on time.
             uint32_t pollTimeout = kLongPollSeconds;
+            if (bootSummaryPending)
+            {
+                // First summary after a restart: give the inverter time to report instead of posting blank values.
+                const uint32_t up = millis();
+                if (up >= kBootSummaryDelayMs)
+                {
+                    bootSummaryPending = false;
+                    lastAutoSummaryMs = up;
+                    broadcastSummary(true, String());
+                    continue;
+                }
+                const uint32_t remainingSec = (kBootSummaryDelayMs - up + 999) / 1000;
+                if (remainingSec < pollTimeout)
+                {
+                    pollTimeout = remainingSec > 0 ? remainingSec : 1;
+                }
+            }
+            else
             {
                 bool autoOn;
                 lockTake();
