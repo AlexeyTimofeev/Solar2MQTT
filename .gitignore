@@ -11,3 +11,7 @@ src/www.h
 build.log
 webserver/
 webserver/reportdevice/private/lib/config.local.php
+
+# local build logs
+*.log
+.DS_Store
