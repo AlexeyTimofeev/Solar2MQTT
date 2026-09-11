@@ -20,6 +20,16 @@ extern void writeLog(const char *format, ...);
 namespace
 {
 constexpr unsigned long kPiConnectionHoldMs = 5000UL;
+// The link counts as up while ANY command got a valid answer recently. A complete dynamic cycle takes
+// 3-5 s at 2400 baud, so judging by whole cycles turned a single slow reply into a visible disconnect.
+constexpr unsigned long kPiLinkHoldMs = 20000UL;
+// A query that times out is retried once; the inverter occasionally misses a request under load.
+constexpr unsigned long kPiLateFrameDrainMs = 250UL;
+// After a run of unanswered commands, stop transmitting for a while. A PI30 inverter parses a command until it
+// sees the terminating CR; if a byte is lost the parser stays mid-frame and every further command feeds it more
+// garbage, so continuing to poll can hold the link down. A quiet line lets its parser time out and resynchronise.
+constexpr uint8_t kPiBackoffAfterNoAnswers = 5;
+constexpr unsigned long kPiBackoffQuietMs = 3000UL;
 
 String sanitizeLogText(const String &value, size_t maxLen = 64)
 {
@@ -402,6 +412,19 @@ bool PI_Serial::loop()
     const unsigned long now = millis();
     constexpr unsigned long kNoDeviceRetryMs = 30000UL;
 
+    if (backoffUntil != 0)
+    {
+        if (static_cast<long>(now - backoffUntil) < 0)
+        {
+            return false; // keep the line idle so the inverter's command parser can reset
+        }
+        backoffUntil = 0;
+        while (this->my_serialIntf != nullptr && this->my_serialIntf->available() > 0)
+        {
+            this->my_serialIntf->read();
+        }
+    }
+
     if (protocol == NoD)
     {
         if (now < nextDetectAt)
@@ -679,13 +702,65 @@ bool PI_Serial::loop()
             }
             else
             {
-                connection = (lastSuccessfulDynamicCycleAt != 0) &&
-                             ((millis() - lastSuccessfulDynamicCycleAt) <= kPiConnectionHoldMs);
+                connection = (lastValidReplyAt != 0) &&
+                             ((millis() - lastValidReplyAt) <= kPiLinkHoldMs);
             }
             previousTime = millis();
         }
     }
     return true;
+}
+
+void PI_Serial::guardBatteryPercent(float previousPercent, float previousVoltage)
+{
+    // Some PI30 firmwares occasionally put 000 into the battery-capacity field of an otherwise valid QPIGS frame.
+    // A battery cannot fall 30 points between two polls while its voltage stays put, so keep the previous value.
+    // If the inverter keeps reporting the low value for a minute it is accepted, so a real change still gets through.
+    constexpr float kMaxPlausibleDrop = 30.0f;
+    constexpr float kSteadyVoltage = 1.0f;
+    constexpr unsigned long kBatteryHoldMs = 60000UL;
+    if (previousPercent < 0.0f || previousVoltage <= 0.0f ||
+        liveData[DESCR_Battery_Percent].isNull() || liveData[DESCR_Battery_Voltage].isNull())
+    {
+        batteryImplausibleSince = 0;
+        return;
+    }
+    const float nowPercent = liveData[DESCR_Battery_Percent].as<float>();
+    const float nowVoltage = liveData[DESCR_Battery_Voltage].as<float>();
+    const float voltageDelta = nowVoltage > previousVoltage ? nowVoltage - previousVoltage : previousVoltage - nowVoltage;
+    if (!((previousPercent - nowPercent) > kMaxPlausibleDrop && voltageDelta < kSteadyVoltage))
+    {
+        batteryImplausibleSince = 0;
+        return;
+    }
+    const unsigned long now = millis();
+    if (batteryImplausibleSince == 0)
+    {
+        batteryImplausibleSince = now;
+    }
+    if (now - batteryImplausibleSince >= kBatteryHoldMs)
+    {
+        return; // persistent for a minute: trust the inverter
+    }
+    statBatteryRejected++;
+    writeLog("[PI][WARN] battery %.0f%% -> %.0f%% at %.2f V is implausible, keeping %.0f%%; QPIGS=\"%s\"",
+             previousPercent, nowPercent, nowVoltage, previousPercent, sanitizeLogText(get.raw.qpigs, 120).c_str());
+    liveData[DESCR_Battery_Percent] = previousPercent;
+}
+
+void PI_Serial::noteValidReply()
+{
+    const unsigned long now = millis();
+    if (lastValidReplyAt != 0)
+    {
+        const unsigned long silence = now - lastValidReplyAt;
+        if (silence > statLongestSilenceMs)
+        {
+            statLongestSilenceMs = silence;
+        }
+    }
+    lastValidReplyAt = now;
+    statOk++;
 }
 
 void PI_Serial::beginCycleBackup()
@@ -1234,6 +1309,54 @@ bool PI_Serial::sendCustomCommand()
 
 String PI_Serial::requestData(String command)
 {
+    // Queries (PI30 "Q...", PI18 "^P...") are safe to repeat; setters must never be sent twice.
+    const bool retryable = command.startsWith("Q") || command.startsWith("^P");
+    String answer = requestDataOnce(command);
+    if (answer == DESCR_req_NOA && retryable && !suspendSerial.load(std::memory_order_relaxed))
+    {
+        // Absorb a late frame so it cannot be read as the answer to the retry, then ask once more.
+        const unsigned long drainStart = millis();
+        while (millis() - drainStart < kPiLateFrameDrainMs)
+        {
+            if (this->my_serialIntf->available() > 0)
+            {
+                this->my_serialIntf->read();
+            }
+            else
+            {
+                delay(5);
+            }
+        }
+        answer = requestDataOnce(command);
+        if (answer != DESCR_req_NOA)
+        {
+            statRetrySaved++;
+        }
+    }
+    if (answer == DESCR_req_NOA)
+    {
+        if (consecutiveNoAnswer < 255)
+        {
+            consecutiveNoAnswer++;
+        }
+        if (consecutiveNoAnswer >= kPiBackoffAfterNoAnswers && backoffUntil == 0)
+        {
+            backoffUntil = millis() + kPiBackoffQuietMs;
+            statBackoffs++;
+            writeLog("[PI][WARN] %u unanswered commands, pausing %lu ms to resynchronise",
+                     static_cast<unsigned>(consecutiveNoAnswer),
+                     static_cast<unsigned long>(kPiBackoffQuietMs));
+        }
+    }
+    else
+    {
+        consecutiveNoAnswer = 0;
+    }
+    return answer;
+}
+
+String PI_Serial::requestDataOnce(String command)
+{
 
     String commandBuffer = "";
     commandBuffer.reserve(128);
@@ -1282,6 +1405,7 @@ String PI_Serial::requestData(String command)
         {
             // requestOK++;
             connectionCounter = 0;
+            noteValidReply();
         }
     }
     else if (cbLen >= 2 &&
@@ -1298,21 +1422,25 @@ String PI_Serial::requestData(String command)
 
         // requestOK++;
         connectionCounter = 0;
+        noteValidReply();
     }
     else if (commandBuffer == "NAK" ||
              (cbLen >= (strlen(startChar) + 3) &&
               memcmp(cbBuf + strlen(startChar), "NAK", 3) == 0)) // catch NAK without crc
     {
         commandBuffer = "NAK";
+        noteValidReply(); // a NAK is a real answer: the link works, the command is just unsupported
     }
     else if (commandBuffer == "") // catch empty answer, its similar to NAK
     {
         writeLog("[PI][WARN] cmd=%s no answer", command.c_str());
+        statNoAnswer++;
         commandBuffer = "NOA";
     }
     else if (isEchoedCommand(commandBuffer, command, startChar))
     {
         writeLog("[PI][WARN] echo cmd=%s ignored", command.c_str());
+        statNoAnswer++;
         commandBuffer = "NOA";
     }
     else
@@ -1325,6 +1453,7 @@ String PI_Serial::requestData(String command)
                  static_cast<unsigned>(cbLen),
                  sanitizedReply.c_str());
         connectionCounter++;
+        statCrcError++;
         commandBuffer = "ERCRC";
     }
     if (busyCount.load(std::memory_order_relaxed) > 0)

@@ -562,6 +562,16 @@ void SolarInverterService::refreshRawState()
         return;
     }
 
+    // Link health counters, for diagnosing intermittent inverter silence remotely.
+    _state.doc()["EspData"]["PI_Ok"] = _client->okCount();
+    _state.doc()["EspData"]["PI_NoAnswer"] = _client->noAnswerCount();
+    _state.doc()["EspData"]["PI_CrcError"] = _client->crcErrorCount();
+    _state.doc()["EspData"]["PI_RetrySaved"] = _client->retrySavedCount();
+    _state.doc()["EspData"]["PI_SilenceMs"] = _client->msSinceValidReply();
+    _state.doc()["EspData"]["PI_LongestSilenceMs"] = _client->longestSilenceMs();
+    _state.doc()["EspData"]["PI_Backoffs"] = _client->backoffCount();
+    _state.doc()["EspData"]["PI_BattRejected"] = _client->batteryRejectedCount();
+
     _state.updateRaw("QPI", _client->get.raw.qpi);
     _state.updateRaw("QSVFW2", _client->get.raw.qsvfw2);
     _state.updateRaw("QPIRI", _client->get.raw.qpiri);

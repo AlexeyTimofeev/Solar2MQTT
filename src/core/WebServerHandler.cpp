@@ -9,8 +9,10 @@
 #include "core/MqttHandler.h"
 #include "core/SettingsPrefs.h"
 #include "core/SolarState.h"
+#include "core/TelegramService.h"
 #include "core/WiFiManager.h"
 #include "main.h"
+#include "pins.h"
 #include "solar/SolarInverterService.h"
 #include "www.h"
 
@@ -219,6 +221,8 @@ void WebServerHandler::registerRoutes()
     serveAsset("/device", device_html_gz_mime, device_html_gz, device_html_gz_len);
     serveAsset("/settingsedit", device_html_gz_mime, device_html_gz, device_html_gz_len);
     serveAsset("/devicesettings", device_html_gz_mime, device_html_gz, device_html_gz_len);
+    serveAsset("/telegram", telegram_html_gz_mime, telegram_html_gz, telegram_html_gz_len);
+    serveAsset("/telegramsettings", telegram_html_gz_mime, telegram_html_gz, telegram_html_gz_len);
     serveAsset("/firmware", firmware_html_gz_mime, firmware_html_gz, firmware_html_gz_len);
     serveAsset("/firmwareupdate", firmware_html_gz_mime, firmware_html_gz, firmware_html_gz_len);
     serveAsset("/debug", debug_html_gz_mime, debug_html_gz, debug_html_gz_len);
@@ -358,6 +362,17 @@ void WebServerHandler::registerRoutes()
         device["statusLedPin"] = _settings.get.statusLedPin();
         device["statusLedBrightness"] = _settings.get.statusLedBrightness();
         device["pollIntervalMs"] = _settings.get.pollIntervalMs();
+        device["solarConnected"] = _settings.get.solarConnected();
+#if HAS_TELEGRAM
+        JsonObject telegram = doc["telegram"].to<JsonObject>();
+        telegram["enabled"] = _settings.get.telegramEnabled();
+        telegram["token"] = _settings.get.telegramToken();
+        telegram["chatId"] = _settings.get.telegramChatId();
+        telegram["deleteTrigger"] = _settings.get.telegramDeleteTrigger();
+        telegram["batteryAlerts"] = _settings.get.telegramBatteryAlerts();
+        telegram["autoSummary"] = _settings.get.telegramAutoSummary();
+        telegram["loadAlert"] = _settings.get.telegramLoadAlert();
+#endif
 
         String json;
         serializeJson(doc, json);
@@ -669,6 +684,69 @@ void WebServerHandler::registerRoutes()
         serializeJson(response, json);
         request->send(200, "application/json", json); });
 
+#if HAS_TELEGRAM
+    _server.on("/api/settings/telegram", HTTP_POST, [this](AsyncWebServerRequest *request)
+               {
+        if (!isAuthorized(request))
+        {
+            return request->requestAuthentication();
+        }
+
+        for (int i = 0; i < request->params(); ++i)
+        {
+            const AsyncWebParameter *param = request->getParam(i);
+            const String &name = param->name();
+            const String &value = param->value();
+
+            if (name == "enabled") _settings.set.telegramEnabled(value.toInt() != 0);
+            else if (name == "token") _settings.set.telegramToken(value);
+            else if (name == "chatId") _settings.set.telegramChatId(value);
+            else if (name == "deleteTrigger") _settings.set.telegramDeleteTrigger(value.toInt() != 0);
+            else if (name == "batteryAlerts") _settings.set.telegramBatteryAlerts(value.toInt() != 0);
+            else if (name == "autoSummary") _settings.set.telegramAutoSummary(value.toInt() != 0);
+            else if (name == "loadAlert") _settings.set.telegramLoadAlert(value.toInt() != 0);
+        }
+
+        _settings.save();
+        if (_telegram != nullptr)
+        {
+            _telegram->reconfigure();
+        }
+        notifyStatusBar();
+
+        JsonDocument response;
+        response["success"] = true;
+        response["restartRequired"] = false;
+        response["message"] = _settings.get.telegramEnabled() && strlen(_settings.get.telegramToken()) > 0
+                                  ? "Telegram settings applied. Bot reconnecting."
+                                  : "Telegram bot disabled.";
+        String json;
+        serializeJson(response, json);
+        request->send(200, "application/json", json); });
+
+    _server.on("/api/telegram/status", HTTP_GET, [this](AsyncWebServerRequest *request)
+               {
+        if (!isAuthorized(request))
+        {
+            return request->requestAuthentication();
+        }
+        request->send(200, "application/json", _telegram != nullptr ? _telegram->statusJson() : String("{\"supported\":false}")); });
+
+    _server.on("/api/telegram/test", HTTP_POST, [this](AsyncWebServerRequest *request)
+               {
+        if (!isAuthorized(request))
+        {
+            return request->requestAuthentication();
+        }
+        JsonDocument response;
+        const bool queued = (_telegram != nullptr) && _telegram->requestSummary();
+        response["success"] = queued;
+        response["message"] = queued ? "Summary queued for the paired chat." : "Telegram service not running.";
+        String json;
+        serializeJson(response, json);
+        request->send(queued ? 200 : 503, "application/json", json); });
+#endif
+
     _server.on("/api/settings/device", HTTP_POST, [this](AsyncWebServerRequest *request)
                {
         if (!isAuthorized(request))
@@ -698,6 +776,7 @@ void WebServerHandler::registerRoutes()
             else if (name == "statusLedPin") _settings.set.statusLedPin(value.toInt());
             else if (name == "statusLedBrightness") _settings.set.statusLedBrightness(static_cast<uint16_t>(value.toInt()));
             else if (name == "pollIntervalMs") _settings.set.pollIntervalMs(value.toInt());
+            else if (name == "solarConnected") _settings.set.solarConnected(value.toInt() != 0);
         }
 
         _settings.save();
@@ -1033,6 +1112,8 @@ void WebServerHandler::buildStatusJson(JsonDocument &doc)
     doc["simulation"] = _inverterService.simulationEnabled();
     doc["simulationProtocol"] = _inverterService.simulationEnabled() ? "PI30" : "";
     doc["deviceName"] = snapshot["EspData"]["Device_name"];
+    doc["telegramSupported"] = HAS_TELEGRAM ? true : false;
+    doc["telegramConnected"] = (_telegram != nullptr) && _telegram->isReady();
     doc["fw"] = snapshot["EspData"]["sw_version"];
     doc["buildVariant"] = BUILD_VARIANT;
     doc["build"] = BUILD_VARIANT;

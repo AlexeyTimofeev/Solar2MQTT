@@ -158,6 +158,16 @@ bool PI_Serial::PIXX_QPIGS()
   const char *const *qpigsList = nullptr;
   unsigned int qpigsList_length = 0;
   String previousOperationMode;
+  float previousBatteryPercent = -1.0f;
+  float previousBatteryVoltage = -1.0f;
+  if (!liveData[DESCR_Battery_Percent].isNull())
+  {
+    previousBatteryPercent = liveData[DESCR_Battery_Percent].as<float>();
+  }
+  if (!liveData[DESCR_Battery_Voltage].isNull())
+  {
+    previousBatteryVoltage = liveData[DESCR_Battery_Voltage].as<float>();
+  }
   if (liveData[DESCR_Inverter_Operation_Mode].is<JsonVariantConst>())
   {
     const char *modeText = liveData[DESCR_Inverter_Operation_Mode].as<const char *>();
@@ -370,6 +380,7 @@ bool PI_Serial::PIXX_QPIGS()
       }
     }
 
+    guardBatteryPercent(previousBatteryPercent, previousBatteryVoltage);
     normalizeBusTemperature();
 
     return true;

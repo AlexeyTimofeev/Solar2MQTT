@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Solar2MQTT Telegram</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <canvas id="particleCanvas"></canvas>
+
+  <div id="container">
+    <div id="header">
+      <a href="/"><img id="logo" src="/logo.svg" alt="Solar2MQTT Logo"></a>
+      <h1>Telegram Settings</h1>
+    </div>
+
+    <div id="statusbar"></div>
+
+    <form id="telegramForm" class="panel">
+      <div class="panel-title">Telegram Bot</div>
+
+      <div class="detailSplitter">Status</div>
+      <p class="field-note" id="telegramStatusText">Loading status...</p>
+
+      <div class="detailSplitter">Bot</div>
+
+      <label class="switch-row" for="telegramEnabled">
+        <span>Enable Telegram bot</span>
+        <input type="checkbox" id="telegramEnabled" name="enabled" value="1" class="ea-switch">
+      </label>
+
+      <label for="telegramToken">Bot token</label>
+      <input type="password" id="telegramToken" name="token" autocomplete="off" placeholder="123456789:ABC...">
+      <p class="field-note">Create a bot with <code>@BotFather</code> in Telegram and paste its token here.</p>
+
+      <label for="telegramChatId">Chat IDs (comma separated)</label>
+      <input type="text" id="telegramChatId" name="chatId" autocomplete="off" inputmode="numeric" placeholder="e.g. 123456789, 987654321">
+      <p class="field-note">Leave empty first: send <code>/start</code> to your bot and it replies with the chat id. Several ids can be listed, separated by commas. Every listed chat can request summaries and receives the automatic summaries and alerts; each chat keeps only its latest summary.</p>
+
+      <div class="detailSplitter">Behaviour</div>
+
+      <label class="switch-row" for="telegramDeleteTrigger">
+        <span>Delete the command message too</span>
+        <input type="checkbox" id="telegramDeleteTrigger" name="deleteTrigger" value="1" class="ea-switch">
+      </label>
+      <p class="field-note">Every new summary removes the previous summary. With this switch on, your <code>/summary</code> or <code>Summary</code> message is removed as well, so the chat only ever shows the latest summary.</p>
+
+      <label class="switch-row" for="telegramBatteryAlerts">
+        <span>Battery alerts at 30 / 25 / 20 / 15 / 10 %</span>
+        <input type="checkbox" id="telegramBatteryAlerts" name="batteryAlerts" value="1" class="ea-switch">
+      </label>
+      <p class="field-note">Sends a message when the battery percentage drops through one of these levels. A level re-arms after the battery climbs 3 points back above it.</p>
+
+      <label class="switch-row" for="telegramAutoSummary">
+        <span>Automatic summary every minute</span>
+        <input type="checkbox" id="telegramAutoSummary" name="autoSummary" value="1" class="ea-switch">
+      </label>
+      <p class="field-note">Sends a fresh summary every 60 seconds and removes the previous one. Automatic summaries arrive silently; a manual summary restarts the timer.</p>
+
+      <label class="switch-row" for="telegramLoadAlert">
+        <span>Summary with sound when load exceeds 80 %</span>
+        <input type="checkbox" id="telegramLoadAlert" name="loadAlert" value="1" class="ea-switch">
+      </label>
+      <p class="field-note">Sends one immediate summary with notification sound and a "High load" headline when the load goes above 80 %. It re-arms once the load falls below 70 %.</p>
+
+      <div class="button-stack actions">
+        <button type="submit" class="btn">Save</button>
+        <button type="button" class="btn btn-outline" id="telegramTestBtn">Send summary now</button>
+        <a class="btn btn-outline" href="/menu">Back</a>
+      </div>
+    </form>
+  </div>
+
+  <div id="toast"><span id="toast-icon">i</span><span id="toast-msg"></span></div>
+  <script src="/statusbar.js"></script>
+  <script src="/backgroundCanvas.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

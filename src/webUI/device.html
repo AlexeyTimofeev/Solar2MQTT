@@ -58,6 +58,12 @@
       <label>Poll Interval [ms]</label>
       <input name="pollIntervalMs" type="number">
 
+      <label class="switch-row" for="solarConnected">
+        <span>Solar panels connected</span>
+        <input type="checkbox" id="solarConnected" name="solarConnected" value="1" class="ea-switch">
+      </label>
+      <p class="field-note">Switch off while no PV is connected: PV warnings are hidden from the Telegram summary and the Solar page is skipped on the display.</p>
+
       <div class="detailSplitter">Temperature Sensors</div>
       <label>DS18B20 GPIO</label>
       <input name="ds18b20Pin" type="number">

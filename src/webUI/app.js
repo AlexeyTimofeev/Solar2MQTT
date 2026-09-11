@@ -827,7 +827,7 @@ async function download(url, filename, type) {
 }
 
 async function loadSettings() {
-  if (!hasAny(["networkForm", "mqttForm", "deviceForm"])) {
+  if (!hasAny(["networkForm", "mqttForm", "deviceForm", "telegramForm"])) {
     return;
   }
 
@@ -835,6 +835,7 @@ async function loadSettings() {
   fillForm("networkForm", data.network);
   fillForm("mqttForm", data.mqtt);
   fillForm("deviceForm", data.device);
+  fillForm("telegramForm", data.telegram);
   syncMqttModeSelection();
   syncRangeValue("statusLedBrightness", "statusLedBrightnessValue");
 }
@@ -1045,6 +1046,39 @@ window.addEventListener("DOMContentLoaded", async () => {
     showNotice(result?.message || "Device settings applied.");
   });
 
+  bindSubmit("telegramForm", async (form) => {
+    const result = await postForm("/api/settings/telegram", form);
+    showNotice(result?.message || "Telegram settings applied.");
+    refreshTelegramStatus();
+  });
+
+  const telegramTestBtn = byId("telegramTestBtn");
+  if (telegramTestBtn) {
+    telegramTestBtn.addEventListener("click", async () => {
+      try {
+        const result = await fetchJson("/api/telegram/test", { method: "POST" });
+        showNotice(result?.message || "Summary queued.");
+      } catch (error) {
+        showNotice(error.message, true);
+      }
+      window.setTimeout(refreshTelegramStatus, 4000);
+    });
+  }
+  if (byId("telegramStatusText")) {
+    refreshTelegramStatus();
+    window.setInterval(refreshTelegramStatus, 5000);
+  }
+  const telegramMenuBtn = byId("telegramMenuBtn");
+  if (telegramMenuBtn) {
+    try {
+      const status = await fetchJson("/api/status");
+      if (status?.telegramSupported) {
+        telegramMenuBtn.hidden = false;
+      }
+    } catch (error) {
+    }
+  }
+
   bindSubmit("commandForm", async (form) => {
     await postForm("/api/command", form);
     const commandInput = byId("commandInput");
@@ -1151,3 +1185,36 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   await loadDataPreview();
 });
+
+async function refreshTelegramStatus() {
+  const node = byId("telegramStatusText");
+  if (!node) {
+    return;
+  }
+  try {
+    const status = await fetchJson("/api/telegram/status");
+    if (!status?.supported) {
+      node.textContent = "This firmware build has no Telegram support.";
+      return;
+    }
+    if (!status.enabled) {
+      node.textContent = "Bot disabled.";
+      return;
+    }
+    let text = status.ready ? `Connected as @${status.botUsername || "?"}.` : "Connecting...";
+    text += status.chatConfigured ? " Chat paired." : " No chat id yet: send /start to the bot to get it.";
+    if (status.summariesSent > 0) {
+      text += ` ${status.summariesSent} summaries sent`;
+      if (status.lastSummaryAgo >= 0) {
+        text += `, last ${status.lastSummaryAgo} s ago`;
+      }
+      text += ".";
+    }
+    if (status.lastError) {
+      text += ` Last error: ${status.lastError}`;
+    }
+    node.textContent = text;
+  } catch (error) {
+    node.textContent = "Status unavailable.";
+  }
+}
