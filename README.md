@@ -8,16 +8,20 @@ For the upstream project, its documentation and other boards, use the original r
 ## What this fork adds
 
 - **Screen pages** on the T-Display: battery, load, solar and status; the two buttons switch pages.
-- **Telegram bot**: `/summary` or the Refresh button sends an inverter summary and replaces the previous one;
-  optional automatic summary every minute; alerts for low battery, high load and a lost inverter connection;
-  several chat IDs; `/restart`; an Upgrade button under the summary when a newer release is out.
+- **Telegram bot**: an inverter summary that keeps itself up to date (edited in place every minute), with the time
+  left on battery during a power cut; alerts for low battery, high load and a lost inverter connection; several chat
+  IDs; `/summary`, `/restart`; an Upgrade button under the summary when a newer release is out.
+- **📊 Dashboard** (Telegram Mini App, the summary's button): battery gauge, load, grid, output, time left on
+  battery, 24 h charts of battery and load, a grid on/off strip, today's usage and outages. A static page on GitHub
+  Pages; the board puts the data into the button link, so no server is involved.
 - **Remote troubleshooting** over Telegram: `/diag` (restart reason, Wi-Fi, memory, inverter link counters), `/log`
   (the recent board log as a file), and after an unexpected restart an automatic report with the crash details and
   the log from before it.
 - **More reliable inverter link**: unanswered requests are retried, a short pause lets the inverter resynchronise
   after a run of timeouts, and the connection status tolerates brief gaps. Link counters are in `/api/data`.
 - **Battery guard** against the inverter's occasional stray 0 % reading.
-- **Settings** for all of the above in the web interface (Telegram page, solar on/off switch).
+- **Settings** for all of the above in the web interface (Telegram page; Device page: solar on/off switch, battery
+  capacity and reserve, inverter consumption and efficiency).
 
 ## Install and update
 
