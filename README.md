@@ -8,7 +8,7 @@ For the upstream project, its documentation and other boards, use the original r
 ## What this fork adds
 
 - **Screen pages** on the T-Display: battery, load, solar and status; the two buttons switch pages.
-- **Telegram bot**: an inverter summary that keeps itself up to date (edited in place every minute), with the time
+- **Telegram bot**: an inverter summary that keeps itself up to date (edited in place every 15 seconds), with the time
   left on battery during a power cut; alerts for low battery, high load and a lost inverter connection; several chat
   IDs; `/summary`, `/restart`; an Upgrade button under the summary when a newer release is out.
 - **📊 Dashboard** (Telegram Mini App, the summary's button): battery gauge, load, grid, output, time left on

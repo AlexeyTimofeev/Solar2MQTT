@@ -120,13 +120,13 @@ web UI or leave MQTT disabled.
 
 ## Automatic summary
 
-Telegram Settings has "Automatic summary every minute" (key `telegram.autoSummary`, default off). Every 60 seconds the bot
+Telegram Settings has "Automatic summary every 15 seconds" (key `telegram.autoSummary`, default off). Every 15 seconds the bot
 edits the last summary in place (no new message, no notification); the fallback Refresh button, the first summary after a
 restart and the summary after an upgrade attempt do the same. If there is no summary yet or it can no longer be edited
 (for example the user deleted it), a new silent one is sent instead. A typed `/summary` or the keyboard Refresh still
 sends a fresh summary at the bottom and deletes the old one, and alerts (high load, inverter offline) arrive as new
 messages with sound. Any manual summary restarts the timer. The long poll is shortened as the next automatic summary comes
-due, so the interval stays close to one minute.
+due, so the interval stays close to 15 seconds.
 
 ## Summary format
 
