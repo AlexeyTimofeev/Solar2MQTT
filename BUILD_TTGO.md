@@ -113,12 +113,19 @@ between long-poll cycles, so expect up to about 20 seconds of delay.
 ## Grid alerts
 
 Telegram Settings has "Summary with sound when the grid goes off or comes back" (key `telegram.gridAlerts`, default
-on). When the inverter runs on battery (or reports no AC input) for a minute, the bot sends a new summary with sound and
-a "🔴 Grid off" headline; when the grid has been back for a minute, one with "🟢 Grid back after 2h 13m". Shorter
+on). When the inverter runs on battery (or reports no AC input) for 10 seconds, the bot sends a new summary with sound and
+a "🔴 Grid off" headline; when the grid has been back for 10 seconds, one with "🟢 Grid back after 2h 13m". Shorter
 dips are ignored, nothing is announced while the inverter itself is unreachable, and the state found at boot is not
 announced. During an outage the summary's grid line reads "off for 2h 13m". As with every alert, the previous summary
 is removed, so the chat still holds only the summary. Test builds with `-DGRID_ALERT_TEST` accept `gridoff`, `gridon`
-and `gridreal` in the web serial console.
+and `gridreal` in the web serial console; `gridhigh` fakes a grid power of 5.5 kW.
+
+## Grid power alert
+
+Telegram Settings has "Summary with sound when grid power exceeds 5 kW" (key `telegram.gridPowerAlert`, default on).
+The grid power is estimated as on the dashboard (appliances + battery charging from the grid / efficiency + the
+inverter's own consumption). Once it has stayed above 5 kW for 10 seconds the bot sends one new summary with sound and
+a "⚡ Grid power 5.3 kW, above 5 kW" headline; it re-arms after the power has stayed below 5 kW for 30 seconds.
 
 ## Memory notes
 

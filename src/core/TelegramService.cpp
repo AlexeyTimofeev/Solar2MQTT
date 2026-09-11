@@ -43,7 +43,10 @@ constexpr int kBatteryAlertLevels[] = {30, 25, 20, 15, 10};
 constexpr size_t kBatteryAlertCount = sizeof(kBatteryAlertLevels) / sizeof(kBatteryAlertLevels[0]);
 constexpr int kBatteryRearmMargin = 3;
 constexpr uint32_t kBatteryConfirmMs = 30000; // a level must stay crossed this long before it alerts
-constexpr uint32_t kGridConfirmMs = 60000;    // grid off / back must last this long before it is announced
+constexpr uint32_t kGridConfirmMs = 10000;       // grid off / back must last this long before it is announced
+constexpr uint32_t kGridPowerAlertW = 5000;      // one alert when the grid power goes above this
+constexpr uint32_t kGridPowerConfirmMs = 10000;  // ... and has stayed above it this long
+constexpr uint32_t kGridPowerRearmMs = 30000;    // re-armed once it has stayed below the threshold this long
 constexpr uint32_t kAutoSummaryIntervalMs = 15000; // also refreshes the Dashboard button's data
 constexpr uint32_t kBootSummaryDelayMs = 45000; // first summary after a restart, once the inverter values are in
 constexpr uint32_t kFirstUpdateCheckMs = 120000;                 // first look for new firmware after boot
@@ -353,6 +356,9 @@ struct TelegramService::Impl
     uint32_t gridPendingSinceMs = 0; // a change has been seen but not yet confirmed
     uint32_t gridOffStartMs = 0;
     bool gridOffStartKnown = false;
+    bool gridPowerArmed = true;          // grid power alert (main thread)
+    uint32_t gridPowerAboveSinceMs = 0;
+    uint32_t gridPowerBelowSinceMs = 0;
 
     // A new summary with sound and a headline; headlines requested before it goes out are combined.
     void requestLoud(const String &headline)
@@ -458,6 +464,84 @@ struct TelegramService::Impl
         if (_settings.get.telegramGridAlerts())
         {
             requestLoud(headline);
+        }
+    }
+
+    // Main thread: power drawn from the grid, estimated like the dashboard does (the inverter does not report it):
+    // appliances + the grid's share of the battery charging / efficiency + the inverter's own consumption. 0 while off.
+    float gridPowerW()
+    {
+#ifdef GRID_ALERT_TEST
+        if (g_gridTest.load() == 3)
+        {
+            return 5500.0f;
+        }
+#endif
+        if (gridIsOff())
+        {
+            return 0.0f;
+        }
+        float loadW = 0, batteryV = 0, chargeA = 0, pvW = 0;
+        readNumber(DESCR_AC_Out_Watt, loadW);
+        const bool charging = readNumber(DESCR_Battery_Voltage, batteryV) && readNumber(DESCR_Battery_Charge_Current, chargeA);
+        if (_settings.get.solarConnected())
+        {
+            readNumber(DESCR_PV_Charging_Power, pvW);
+        }
+        const float efficiency = std::max<float>(_settings.get.inverterEfficiencyPct(), 50.0f) / 100.0f;
+        const float gridChargeW = charging ? std::max(batteryV * chargeA - pvW, 0.0f) / efficiency : 0.0f;
+        return std::max(loadW, 0.0f) + gridChargeW + _settings.get.inverterIdleW();
+    }
+
+    // Main thread: one summary with sound once the grid power has stayed above kGridPowerAlertW for kGridPowerConfirmMs;
+    // it re-arms after the power has stayed below the threshold for kGridPowerRearmMs.
+    void checkGridPower(bool inverterConnected)
+    {
+        if (!_settings.get.telegramGridPowerAlert() || !inverterConnected)
+        {
+            gridPowerAboveSinceMs = 0;
+            return;
+        }
+        const float watts = gridPowerW();
+        const uint32_t now = millis();
+        if (watts > kGridPowerAlertW)
+        {
+            gridPowerBelowSinceMs = 0;
+            if (!gridPowerArmed)
+            {
+                return;
+            }
+            if (gridPowerAboveSinceMs == 0)
+            {
+                gridPowerAboveSinceMs = now | 1u;
+                return;
+            }
+            if (now - gridPowerAboveSinceMs < kGridPowerConfirmMs)
+            {
+                return;
+            }
+            gridPowerArmed = false;
+            gridPowerAboveSinceMs = 0;
+            requestLoud("\xE2\x9A\xA1 <b>Grid power " + String(watts / 1000.0f, 1) + " kW</b>, above " + String(kGridPowerAlertW / 1000) +
+                        " kW"); // ⚡
+        }
+        else
+        {
+            gridPowerAboveSinceMs = 0;
+            if (gridPowerArmed)
+            {
+                return;
+            }
+            if (gridPowerBelowSinceMs == 0)
+            {
+                gridPowerBelowSinceMs = now | 1u;
+                return;
+            }
+            if (now - gridPowerBelowSinceMs >= kGridPowerRearmMs)
+            {
+                gridPowerArmed = true;
+                gridPowerBelowSinceMs = 0;
+            }
         }
     }
 
@@ -2082,6 +2166,7 @@ void TelegramService::loop(bool inverterConnected, int wifiRssi)
             if (msg.find("gridoff") != std::string::npos) g_gridTest = 1;
             else if (msg.find("gridon") != std::string::npos) g_gridTest = 2;
             else if (msg.find("gridreal") != std::string::npos) g_gridTest = 0;
+            else if (msg.find("gridhigh") != std::string::npos) g_gridTest = 3; // grid on, 5.5 kW drawn
         });
     }
 #endif
@@ -2104,6 +2189,7 @@ void TelegramService::loop(bool inverterConnected, int wifiRssi)
     _impl->checkBatteryAlerts(inverterConnected);
     _impl->checkLoadAlert(inverterConnected);
     _impl->checkGridChange(inverterConnected);
+    _impl->checkGridPower(inverterConnected);
     _impl->checkInverterLink(inverterConnected);
 
     // Look for new firmware 2 minutes after start and then twice a day, for the summary's "new version" line.

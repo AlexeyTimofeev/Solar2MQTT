@@ -63,7 +63,13 @@
         <span>Summary with sound when the grid goes off or comes back</span>
         <input type="checkbox" id="telegramGridAlerts" name="gridAlerts" value="1" class="ea-switch">
       </label>
-      <p class="field-note">Sends a new summary with notification sound and a "Grid off" or "Grid back after …" headline once the change has lasted a minute; shorter dips are ignored. The previous summary is removed, so the chat still holds only the summary.</p>
+      <p class="field-note">Sends a new summary with notification sound and a "Grid off" or "Grid back after …" headline once the change has lasted 10 seconds; shorter dips are ignored. The previous summary is removed, so the chat still holds only the summary.</p>
+
+      <label class="switch-row" for="telegramGridPowerAlert">
+        <span>Summary with sound when grid power exceeds 5 kW</span>
+        <input type="checkbox" id="telegramGridPowerAlert" name="gridPowerAlert" value="1" class="ea-switch">
+      </label>
+      <p class="field-note">Sends one summary with notification sound and a "Grid power … kW, above 5 kW" headline once the power drawn from the grid (appliances plus battery charging) has stayed above 5 kW for 10 seconds. It re-arms after the power has stayed below 5 kW for 30 seconds.</p>
 
       <div class="button-stack actions">
         <button type="submit" class="btn">Save</button>
