@@ -229,3 +229,19 @@ Only `ttgo_tdisplay_telegram` is maintained (running on the board at the inverte
 without the bot is parked as well, since the bot can simply be switched off in the settings. The CrowPanel and Sunton builds are parked in `parked-boards.ini`, which PlatformIO does not read; see
 that file's header to revive one when the board is available. Their board classes remain in `DisplayService.cpp`,
 compiled out, and their hardware research stays in the `docs-*.md` files.
+
+## Firmware updates, /upgrade and rollback
+
+CI publishes a release of this fork for every `v*` tag, and the board's updater reads `AlexeyTimofeev/Solar2MQTT`.
+
+* Web UI: the Firmware page checks for a newer release and installs it.
+* Telegram: `/upgrade` checks for a newer release and installs it. After the restart the bot reports
+  "Firmware updated to X", or that the update did not complete.
+* Summaries end with "New version X available, send /upgrade" once the board's own check (2 minutes after start,
+  then every 12 hours) has found a newer release.
+* A classic ESP32 cannot hold two TLS sessions at once, so the updater pauses the bot's connection while it talks to
+  GitHub; alerts raised meanwhile are sent when the bot is back.
+* A newly installed image runs on probation: until the bot has connected, or for three minutes, a restart makes the
+  bootloader roll back to the previous firmware. Power-cycling the board in that window therefore also rolls back.
+* The board shares GitHub's limit of 60 unauthenticated API requests per hour with every other device on the same
+  internet connection.

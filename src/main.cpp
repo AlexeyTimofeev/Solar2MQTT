@@ -23,6 +23,13 @@
 #endif
 #include "solar/SolarInverterService.h"
 
+// A newly installed firmware stays on probation: if it restarts before it has proven itself (Telegram connected,
+// or three minutes of uptime), the bootloader rolls back to the previous image. Overrides the core's weak hook.
+extern "C" bool verifyRollbackLater()
+{
+    return true;
+}
+
 Settings _settings;
 
 #ifndef OTA_GITHUB_OWNER
@@ -103,6 +110,33 @@ void updateRuntimeState()
 }
 } // namespace
 
+// Mark a new OTA image as valid once it has proven itself, cancelling the pending rollback.
+static void confirmFirmwareOnce()
+{
+    static bool done = false;
+    if (done)
+    {
+        return;
+    }
+#if HAS_TELEGRAM
+    const bool proven = telegramService.isReady() || millis() > 180000UL;
+#else
+    const bool proven = millis() > 180000UL;
+#endif
+    if (!proven)
+    {
+        return;
+    }
+    done = true;
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_ota_img_states_t state;
+    if (running != nullptr && esp_ota_get_state_partition(running, &state) == ESP_OK && state == ESP_OTA_IMG_PENDING_VERIFY)
+    {
+        esp_ota_mark_app_valid_cancel_rollback();
+        LogSerial.println("[OTA] New firmware confirmed, rollback cancelled");
+    }
+}
+
 void setup()
 {
     LogSerial.begin(MONITOR_SPEED);
@@ -125,6 +159,17 @@ void setup()
 #if HAS_TELEGRAM
     telegramService.begin([]() { return wifiManager.getConnectionState() && !wifiManager.isInApMode(); });
     webServerHandler.setTelegramService(&telegramService);
+    telegramService.setUpdater(&otaUpdater);
+    otaUpdater.setNetworkPauseHook([](bool pause) {
+        if (pause)
+        {
+            telegramService.pause();
+        }
+        else
+        {
+            telegramService.resume();
+        }
+    });
 #endif
 
     inverterService.setCallback([]()
@@ -213,6 +258,7 @@ void loop()
 #if HAS_TELEGRAM
     telegramService.loop(inverterService.isConnected(), wifiManager.rssi());
 #endif
+    confirmFirmwareOnce();
 #if HAS_TFT
     displayService.loop(wifiManager.getConnectionState(),
                         wifiManager.isInApMode(),
