@@ -368,7 +368,6 @@ void WebServerHandler::registerRoutes()
         telegram["enabled"] = _settings.get.telegramEnabled();
         telegram["token"] = _settings.get.telegramToken();
         telegram["chatId"] = _settings.get.telegramChatId();
-        telegram["deleteTrigger"] = _settings.get.telegramDeleteTrigger();
         telegram["batteryAlerts"] = _settings.get.telegramBatteryAlerts();
         telegram["autoSummary"] = _settings.get.telegramAutoSummary();
         telegram["loadAlert"] = _settings.get.telegramLoadAlert();
@@ -701,7 +700,6 @@ void WebServerHandler::registerRoutes()
             if (name == "enabled") _settings.set.telegramEnabled(value.toInt() != 0);
             else if (name == "token") _settings.set.telegramToken(value);
             else if (name == "chatId") _settings.set.telegramChatId(value);
-            else if (name == "deleteTrigger") _settings.set.telegramDeleteTrigger(value.toInt() != 0);
             else if (name == "batteryAlerts") _settings.set.telegramBatteryAlerts(value.toInt() != 0);
             else if (name == "autoSummary") _settings.set.telegramAutoSummary(value.toInt() != 0);
             else if (name == "loadAlert") _settings.set.telegramLoadAlert(value.toInt() != 0);

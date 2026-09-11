@@ -188,7 +188,6 @@ struct TelegramService::Impl
 {
     // Configuration copied from settings (owned by the main thread, read by the task under lock).
     bool enabled = false;
-    bool deleteTrigger = true;
     bool autoSummary = false;
     String token;
     String chatIdsRaw;
@@ -330,11 +329,11 @@ struct TelegramService::Impl
         return chats.back();
     }
 
-    void broadcastSummary(bool silent, const String &headline)
+    void broadcastSummary(bool silent, const String &headline, bool edit = false)
     {
         for (const String &id : chatList())
         {
-            sendSummary(id, 0, String(), silent, headline);
+            sendSummary(id, 0, String(), silent, headline, edit);
         }
     }
 
@@ -496,7 +495,6 @@ struct TelegramService::Impl
     {
         lockTake();
         enabled = _settings.get.telegramEnabled();
-        deleteTrigger = _settings.get.telegramDeleteTrigger();
         autoSummary = _settings.get.telegramAutoSummary();
         token = _settings.get.telegramToken();
         chatIdsRaw = _settings.get.telegramChatId();
@@ -787,7 +785,37 @@ struct TelegramService::Impl
         return true;
     }
 
-    void sendSummary(const String &chat, int64_t triggerMessageId, const String &callbackId, bool silent = false, const String &headline = String())
+    // editMessageText for a summary; "message is not modified" (nothing changed since the last edit) counts as success.
+    bool editText(const String &chat, int64_t messageId, const String &text, JsonDocument *replyMarkup)
+    {
+        JsonDocument body;
+        body["chat_id"] = chat;
+        body["message_id"] = messageId;
+        body["text"] = text;
+        body["parse_mode"] = "HTML";
+        body["disable_web_page_preview"] = true;
+        if (replyMarkup)
+        {
+            body["reply_markup"] = replyMarkup->as<JsonVariantConst>();
+        }
+        JsonDocument out;
+        if (api("editMessageText", body, out, kSendHttpTimeoutMs))
+        {
+            return true;
+        }
+        const String description = out["description"] | "";
+        if (description.indexOf("not modified") >= 0)
+        {
+            setError(""); // not an error: the summary was already up to date
+            return true;
+        }
+        return false;
+    }
+
+    // edit: update the last summary in place (automatic summaries, the Refresh button, after a restart) instead of
+    // sending a new one; falls back to a new message when there is none or it can no longer be edited.
+    void sendSummary(const String &chat, int64_t triggerMessageId, const String &callbackId, bool silent = false,
+                     const String &headline = String(), bool edit = false)
     {
         // Right after boot the main loop may not have built a snapshot yet; give it a few seconds.
         for (int i = 0; i < 20; ++i)
@@ -818,13 +846,19 @@ struct TelegramService::Impl
             upgradeButton["callback_data"] = "upgrade";
         }
 
-        int64_t newId = 0;
         String body = snapshotWithFooter();
         if (headline.length())
         {
             body = headline + "\n" + body;
         }
-        if (!sendText(chat, body, &markup, &newId, silent))
+        int64_t newId = 0;
+        bool edited = false;
+        if (edit && state.lastMsgId != 0 && editText(chat, state.lastMsgId, body, &markup))
+        {
+            newId = state.lastMsgId;
+            edited = true;
+        }
+        else if (!sendText(chat, body, &markup, &newId, silent))
         {
             answerCallback(callbackId, "Failed to send summary");
             return;
@@ -833,7 +867,7 @@ struct TelegramService::Impl
         state.lastSummaryMs = now;
         lastSummaryMs = now;
         ++summariesSent;
-        taskLog("[Telegram] Summary sent (msg " + String(static_cast<long long>(newId)) + "); task stack free " +
+        taskLog("[Telegram] Summary sent (" + String(edited ? "edited " : "") + "msg " + String(static_cast<long long>(newId)) + "); task stack free " +
                 String(static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr))) + " B, heap " +
                 String(static_cast<unsigned>(ESP.getFreeHeap())) + " B (largest " + String(static_cast<unsigned>(ESP.getMaxAllocHeap())) + " B)");
 
@@ -843,15 +877,11 @@ struct TelegramService::Impl
         {
             deleteMessage(chat, previous);
         }
-        bool removeTrigger;
-        lockTake();
-        removeTrigger = deleteTrigger;
-        lockGive();
-        if (removeTrigger && triggerMessageId != 0)
+        removeTriggerMessage(chat, triggerMessageId);
+        if (!edited)
         {
-            deleteMessage(chat, triggerMessageId);
+            persistState(); // an edit keeps the same message id, so there is nothing new to store
         }
-        persistState();
     }
 
     void sendWelcome(const String &chat)
@@ -941,7 +971,7 @@ struct TelegramService::Impl
             }
             taskLog(String("[Telegram] Upgrade: ") + (stage == 1 ? "check" : "download") + " failed: " + updater->lastError());
         }
-        sendSummary(upgradeChat, 0, String(), true);
+        sendSummary(upgradeChat, 0, String(), true, String(), true);
         return false;
     }
 
@@ -973,13 +1003,11 @@ struct TelegramService::Impl
         bootSummaryPending = autoOn || expected.length() > 0;
     }
 
+    // The user's own command message (/summary, Refresh, /diag, ...) is always removed, so the chat only shows the bot's
+    // messages.
     void removeTriggerMessage(const String &chat, int64_t messageId)
     {
-        bool remove;
-        lockTake();
-        remove = deleteTrigger;
-        lockGive();
-        if (remove && messageId != 0)
+        if (messageId != 0)
         {
             deleteMessage(chat, messageId);
         }
@@ -1120,7 +1148,7 @@ struct TelegramService::Impl
         {
             if (callbackData == "summary")
             {
-                sendSummary(chat, 0, callbackId);
+                sendSummary(chat, 0, callbackId, true, String(), true); // updates the summary the button belongs to
             }
             else if (callbackData == "upgrade")
             {
@@ -1151,14 +1179,7 @@ struct TelegramService::Impl
         {
             sendWelcome(chat);
             sendSummary(chat, 0, String());
-            bool removeTrigger;
-            lockTake();
-            removeTrigger = deleteTrigger;
-            lockGive();
-            if (removeTrigger)
-            {
-                deleteMessage(chat, messageId);
-            }
+            removeTriggerMessage(chat, messageId);
             return;
         }
         if (command.startsWith("/diag"))
@@ -1186,14 +1207,7 @@ struct TelegramService::Impl
         {
             taskLog("[Telegram] Restart requested from chat " + chat);
             sendText(chat, "\xF0\x9F\x94\x84 <b>Restarting</b>\nThe board will be back in about 15 seconds.", nullptr, nullptr); // 🔄
-            bool removeTrigger;
-            lockTake();
-            removeTrigger = deleteTrigger;
-            lockGive();
-            if (removeTrigger && messageId != 0)
-            {
-                deleteMessage(chat, messageId);
-            }
+            removeTriggerMessage(chat, messageId);
             persistState(); // keep the summary message id so cleanup still works after the reboot
             g_restartAt = millis() + 1500;
             g_pendingRestart = true;
@@ -1353,7 +1367,7 @@ struct TelegramService::Impl
                 {
                     bootSummaryPending = false;
                     lastAutoSummaryMs = up;
-                    broadcastSummary(true, String());
+                    broadcastSummary(true, String(), true);
                     continue;
                 }
                 const uint32_t remainingSec = (kBootSummaryDelayMs - up + 999) / 1000;
@@ -1376,7 +1390,7 @@ struct TelegramService::Impl
                     if (lastAutoSummaryMs == 0 || since >= kAutoSummaryIntervalMs)
                     {
                         lastAutoSummaryMs = millis();
-                        broadcastSummary(true, String());
+                        broadcastSummary(true, String(), true);
                         continue;
                     }
                     const uint32_t remainingSec = (kAutoSummaryIntervalMs - since + 999) / 1000;

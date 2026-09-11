@@ -41,12 +41,6 @@
 
       <div class="detailSplitter">Behaviour</div>
 
-      <label class="switch-row" for="telegramDeleteTrigger">
-        <span>Delete the command message too</span>
-        <input type="checkbox" id="telegramDeleteTrigger" name="deleteTrigger" value="1" class="ea-switch">
-      </label>
-      <p class="field-note">Every new summary removes the previous summary. With this switch on, your <code>/summary</code> or <code>Summary</code> message is removed as well, so the chat only ever shows the latest summary.</p>
-
       <label class="switch-row" for="telegramBatteryAlerts">
         <span>Battery alerts at 30 / 25 / 20 / 15 / 10 %</span>
         <input type="checkbox" id="telegramBatteryAlerts" name="batteryAlerts" value="1" class="ea-switch">
@@ -57,7 +51,7 @@
         <span>Automatic summary every minute</span>
         <input type="checkbox" id="telegramAutoSummary" name="autoSummary" value="1" class="ea-switch">
       </label>
-      <p class="field-note">Sends a fresh summary every 60 seconds and removes the previous one. Automatic summaries arrive silently; a manual summary restarts the timer.</p>
+      <p class="field-note">Updates the summary in place every 60 seconds, without a new message or notification. A manual summary restarts the timer.</p>
 
       <label class="switch-row" for="telegramLoadAlert">
         <span>Summary with sound when load exceeds 80 %</span>

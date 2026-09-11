@@ -8,7 +8,6 @@
   X(BOOL,   "telegram", "enabled", telegramEnabled, false, 0, 1) \
   X(STRING, "telegram", "token", telegramToken, "", 0, 0) \
   X(STRING, "telegram", "chatId", telegramChatId, "", 0, 0) \
-  X(BOOL,   "telegram", "deleteTrigger", telegramDeleteTrigger, true, 0, 1) \
   X(BOOL,   "telegram", "batteryAlerts", telegramBatteryAlerts, false, 0, 1) \
   X(BOOL,   "telegram", "autoSummary", telegramAutoSummary, false, 0, 1) \
   X(BOOL,   "telegram", "loadAlert", telegramLoadAlert, false, 0, 1)

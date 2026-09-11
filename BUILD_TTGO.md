@@ -60,8 +60,8 @@ MQTT stays available; leave the MQTT host empty if you do not need it.
 * `/summary`, the persistent **Refresh** keyboard button, or the inline **🔄 Refresh** button under the last
   summary all send a fresh inverter summary: mode, battery percent/voltage/current, solar watts, load watts and
   percent, grid voltage/frequency, heatsink temperature, warnings/faults, Wi-Fi RSSI and uptime.
-* Every new summary deletes the previous summary message, so the chat only keeps the latest one. With
-  "Delete the command message too" enabled (default) your own `/summary` or `Summary` message is removed as well.
+* The chat only keeps the latest summary: a new one deletes the previous message (or edits it in place, see
+  "Automatic summary"), and your own command message (`/summary`, Refresh, `/diag`, ...) is always removed.
 * `/start` (or `/help`) shows the persistent Summary button and sends a first summary.
 * Only the paired chat id is served. Before pairing, any chat that writes to the bot gets its chat id back
   so you can enter it in the web UI. Everything else is ignored.
@@ -84,7 +84,7 @@ MQTT stays available; leave the MQTT host empty if you do not need it.
 | `platformio.ini` | `[env:ttgo_tdisplay_telegram]` with `-DHAS_TELEGRAM=1` |
 | `src/core/TelegramService.h/.cpp` | New: bot task, Bot API client, summary text, buttons, message cleanup |
 | `src/core/TelegramRootCa.h` | New: pinned root certificate |
-| `src/core/SettingsPrefs.schema.h` | `telegram` settings group (enabled, token, chatId, deleteTrigger), only when `HAS_TELEGRAM` |
+| `src/core/SettingsPrefs.schema.h` | `telegram` settings group (enabled, token, chatId, alerts, automatic summary), only when `HAS_TELEGRAM` |
 | `src/core/WebServerHandler.*` | `/telegramsettings` page, `/api/settings/telegram`, `/api/telegram/status`, `/api/telegram/test`, status flags |
 | `src/webUI/telegram.html`, `menu.html`, `app.js` | Settings page, menu entry (shown only when the build supports it), form handling |
 | `src/main.cpp` | Service start and 2-second summary snapshot refresh |
@@ -120,8 +120,11 @@ web UI or leave MQTT disabled.
 ## Automatic summary
 
 Telegram Settings has "Automatic summary every minute" (key `telegram.autoSummary`, default off). Every 60 seconds the bot
-sends a new summary and deletes the previous one, exactly like a manual request, but with Telegram's silent flag so it
-does not notify. Any manual summary restarts the timer. The long poll is shortened as the next automatic summary comes
+edits the last summary in place (no new message, no notification); the inline Refresh button, the first summary after a
+restart and the summary after an upgrade attempt do the same. If there is no summary yet or it can no longer be edited
+(for example the user deleted it), a new silent one is sent instead. A typed `/summary` or the keyboard Refresh still
+sends a fresh summary at the bottom and deletes the old one, and alerts (high load, inverter offline) arrive as new
+messages with sound. Any manual summary restarts the timer. The long poll is shortened as the next automatic summary comes
 due, so the interval stays close to one minute.
 
 ## Summary format
@@ -186,7 +189,7 @@ it is not built here because its RGB panel needs a PSRAM framebuffer and extra t
 ## /restart command
 
 Sending `/restart` (or the word "restart") from a paired chat reboots the board: the bot confirms with "🔄 Restarting",
-removes the command message when "delete the command message too" is on, saves its state, and triggers the firmware's
+removes the command message, saves its state, and triggers the firmware's
 normal restart path 1.5 s later. It is listed in Telegram's command menu next to /summary and /start.
 
 # Sunton ESP32-3248S035 3.5" variants (`cyd35r_telegram`, `cyd35c_telegram`, parked)
