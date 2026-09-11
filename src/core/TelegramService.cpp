@@ -1694,7 +1694,7 @@ struct TelegramService::Impl
         }
         const float usableWh = capacityWh * std::max(batteryPct - reserve, 0.0f) / 100.0f;
         const uint32_t seconds = static_cast<uint32_t>(usableWh / drawW * 3600.0f);
-        return "\xE2\x89\x88 " + DiagLog::formatDuration(seconds) + " until " + String(static_cast<int>(reserve)) + " %"; // ≈
+        return "\xE2\x89\x88 " + DiagLog::formatDuration(seconds); // ≈ 10h 18m
     }
 
     void dashInit()
@@ -1942,7 +1942,8 @@ struct TelegramService::Impl
             const String left = timeLeftText(modeRaw, okPercent ? percentValue : -1.0f);
             if (left.length())
             {
-                text += "\xE2\x8C\x9B Time left: " + left + "\n"; // ⌛
+                text.remove(text.length() - 1); // continue the battery line: "Battery: 🌖 (69%) ≈ 10h 18m"
+                text += " " + left + "\n";
             }
 
             if (solarConnected)

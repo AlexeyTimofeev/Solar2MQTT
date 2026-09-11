@@ -292,7 +292,8 @@ outages, priorities and link health.
 * History: 96 slots of 15 minutes (battery % at the end, average load in 25 W steps, minutes without grid) in RTC
   memory, so it survives a crash or a firmware update but not a power cut. The board's clock comes from NTP (UTC); the
   page shows times and "today" in the phone's timezone.
-* Time left on battery (dashboard panel, and a "⌛ Time left" line in the Telegram summary while on battery) =
+* Time left on battery (dashboard panel, and at the end of the summary's Battery line while on battery, e.g.
+  "🔋 Battery: 🌖 (69%) ≈ 10h 18m") =
   capacity × (battery % − reserve) ÷ (load ÷ efficiency + own consumption), all from Device settings: Battery
   capacity [Wh] (hidden while 0), Battery reserve [%] (the inverter's low-battery cut-off, default 10), Inverter own
   consumption [W] (default 40) and Inverter efficiency [%] (default 95).
