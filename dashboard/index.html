@@ -23,8 +23,6 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
 .trk{height:8px;border-radius:4px;background:rgba(128,166,201,.18);overflow:hidden;margin-top:8px}
 .trk div{height:100%;border-radius:4px;background:var(--warn)}
 .pill{font-size:13px;padding:4px 10px;border-radius:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.tl{display:flex;gap:1px;margin-top:8px;height:14px}
-.tl span{flex:1;border-radius:2px}
 .kv{display:flex;justify-content:space-between;gap:12px;font-size:13px;padding:3px 0}
 .kv span:first-child{color:var(--muted);white-space:nowrap}
 .kv span:last-child{text-align:right}
@@ -70,13 +68,11 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
   </div>
   <div id="warnPanel" class="pn hidden" style="color:var(--warn);font-size:13px"></div>
   <div class="pn">
-    <div class="row"><span class="lb" id="histTitle">Last 24 h</span><span class="sm"><span class="key" style="background:var(--blue)"></span>battery %<span class="key" style="background:#a78bfa"></span>load %</span></div>
+    <div class="row"><span class="lb" id="histTitle">Last 24 h</span><span class="sm"><span class="key" style="background:var(--blue)"></span>battery %<span class="key" style="background:linear-gradient(90deg,#30c977 33%,#f6c549 33% 66%,#ff6b57 66%)"></span>load %</span></div>
     <div id="histEmpty" class="sm hidden" style="margin-top:8px">History builds up from now on: one point every 15 minutes.</div>
     <div id="histCharts">
-      <div class="chart" style="height:150px"><canvas id="cB" role="img" aria-label="Battery percent and average load per 15 minutes as percent of the inverter rating"></canvas></div>
-      <div class="lb" style="margin-top:10px">Grid <span style="color:#6ee7a6">on</span> / <span style="color:var(--warn)">partly off</span> / <span style="color:#ff8a78">off</span></div>
-      <div id="tl" class="tl"></div>
-      <div id="tlAxis" class="row sm" style="margin-top:4px"></div>
+      <div class="chart" style="height:170px"><canvas id="cB" role="img" aria-label="Battery percent and average load per 15 minutes as percent of the inverter rating, bars coloured by grid state"></canvas></div>
+      <div class="sm" style="margin-top:6px;text-align:center">Load bars: <span style="color:#6ee7a6">grid on</span> · <span style="color:var(--warn)">partly off</span> · <span style="color:#ff8a78">grid off</span></div>
     </div>
   </div>
   <div class="pn">
@@ -192,25 +188,31 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
     }
     $('histTitle').textContent = 'Last ' + (n * s >= 3600 ? Math.round(n * s / 3600) + ' h' : dur(n * s));
     if (window.Chart) {
-      // One 0-100 % chart: the battery charge as a line over the load as bars against the inverter rating.
-      var ratingW = lr || 6000, loadPct = load.map(function (v) { return v === null ? null : Math.min(100, v * 100000 / ratingW); });      var gridColor = 'rgba(128,166,201,.14)', tick = '#8aa0b5';
+      // One 0-100 % chart: the battery charge as a line over the load as bars against the inverter rating. Each bar is one slot,
+      // coloured by where that load came from: green grid on, amber grid partly off, red grid off (battery), grey unknown.
+      var ratingW = lr || 6000, loadPct = load.map(function (v) { return v === null ? null : Math.min(100, v * 100000 / ratingW); });
+      var slotMin = s / 60, barColors = off.map(function (v) { return v === null ? 'rgba(128,166,201,.4)' : v === 0 ? 'rgba(48,201,119,.8)' : v >= slotMin ? 'rgba(255,107,87,.85)' : 'rgba(246,197,73,.85)'; });
+      var gridColor = 'rgba(128,166,201,.14)', tick = '#8aa0b5';
       new Chart($('cB'), {
         type: 'bar',
         data: { labels: labels, datasets: [
           { type: 'line', label: 'Battery', data: batt, order: 0, borderColor: '#58b8ff', backgroundColor: 'rgba(88,184,255,.10)', fill: true, borderWidth: 2, pointRadius: 0, tension: .3 },
-          { type: 'bar', label: 'Load', data: loadPct, order: 1, backgroundColor: 'rgba(167,139,250,.75)', borderRadius: 2, barPercentage: .8, categoryPercentage: 1 }] },
+          { type: 'bar', label: 'Load', data: loadPct, order: 1, backgroundColor: barColors, borderRadius: 2, barPercentage: .8, categoryPercentage: 1 }] },
         options: { responsive: true, maintainAspectRatio: false, animation: false,
-          plugins: { legend: { display: false }, tooltip: { intersect: false, mode: 'index', callbacks: { label: function (c) {
-            if (c.raw === null) return null;
-            return c.dataset.label === 'Load' ? 'Load ' + Math.round(c.raw) + ' % · ' + load[c.dataIndex].toFixed(1) + ' kW' : 'Battery ' + Math.round(c.raw) + ' %';
-          } } } },
-          scales: { x: { display: false }, y: { min: 0, max: 100, ticks: { color: tick, font: { size: 11 }, stepSize: 50, callback: function (v) { return v + '%'; } }, grid: { color: gridColor }, border: { display: false } } } }
+          plugins: { legend: { display: false }, tooltip: { intersect: false, mode: 'index', callbacks: {
+            label: function (c) {
+              if (c.raw === null) return null;
+              return c.dataset.label === 'Load' ? 'Load ' + Math.round(c.raw) + ' % · ' + load[c.dataIndex].toFixed(1) + ' kW' : 'Battery ' + Math.round(c.raw) + ' %';
+            },
+            footer: function (items) {
+              var v = items.length ? off[items[0].dataIndex] : null;
+              return v === null ? '' : v === 0 ? 'Grid on' : v >= slotMin ? 'Grid off' : 'Grid off ' + v + ' m';
+            } } } },
+          scales: {
+            x: { ticks: { color: tick, font: { size: 11 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 5 }, grid: { display: false }, border: { display: false } },
+            y: { min: 0, max: 100, ticks: { color: tick, font: { size: 11 }, stepSize: 50, callback: function (v) { return v + '%'; } }, grid: { color: gridColor }, border: { display: false } } } }
       });
     }
-    var tl = $('tl');
-    off.forEach(function (v) { var sp = document.createElement('span'); sp.style.background = v === null ? 'rgba(128,166,201,.18)' : v === 0 ? '#30c977' : v >= 15 ? '#ff6b57' : '#f6c549'; tl.appendChild(sp); });
-    var axis = $('tlAxis');
-    [0, .25, .5, .75, 1].forEach(function (f) { var sp = document.createElement('span'); sp.textContent = labels[Math.round(f * (n - 1))]; axis.appendChild(sp); });
     if (he) {
       var midnight = new Date(); midnight.setHours(0, 0, 0, 0); var from = midnight.getTime() / 1000;
       var kwh = 0, outages = 0, offMin = 0;
