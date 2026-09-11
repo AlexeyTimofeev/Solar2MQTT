@@ -112,8 +112,9 @@ String num(const char *key, uint8_t decimals, const char *unit, bool *ok = nullp
     return String(value, static_cast<unsigned int>(decimals)) + unit;
 }
 
-// Drops "Ok"/"0" placeholders and, when no PV is connected, every PV related entry.
-String filterAlerts(const String &raw, bool solarConnected)
+// Drops "Ok"/"0" placeholders, every PV related entry when no PV is connected, and "Line fail" while running on
+// battery (the mode line already says the grid is out).
+String filterAlerts(const String &raw, bool solarConnected, bool onBattery)
 {
     String text = raw;
     text.trim();
@@ -121,7 +122,7 @@ String filterAlerts(const String &raw, bool solarConnected)
     {
         return String();
     }
-    if (solarConnected)
+    if (solarConnected && !onBattery)
     {
         return text;
     }
@@ -142,7 +143,9 @@ String filterAlerts(const String &raw, bool solarConnected)
         item.trim();
         String upper = item;
         upper.toUpperCase();
-        if (item.length() && upper.indexOf("PV") < 0)
+        const bool dropPv = !solarConnected && upper.indexOf("PV") >= 0;
+        const bool dropLineFail = onBattery && upper.indexOf("LINE FAIL") >= 0;
+        if (item.length() && !dropPv && !dropLineFail)
         {
             if (out.length()) out += ", ";
             out += item;
@@ -1506,8 +1509,11 @@ struct TelegramService::Impl
             text += "\xF0\x9F\x8F\xA0 Grid: " + num(DESCR_AC_In_Voltage, 1, " V") + "\n"; // 🏠
             text += "\xF0\x9F\x8C\xA1 Temp: " + num(DESCR_Inverter_Bus_Temperature, 0, " \xC2\xB0" "C") + "\n"; // 🌡
 
-            const String warning = filterAlerts(readText(DESCR_Warning_Code), solarConnected);
-            const String fault = filterAlerts(readText(DESCR_Fault_Code), solarConnected);
+            String modeUpper = mode;
+            modeUpper.toUpperCase();
+            const bool onBattery = modeUpper.indexOf("BATTERY") >= 0;
+            const String warning = filterAlerts(readText(DESCR_Warning_Code), solarConnected, onBattery);
+            const String fault = filterAlerts(readText(DESCR_Fault_Code), solarConnected, onBattery);
             if (warning.length() || fault.length())
             {
                 text += "\xE2\x9A\xA0\xEF\xB8\x8F";

@@ -94,6 +94,9 @@ Notes: the bot token is stored in NVS and appears in the settings backup. Telegr
 
 ## Solar on/off switch
 
+While the inverter runs on battery (Mode: Battery) the summary leaves out the "Line fail" warning or fault; the mode line
+already shows that the grid is out.
+
 Device Settings has a "Solar panels connected" switch (default on). Switch it off while no PV is wired: the Telegram
 summary drops the Solar line and every PV related warning or fault (for example "PV loss warning"), and the display
 skips the SOLAR page. Setting key: `device.solarConnected`.
