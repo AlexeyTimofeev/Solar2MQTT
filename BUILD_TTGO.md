@@ -248,6 +248,12 @@ CI publishes a release of this fork for every `v*` tag, and the board's updater 
   boot, once the inverter has reported, rather than right away with blank values. A Refresh press is answered at once.
 * A classic ESP32 cannot hold two TLS sessions at once, so the updater pauses the bot's connection while it talks to
   GitHub; alerts raised meanwhile are sent when the bot is back.
+* The download's TLS session leaves little free memory, and on this toolchain a failed `new` aborts the board (2.1.8
+  and 2.1.9 crashed this way in `AsyncWebSocket::textAll` from the web status refresh). So while the updater works the
+  once-a-second web status refresh pauses, the status is only pushed when a web client is connected, and the web serial
+  console skips lines while the largest free block is under 8 KB. Avoid polling the web API during a download.
+* At boot the board waits up to 10 s more for Wi-Fi before starting the setup AP; after a crash the router can take
+  about 15 s to accept it again.
 * A newly installed image runs on probation: until the bot has connected, or for three minutes, a restart makes the
   bootloader roll back to the previous firmware. Power-cycling the board in that window therefore also rolls back.
 * The board shares GitHub's limit of 60 unauthenticated API requests per hour with every other device on the same

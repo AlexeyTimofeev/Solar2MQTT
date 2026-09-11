@@ -1139,6 +1139,12 @@ void WebServerHandler::buildStatusJson(JsonDocument &doc)
 
 void WebServerHandler::refreshStatusPayload()
 {
+    // A firmware download's TLS session needs nearly all free memory, and an allocation failure elsewhere
+    // (AsyncWebSocket::textAll uses operator new) aborts the board, so skip the refresh until the updater is done.
+    if (_otaUpdater.isBusy())
+    {
+        return;
+    }
     JsonDocument doc;
     buildStatusJson(doc);
 
@@ -1146,7 +1152,11 @@ void WebServerHandler::refreshStatusPayload()
     payload.reserve(2048);
     serializeJson(doc, payload);
     setLastStatusPayload(payload);
-    _wsStatus.textAll(payload);
+    // textAll allocates a shared buffer even when no client is connected.
+    if (_wsStatus.count() > 0 && ESP.getMaxAllocHeap() > payload.length() + 8192)
+    {
+        _wsStatus.textAll(payload);
+    }
 }
 
 String WebServerHandler::lastStatusPayloadCopy()

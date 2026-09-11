@@ -17,6 +17,13 @@ void waitForConsole(unsigned long timeoutMs)
     (void)timeoutMs;
 #endif
 }
+// The web serial console allocates per line (std::string growth, AsyncWebSocket::textAll) and a failed allocation
+// aborts the board, so it is skipped while memory is short (e.g. during a firmware download). Serial and the RTC log
+// still get every line.
+bool webSerialAffordable()
+{
+    return ESP.getMaxAllocHeap() > 8192;
+}
 } // namespace
 
 LogSerialClass LogSerial;
@@ -78,7 +85,10 @@ void LogSerialClass::flush()
 size_t LogSerialClass::write(uint8_t byte)
 {
     Serial.write(byte);
-    webSerial.write(&byte, 1);
+    if (webSerialAffordable())
+    {
+        webSerial.write(&byte, 1);
+    }
     DiagLog::write(&byte, 1);
     return 1;
 }
@@ -86,7 +96,10 @@ size_t LogSerialClass::write(uint8_t byte)
 size_t LogSerialClass::write(const uint8_t *buffer, size_t size)
 {
     Serial.write(buffer, size);
-    webSerial.write(buffer, size);
+    if (webSerialAffordable())
+    {
+        webSerial.write(buffer, size);
+    }
     DiagLog::write(buffer, size);
     return size;
 }

@@ -497,7 +497,22 @@ bool WiFiManager::applySavedNetworkConfig()
     haveEthernet = initEthernet();
 #endif
 
-    if (!haveEthernet && !connectToWifi())
+    bool connected = haveEthernet || connectToWifi();
+    if (!connected && (strlen(_settings.get.wifiSsid0()) > 0 || strlen(_settings.get.wifiSsid1()) > 0))
+    {
+        // After a crash or watchdog reset the access point can take longer than connectToWifi()'s 6 s to accept the
+        // board again; wait up to 10 s more before falling back to the setup AP, which also costs memory.
+        for (int i = 0; i < 20 && WiFi.status() != WL_CONNECTED; ++i)
+        {
+            delay(500);
+        }
+        connected = WiFi.status() == WL_CONNECTED;
+        if (connected)
+        {
+            LogSerial.printf("[Network] WiFi connected after a longer wait, IP: %s\n", WiFi.localIP().toString().c_str());
+        }
+    }
+    if (!connected)
     {
         startApMode();
         _isApMode = true;
