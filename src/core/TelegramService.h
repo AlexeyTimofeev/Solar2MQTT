@@ -8,6 +8,8 @@
 // and removes the previous summary message so the chat only keeps the latest one.
 // Runs its own FreeRTOS task with one persistent TLS connection to api.telegram.org.
 // Compiled to an empty stub unless HAS_TELEGRAM=1.
+class GitHubOtaUpdater;
+
 class TelegramService
 {
 public:
@@ -16,6 +18,12 @@ public:
     void reconfigure();
     bool requestSummary();
     bool isReady() const;
+    // Close the bot's TLS connection and keep it closed, so another TLS client (the firmware updater) has
+    // enough memory. Blocks until the connection is released or timeoutMs passes; resume() reopens it.
+    bool pause(uint32_t timeoutMs = 30000);
+    void resume();
+    // Firmware updater used by /upgrade, the periodic update check and the summary's "new version" line.
+    void setUpdater(GitHubOtaUpdater *updater);
     String statusJson() const;
 
 private:

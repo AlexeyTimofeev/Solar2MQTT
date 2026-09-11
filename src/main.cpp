@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <ESPAsyncWebServer.h>
+#include <esp_ota_ops.h>
 
 #include "core/Ds18b20Service.h"
 #include "core/FactoryResetManager.h"
