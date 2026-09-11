@@ -124,8 +124,8 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
   $('battLine').innerHTML = battLine;
 
   // Power flow: grid -> home, grid -> battery (charging), battery -> home (discharging). The grid ring fills with the power
-  // drawn against the inverter's rating, the battery ring with its charge; both shade from green to red (grid 3 -> 5 kW,
-  // battery 60 -> 25 %). Grid power is not reported: appliances + grid share of charging / efficiency + own use.
+  // drawn against the inverter's rating, the battery ring with its charge; both shade from green to red (grid 0.5 -> 5 kW,
+  // battery 80 -> 25 %). Grid power is not reported: appliances + grid share of charging / efficiency + own use.
   if (connected && l !== null) {
     var effF = (num('we') || 100) / 100, idleW = num('wi') || 0, limitW = lr || 6000, reserve = num('wr') || 0;
     var loadW = Math.max(l, 0), chargeW = (bv !== null && bc > 0) ? bv * bc : 0;
@@ -134,7 +134,7 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
     var gridW = gridOff ? 0 : loadW + gridChargeW + idleW;
     var kw = function (w) { return w >= 1000 ? (w / 1000).toFixed(1) + ' kW' : Math.round(w) + ' W'; };
     var scale = function (t) { return 'hsl(' + Math.round(120 * Math.max(0, Math.min(1, t))) + ',75%,52%)'; }; // 1 green, 0 red
-    var gridColor = scale(1 - (gridW - 3000) / 2000), battColor = b === null ? '#8aa0b5' : scale((b - 25) / 35);
+    var gridColor = scale(1 - (gridW - 500) / 4500), battColor = b === null ? '#8aa0b5' : scale((b - 25) / 55);
     $('flowPanel').classList.remove('hidden');
     $('gridVal').textContent = gridOff ? 'off' : '→ ' + kw(gridW);
     $('gridVal').setAttribute('fill', gridOff ? '#ff8a78' : gridColor);
@@ -161,7 +161,7 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
     var battDrawW = loadW / effF + idleW;
     if (wh && b !== null && battDrawW > 0) {
       var leftS = wh * Math.max(b - reserve, 0) / 100 / battDrawW * 3600;
-      $('flowLimit').innerHTML = (gridOff ? '⏳ Battery lasts <b>≈ ' : '⏳ On battery it would last <b>≈ ') + dur(leftS) + '</b> at this load, until ' + reserve + ' %';
+      $('flowLimit').innerHTML = '⏳ Battery discharge time: <b>≈ ' + dur(leftS) + '</b>';
       $('flowLimit').style.color = gridOff ? '#f6c549' : '';
     }
   }
