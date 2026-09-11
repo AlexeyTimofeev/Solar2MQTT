@@ -246,4 +246,4 @@ CI publishes a release of this fork for every `v*` tag, and the board's updater 
 * The board shares GitHub's limit of 60 unauthenticated API requests per hour with every other device on the same
   internet connection.
 
-Summaries end with `💾 Firmware: <version>`, below the optional new-version line.
+Summaries end with `💾 Version: <version>`, followed by the new-version line when one is available.

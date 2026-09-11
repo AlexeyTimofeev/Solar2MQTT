@@ -653,11 +653,11 @@ struct TelegramService::Impl
             text = "\xE2\x9A\xA0\xEF\xB8\x8F No inverter data yet"; // ⚠️
         }
         text += "\n<i>\xF0\x9F\x95\x92 Updated: " + String(age) + "s ago</i>"; // 🕒
+        text += "\n<i>\xF0\x9F\x92\xBE Version: " + runningVersion() + "</i>"; // 💾
         if (updater != nullptr && updater->state() == GitHubOtaUpdater::State::UpdateAvailable)
         {
             text += "\n\xF0\x9F\x86\x95 <b>New version " + updater->latestVersion() + " available</b>, send /upgrade"; // 🆕
         }
-        text += "\n<i>\xF0\x9F\x92\xBE Firmware: " + runningVersion() + "</i>"; // 💾, always the last line
         return text;
     }
 
