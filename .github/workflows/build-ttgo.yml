@@ -45,17 +45,25 @@ jobs:
       - name: Build
         run: pio run -e ttgo_tdisplay_telegram -e ttgo_tdisplay
 
+      - name: Collect firmware files
+        run: |
+          # upload-artifact skips hidden directories such as .firmware, so publish from dist/
+          mkdir -p dist
+          cp .firmware/* dist/
+          ls -l dist
+          ls dist/*.bin.ota > /dev/null
+
       - name: Upload build output
         uses: actions/upload-artifact@v4
         with:
           name: firmware-${{ github.sha }}
-          path: .firmware/*
+          path: dist/*
           if-no-files-found: error
 
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: .firmware/*
+          files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true
