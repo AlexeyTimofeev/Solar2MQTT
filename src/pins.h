@@ -20,6 +20,14 @@
 #define PIN_DS18B20 -1
 #endif
 
+#ifndef HAS_TFT
+#define HAS_TFT 0
+#endif
+
+#ifndef HAS_TELEGRAM
+#define HAS_TELEGRAM 0
+#endif
+
 #ifndef HAS_LAN
 #error "HAS_LAN must be defined via build flags"
 #endif

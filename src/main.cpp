@@ -14,6 +14,12 @@
 #include "core/WiFiManager.h"
 #include "main.h"
 #include "pins.h"
+#if HAS_TFT
+#include "core/DisplayService.h"
+#endif
+#if HAS_TELEGRAM
+#include "core/TelegramService.h"
+#endif
 #include "solar/SolarInverterService.h"
 
 Settings _settings;
@@ -47,6 +53,12 @@ Ds18b20Service ds18b20Service;
 InternalTemperatureService internalTemperatureService;
 MqttHandler mqttHandler(solarState, wifiManager, inverterService);
 StatusLedService statusLedService;
+#if HAS_TFT
+DisplayService displayService;
+#endif
+#if HAS_TELEGRAM
+TelegramService telegramService;
+#endif
 GitHubOtaUpdater otaUpdater(OTA_GITHUB_OWNER, OTA_GITHUB_REPO, STRVERSION, BUILD_VARIANT);
 WebServerHandler webServerHandler(server, wifiManager, solarState, inverterService, mqttHandler, otaUpdater);
 
@@ -100,12 +112,19 @@ void setup()
 
     _settings.begin();
     solarState.begin();
+#if HAS_TFT
+    displayService.begin();
+#endif
     statusLedService.begin(_settings.get.statusLedPin(),
                            static_cast<uint8_t>(_settings.get.statusLedBrightness()));
 
     FactoryResetManager::begin(10000, 6);
     wifiManager.begin();
     otaUpdater.begin([]() { return wifiManager.getConnectionState(); });
+#if HAS_TELEGRAM
+    telegramService.begin([]() { return wifiManager.getConnectionState() && !wifiManager.isInApMode(); });
+    webServerHandler.setTelegramService(&telegramService);
+#endif
 
     inverterService.setCallback([]()
                                 {
@@ -190,6 +209,16 @@ void loop()
     webServerHandler.setMqttConnected(mqttHandler.isConnected());
     webServerHandler.setInverterConnected(inverterService.isConnected());
     webServerHandler.loop();
+#if HAS_TELEGRAM
+    telegramService.loop(inverterService.isConnected(), wifiManager.rssi());
+#endif
+#if HAS_TFT
+    displayService.loop(wifiManager.getConnectionState(),
+                        wifiManager.isInApMode(),
+                        mqttHandler.isConnected(),
+                        inverterService.isConnected(),
+                        wifiManager.ipAddress());
+#endif
     statusLedService.loop(wifiManager.getConnectionState(),
                           strlen(_settings.get.mqttHost()) > 0,
                           mqttHandler.isConnected(),

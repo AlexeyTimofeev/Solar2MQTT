@@ -2,6 +2,20 @@
 
 #include "pins.h"
 
+// Telegram bot settings exist only in builds with HAS_TELEGRAM=1.
+#if HAS_TELEGRAM
+#define SETTINGS_ITEMS_TELEGRAM(X) \
+  X(BOOL,   "telegram", "enabled", telegramEnabled, false, 0, 1) \
+  X(STRING, "telegram", "token", telegramToken, "", 0, 0) \
+  X(STRING, "telegram", "chatId", telegramChatId, "", 0, 0) \
+  X(BOOL,   "telegram", "deleteTrigger", telegramDeleteTrigger, true, 0, 1) \
+  X(BOOL,   "telegram", "batteryAlerts", telegramBatteryAlerts, false, 0, 1) \
+  X(BOOL,   "telegram", "autoSummary", telegramAutoSummary, false, 0, 1) \
+  X(BOOL,   "telegram", "loadAlert", telegramLoadAlert, false, 0, 1)
+#else
+#define SETTINGS_ITEMS_TELEGRAM(X)
+#endif
+
 #define SETTINGS_ITEMS(X) \
   X(STRING, "network", "deviceName", deviceName, "Solar2MQTT", 0, 0) \
   X(STRING, "network", "wifiSsid0", wifiSsid0, "", 0, 0) \
@@ -34,4 +48,6 @@
   X(INT32,  "device", "ds18b20Pin", ds18b20Pin, PIN_DS18B20, -1, 48) \
   X(INT32,  "device", "statusLedPin", statusLedPin, PIN_LED_STATUS, -1, 48) \
   X(UINT16, "device", "statusLedBrightness", statusLedBrightness, 128, 0, 255) \
-  X(UINT32, "device", "pollIntervalMs", pollIntervalMs, 100, 25, 5000)
+  X(BOOL,   "device", "solarConnected", solarConnected, true, 0, 1) \
+  X(UINT32, "device", "pollIntervalMs", pollIntervalMs, 100, 25, 5000) \
+  SETTINGS_ITEMS_TELEGRAM(X)

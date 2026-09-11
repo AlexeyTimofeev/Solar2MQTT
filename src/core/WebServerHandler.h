@@ -13,6 +13,7 @@ class SolarState;
 class SolarInverterService;
 class MqttHandler;
 class GitHubOtaUpdater;
+class TelegramService;
 
 class WebServerHandler
 {
@@ -29,6 +30,7 @@ public:
     void setMqttConnected(bool value) { _mqttConnected = value; }
     void setInverterConnected(bool value) { _inverterConnected = value; }
     void notifyStatusBar();
+    void setTelegramService(TelegramService *service) { _telegram = service; }
 
 private:
     static WebServerHandler *s_self;
@@ -39,6 +41,7 @@ private:
     SolarInverterService &_inverterService;
     MqttHandler &_mqttHandler;
     GitHubOtaUpdater &_otaUpdater;
+    TelegramService *_telegram = nullptr;
     AsyncWebSocket _wsStatus;
     bool _mqttConnected;
     bool _inverterConnected;

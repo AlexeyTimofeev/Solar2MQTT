@@ -201,6 +201,18 @@ public:
     void setDelayTime(unsigned long value) { delayTime = value; }
 
     /**
+     * @brief Link statistics, for diagnosing intermittent inverter silence.
+     */
+    unsigned long okCount() const { return statOk; }
+    unsigned long noAnswerCount() const { return statNoAnswer; }
+    unsigned long crcErrorCount() const { return statCrcError; }
+    unsigned long retrySavedCount() const { return statRetrySaved; }
+    unsigned long msSinceValidReply() const { return lastValidReplyAt == 0 ? 0 : (millis() - lastValidReplyAt); }
+    unsigned long longestSilenceMs() const { return statLongestSilenceMs; }
+    unsigned long backoffCount() const { return statBackoffs; }
+    unsigned long batteryRejectedCount() const { return statBatteryRejected; }
+
+    /**
      * @brief
      *
      */
@@ -227,11 +239,26 @@ private:
     unsigned long delayTime = 100;
     unsigned long nextDetectAt = 0;
     unsigned long lastSuccessfulDynamicCycleAt = 0;
+    unsigned long lastValidReplyAt = 0;
+    unsigned long statOk = 0;
+    unsigned long statNoAnswer = 0;
+    unsigned long statCrcError = 0;
+    unsigned long statRetrySaved = 0;
+    unsigned long statLongestSilenceMs = 0;
+    unsigned long statBackoffs = 0;
+    unsigned long backoffUntil = 0;
+    uint8_t consecutiveNoAnswer = 0;
+    unsigned long batteryImplausibleSince = 0;
+    unsigned long statBatteryRejected = 0;
     byte requestCounter = 0;
 
     long long int connectionCounter = 0;
 
     byte qexCounter = 0;
+
+    String requestDataOnce(String command);
+    void noteValidReply();
+    void guardBatteryPercent(float previousPercent, float previousVoltage);
     
     String customCommandBuffer;
     JsonDocument cycleLiveBackup;
