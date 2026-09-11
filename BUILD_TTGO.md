@@ -1,0 +1,231 @@
+# Solar2MQTT V2.0.4 — TTGO T-Display variant
+
+Custom build variant `ttgo_tdisplay` for the LilyGO / TTGO T-Display (classic ESP32, 1.14" ST7789 135x240).
+Everything else is the unmodified Solar2MQTT V2.0.4 source (softwarecrash/Solar2MQTT).
+
+## What was changed
+
+| File | Change |
+|---|---|
+| `platformio.ini` | New `[env:ttgo_tdisplay]` (board `lilygo-t-display`, `HAS_TFT=1`, own pin defaults, LovyanGFX dependency) |
+| `src/pins.h` | `HAS_TFT` defaults to 0 for all other variants |
+| `src/core/DisplayService.h/.cpp` | New: TFT pages and button handling (compiled to a stub when `HAS_TFT=0`) |
+| `src/main.cpp` | Creates the display service, `begin()` after state init, `loop()` next to the status LED |
+
+## Screen pages (left button = previous, right button = next)
+
+1. **BATTERY** (default at boot) — state of charge in large digits, colour bar, battery voltage and current
+2. **LOAD** — AC output watts, load percent, output voltage/frequency, inverter mode
+3. **SOLAR** — PV charging watts, PV voltage, PV input watts
+4. **STATUS** — inverter mode (Line / Battery / ...), grid voltage/frequency, heatsink temperature, battery voltage, PV watts
+
+Header on every page: page title, page dots, link letters W (WiFi) M (MQTT) I (inverter) in green/red.
+Footer right: device IP address, or "setup: Solar2MQTT AP" while in setup mode.
+
+## Pins (defaults, changeable in the web UI under device settings)
+
+| Function | GPIO | Note |
+|---|---|---|
+| Inverter TX (ESP -> MAX3232 T1IN) | 26 | right header |
+| Inverter RX (ESP <- MAX3232 R1OUT) | 27 | right header |
+| RS485 DE/RE (Modbus inverters only) | 25 | unused for PI30 |
+| DS18B20 temperature sensor | 21 | optional |
+| Status LED | none (-1) | board has no user LED |
+| TFT (fixed) | 4 BL, 5 CS, 16 DC, 18 SCLK, 19 MOSI, 23 RST | do not reuse |
+| Buttons (fixed) | 35 next, 0 previous | |
+
+Build flags you may want to change: `TFT_ROTATION` (1 or 3 flips the screen), `TFT_BUTTON_NEXT`, `TFT_BUTTON_PREV`.
+
+## Build and flash
+
+    export PATH="$HOME/.local/bin:$PATH"
+    pio run -e ttgo_tdisplay                       # compile
+    pio run -e ttgo_tdisplay -t upload             # flash over USB (auto-detects the port)
+
+Outputs after a build:
+
+* `.firmware/Solar2MQTT_ttgo_tdisplay_V2.0.4.bin` — full image, flash at offset 0x0 with esptool or a web flasher
+* `.firmware/Solar2MQTT_ttgo_tdisplay_V2.0.4.bin.ota` — app image for the web UI update page
+
+The built-in GitHub update check cannot find a release asset for this variant, so it reports
+"No matching asset for build"; update it by rebuilding and uploading the `.bin.ota` instead.
+
+# Telegram variant (`ttgo_tdisplay_telegram`)
+
+Same hardware and screen as `ttgo_tdisplay`, plus a Telegram bot built into the firmware (`HAS_TELEGRAM=1`).
+MQTT stays available; leave the MQTT host empty if you do not need it.
+
+## What the bot does
+
+* `/summary`, the persistent **Refresh** keyboard button, or the inline **🔄 Refresh** button under the last
+  summary all send a fresh inverter summary: mode, battery percent/voltage/current, solar watts, load watts and
+  percent, grid voltage/frequency, heatsink temperature, warnings/faults, Wi-Fi RSSI and uptime.
+* Every new summary deletes the previous summary message, so the chat only keeps the latest one. With
+  "Delete the command message too" enabled (default) your own `/summary` or `Summary` message is removed as well.
+* `/start` (or `/help`) shows the persistent Summary button and sends a first summary.
+* Only the paired chat id is served. Before pairing, any chat that writes to the bot gets its chat id back
+  so you can enter it in the web UI. Everything else is ignored.
+* Transport: one long-polling HTTPS connection to `api.telegram.org`, certificate pinned to the Go Daddy Root G2
+  (`src/core/TelegramRootCa.h`), running in its own FreeRTOS task so the inverter polling and the screen never wait
+  for Telegram.
+
+## Setup
+
+1. In Telegram, talk to `@BotFather`, `/newbot`, copy the token.
+2. Open the device web UI, Menu, **Telegram Settings**: paste the token, enable the bot, Save. Leave Chat ID empty.
+3. Open your new bot in Telegram and send `/start`. It replies with your chat id.
+4. Enter that chat id in the web UI, Save. Send `/start` again: you get the Summary button and the first summary.
+5. "Send summary now" on the settings page pushes a summary to the paired chat for testing.
+
+## Files added or changed for this variant
+
+| File | Change |
+|---|---|
+| `platformio.ini` | `[env:ttgo_tdisplay_telegram]` with `-DHAS_TELEGRAM=1` |
+| `src/core/TelegramService.h/.cpp` | New: bot task, Bot API client, summary text, buttons, message cleanup |
+| `src/core/TelegramRootCa.h` | New: pinned root certificate |
+| `src/core/SettingsPrefs.schema.h` | `telegram` settings group (enabled, token, chatId, deleteTrigger), only when `HAS_TELEGRAM` |
+| `src/core/WebServerHandler.*` | `/telegramsettings` page, `/api/settings/telegram`, `/api/telegram/status`, `/api/telegram/test`, status flags |
+| `src/webUI/telegram.html`, `menu.html`, `app.js` | Settings page, menu entry (shown only when the build supports it), form handling |
+| `src/main.cpp` | Service start and 2-second summary snapshot refresh |
+
+Notes: the bot token is stored in NVS and appears in the settings backup. Telegram deletes messages older than
+48 hours only for the bot's own messages, so a very old summary may remain if the device was offline for days.
+
+## Solar on/off switch
+
+Device Settings has a "Solar panels connected" switch (default on). Switch it off while no PV is wired: the Telegram
+summary drops the Solar line and every PV related warning or fault (for example "PV loss warning"), and the display
+skips the SOLAR page. Setting key: `device.solarConnected`.
+
+## Battery alerts
+
+Telegram Settings has a "Battery alerts at 30 / 25 / 20 / 15 / 10 %" switch (default off, key `telegram.batteryAlerts`).
+When the battery percentage falls through one of these levels the bot sends a message with the current mode, load and
+battery voltage, plus the inline Summary button. A level re-arms once the battery has climbed 3 points above it, and the
+tracking restarts whenever the inverter link drops, so reconnects never produce false alerts. Alerts are delivered
+between long-poll cycles, so expect up to about 20 seconds of delay.
+
+## Memory notes
+
+The Telegram TLS session keeps roughly 55 KB of heap while connected, and every web UI request copies the state
+document, so the display draws straight to the panel with padded text instead of keeping a 32 KB off-screen buffer.
+Each summary logs the remaining task stack, free heap and the largest free block on the serial console and Web Serial
+(`[Telegram] Summary sent ...`). If the largest free block drops below about 10 KB in normal use, reduce load on the
+web UI or leave MQTT disabled.
+
+## Automatic summary
+
+Telegram Settings has "Automatic summary every minute" (key `telegram.autoSummary`, default off). Every 60 seconds the bot
+sends a new summary and deletes the previous one, exactly like a manual request, but with Telegram's silent flag so it
+does not notify. Any manual summary restarts the timer. The long poll is shortened as the next automatic summary comes
+due, so the interval stays close to one minute.
+
+## Summary format
+
+Lines: ⚙️ Mode, 🔋 Battery as a four-segment bar plus (percent) only (green ≥50 %, yellow ≥25 %, red below), ☀️ Solar
+(hidden when solar is switched off), 🔌 Load as a four-segment bar plus (percent) only (green <50 %, yellow <80 %, red
+above), 🏠 Grid, 🌡 Temp, ⚠️ alerts,
+📶 WiFi (OK at -70 dBm or better, otherwise Low signal), ⏳ Up (uptime), 🕒 Updated, each on its own line with a colon. The device-name header was removed on request.
+
+## High-load summary
+
+Telegram Settings has "Summary with sound when load exceeds 80 %" (key `telegram.loadAlert`, default off). When the load
+percentage rises above 80 % the bot sends one immediate summary with the notification sound and a "🔔 High load"
+headline. It re-arms once the load drops below 70 %. Battery and Load show one moon-phase glyph for the level (🌑 🌘 🌗 🌖 🌕 for about 0, 25, 50, 75, 100 %, nearest quarter), no colour cue. The Grid line shows voltage only, and WiFi, uptime and Updated are separate lines.
+
+## Multiple chats
+
+`telegram.chatId` accepts a comma-separated list of chat ids (private chats or groups). Any listed chat can request a
+summary with /summary, the Refresh buttons or a plain "Summary"/"Refresh" message, and its previous summary is deleted
+in that chat only. Automatic summaries, battery alerts and the high-load summary are sent to every listed chat. The
+last summary message id is stored per chat in NVS (`tg/lastMsgs` as JSON), so cleanup keeps working across reboots.
+
+## Inverter offline notice
+
+Always on: when the inverter link has been down for 15 seconds after having worked, the bot sends one summary with
+sound and a "🔴 Inverter offline" headline to every chat, at most once per five minutes. Nothing is sent at boot before
+the inverter was ever seen.
+
+# CrowPanel 3.5" variant (`crowpanel35_telegram`, parked)
+
+Target: Elecrow CrowPanel ESP32 3.5" HMI (DIS05035H), classic ESP32, ILI9488 320x480 over SPI, XPT2046 resistive
+touch, case included. The display code is now resolution independent: layout and fonts scale from the T-Display
+reference (240x135) to the real panel size, and a tap on the left or right half of the touch panel replaces the two
+T-Display buttons (`TFT_TOUCH=1`, buttons disabled with `TFT_BUTTON_NEXT/PREV=-1`).
+
+Pins (verified from Elecrow schematics, see docs-crowpanel35.md): SCLK 14, MOSI 13, DC 2, CS 15, RST tied to EN,
+backlight 27 (active high), touch IRQ 36; on V2.2 boards MISO 33 and touch CS 12, on V1.x/V2.0/V2.1 boards MISO 12 and
+touch CS 33 (build with `-DCROWPANEL35_HW_V20`). LovyanGFX rotation 1 gives landscape with USB-C on the right. Inverter UART defaults: RX 21, TX 22 (the I2C header, free because
+the touch controller is on SPI); DS18B20 on 32 (GPIO header). UART0 (1/3) stays on USB for flashing and logs.
+
+Bring-up checklist on real hardware (from the code review): confirm landscape orientation (`TFT_ROTATION` 1 or 3),
+colour inversion and RGB order, touch axis mapping (adjust `offset_rotation` in the touch config if left/right taps
+land top/bottom), and that the PENIRQ pull-up exists so `getTouch` works. Touch calibration defaults come from Elecrow's ESPHome config; recalibrate per unit if taps land off-centre.
+
+# CrowPanel Advance 3.5" variant (`crowpanel_adv35_telegram`, parked)
+
+Target: Elecrow CrowPanel Advance 3.5-HMI (ESP32-S3-WROOM-1-N16R8, 480x320 IPS, ILI9488 over SPI, GT911 capacitive
+touch, acrylic case option, ~$27.70 with case direct from Elecrow). Pins come from Elecrow's own LovyanGFX driver and
+the Meshtastic variant; details and sources are in docs-alt-boards.md.
+
+* Inverter link: the J15 "UART1-OUT" Grove connector, pins RX IO18 / TX IO17 / 3V3 / GND, wired to the MAX3232.
+* Flashing and logs: the CH340K USB-C port (UART0). `ARDUINO_USB_CDC_ON_BOOT=0` keeps logs there.
+* Touch: tap left half = previous page, right half = next page. No physical buttons.
+* DS18B20: not assigned by default. IO10 or IO9 on the wireless header can be used, but only with IO45 driven LOW
+  (disables the microphone) and no wireless module fitted; set `-DPIN_DS18B20=10` and add that pin handling if needed.
+* Keep the wireless slot empty: GPIO2 is shared between the LCD reset and the slot's reset/CSN line.
+* Partition scheme `default_16MB.csv` (two 6.25 MB app slots); the web-UI OTA works the same way.
+
+The Sunton ESP32-8048S043C (4.3", 800x480 RGB) is documented in docs-alt-boards.md with a verified LovyanGFX config;
+it is not built here because its RGB panel needs a PSRAM framebuffer and extra tuning against Wi-Fi flicker.
+
+## /restart command
+
+Sending `/restart` (or the word "restart") from a paired chat reboots the board: the bot confirms with "🔄 Restarting",
+removes the command message when "delete the command message too" is on, saves its state, and triggers the firmware's
+normal restart path 1.5 s later. It is listed in Telegram's command menu next to /summary and /start.
+
+# Sunton ESP32-3248S035 3.5" variants (`cyd35r_telegram`, `cyd35c_telegram`, parked)
+
+Target: the generic 3.5" "ESP32 LCD TFT Module" from AliExpress (Sunton/JC ESP32-3248S035, classic ESP32, 4 MB flash, no
+PSRAM, ST7796 320x480 over SPI). Use `cyd35r_telegram` for the resistive "R" board (XPT2046, comes with a stylus) and
+`cyd35c_telegram` for the capacitive "C" board (GT911, glossy glass). Hardware notes and sources: docs-cyd35.md.
+
+* Inverter link on the P3 header: RX GPIO35 (input only), TX GPIO22, GND; 3V3 for the MAX3232 from CN1.
+* DS18B20 on GPIO21 (4.7 k pull-up; the C board already has a 10 k).
+* Flash/logs over the board's micro-USB or USB-C (CH340C, 460800 baud). Do not use the P1 UART header while USB is plugged in.
+* Rotation 1 = landscape with USB on the right (3 = left). Touch calibration values are community defaults; if left/right
+  taps land the wrong way on the R board, change the touch `offset_rotation` in DisplayService.cpp.
+* Older boards carry a second flash chip (U4) in parallel with the module flash that can disturb uploads; the USB-C
+  revision has it removed. No case in the box; printable cases: Printables 739905, Thingiverse 6807372, MakerWorld 1151020.
+
+## Inverter link health
+
+`PI_Serial` judges the link by the last valid reply (`kPiLinkHoldMs`, 20 s) instead of requiring a complete dynamic
+cycle every 5 s; at 2400 baud one cycle takes 3-5 s, so the original rule turned a single slow reply into a visible
+"Inverter not connected". A NAK counts as a valid reply, because it proves the inverter heard the request.
+Query commands (`Q...`, `^P...`) are retried once after a timeout, preceded by a 250 ms drain so a late frame cannot be
+mistaken for the retry's answer; setters are never repeated. `/api/data` exposes `PI_Ok`, `PI_NoAnswer`, `PI_CrcError`,
+`PI_RetrySaved`, `PI_SilenceMs` and `PI_LongestSilenceMs` for remote diagnosis.
+
+Set `ds18b20Pin` to -1 when no temperature probe is attached: discovery otherwise blocks the main loop for about
+half a second every ten seconds.
+
+## Battery reading guard and alert confirmation
+
+Some PI30 firmwares occasionally report battery capacity `000` in an otherwise valid QPIGS frame (checksum, voltage and
+load all fine). `PI_Serial::guardBatteryPercent` keeps the previous value when the percentage falls more than 30 points
+between two polls while the battery voltage changes by less than 1 V; if the low value persists for a minute it is
+accepted. Each rejection is logged with the raw frame (`[PI][WARN] battery ... is implausible`) and counted in
+`/api/data` as `PI_BattRejected`. The guard protects the display, summaries and MQTT as well as the alerts.
+
+Battery alerts additionally require a level to stay crossed for 30 seconds, and a drop through several levels at once
+sends a single message for the lowest one (previously one message per level, and the fifth was dropped by the queue).
+
+# Maintained builds (2026-09-11)
+
+Only the T-Display builds are maintained: `ttgo_tdisplay_telegram` (running on the board at the inverter) and the plain
+`ttgo_tdisplay`. The CrowPanel and Sunton builds are parked in `parked-boards.ini`, which PlatformIO does not read; see
+that file's header to revive one when the board is available. Their board classes remain in `DisplayService.cpp`,
+compiled out, and their hardware research stays in the `docs-*.md` files.
