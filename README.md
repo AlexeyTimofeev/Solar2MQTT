@@ -1,3 +1,7 @@
+> **Fork notice:** personal fork of [softwarecrash/Solar2MQTT](https://github.com/softwarecrash/Solar2MQTT) at V2.0.4,
+> adding a LilyGO T-Display build with on-screen pages, a Telegram bot, and inverter-link and battery-reading fixes.
+> See [BUILD_TTGO.md](BUILD_TTGO.md). All credit for Solar2MQTT goes to its author; the original licence applies.
+
 # Solar2MQTT [![GitHub release](https://img.shields.io/github/release/softwarecrash/Solar2MQTT?include_prereleases=&sort=semver&color=blue)](https://github.com/softwarecrash/Solar2MQTT/releases/latest) [![Discord](https://img.shields.io/discord/1007020337482973254?logo=discord&label=Discord)](https://discord.gg/fb2nZWDExz)
 
 # Looking for the ESP8266 Variant? go [HERE](https://github.com/softwarecrash/Solar2MQTT-ESP8266)

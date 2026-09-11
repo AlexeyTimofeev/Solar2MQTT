@@ -1,0 +1,61 @@
+name: T-Display firmware
+
+on:
+  push:
+    branches: [ttgo]
+    tags: ['v*']
+  pull_request:
+    branches: [ttgo]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            .pio/libdeps
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Check the tag matches the firmware version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(sed -nE 's/^custom_source_version[[:space:]]*=[[:space:]]*([^[:space:]]+).*/\1/p' platformio.ini | tr -d '\r')
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match custom_source_version ${version} in platformio.ini"
+            exit 1
+          fi
+
+      - name: Build
+        run: pio run -e ttgo_tdisplay_telegram -e ttgo_tdisplay
+
+      - name: Upload build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ github.sha }}
+          path: .firmware/*
+          if-no-files-found: error
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: .firmware/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
