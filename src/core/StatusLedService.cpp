@@ -52,24 +52,17 @@ void StatusLedService::configure(int32_t pin, uint8_t brightness)
     _desiredBrightness.store(brightness, std::memory_order_relaxed);
 }
 
-void StatusLedService::loop(bool wifiConnected, bool mqttEnabled, bool mqttConnected, bool inverterConnected)
+void StatusLedService::loop(bool wifiConnected, bool inverterConnected)
 {
     _wifiConnected.store(wifiConnected, std::memory_order_relaxed);
-    _mqttEnabled.store(mqttEnabled, std::memory_order_relaxed);
-    _mqttConnected.store(mqttConnected, std::memory_order_relaxed);
     _inverterConnected.store(inverterConnected, std::memory_order_relaxed);
 }
 
-uint8_t StatusLedService::determinePulseCount(bool wifiConnected, bool mqttEnabled, bool mqttConnected, bool inverterConnected) const
+uint8_t StatusLedService::determinePulseCount(bool wifiConnected, bool inverterConnected) const
 {
     if (!wifiConnected)
     {
         return 4;
-    }
-
-    if (mqttEnabled && !mqttConnected)
-    {
-        return 3;
     }
 
     if (!inverterConnected)
@@ -102,22 +95,20 @@ void StatusLedService::taskLoop()
         }
 
         const bool wifiConnected = _wifiConnected.load(std::memory_order_relaxed);
-        const bool mqttEnabled = _mqttEnabled.load(std::memory_order_relaxed);
-        const bool mqttConnected = _mqttConnected.load(std::memory_order_relaxed);
         const bool inverterConnected = _inverterConnected.load(std::memory_order_relaxed);
 
         const uint32_t now = millis();
         if (_cycleStartMs == 0)
         {
             _cycleStartMs = now;
-            _cyclePulses = determinePulseCount(wifiConnected, mqttEnabled, mqttConnected, inverterConnected);
+            _cyclePulses = determinePulseCount(wifiConnected, inverterConnected);
         }
 
         if ((now - _cycleStartMs) >= kRepeatMs)
         {
             const uint32_t elapsedCycles = (now - _cycleStartMs) / kRepeatMs;
             _cycleStartMs += elapsedCycles * kRepeatMs;
-            _cyclePulses = determinePulseCount(wifiConnected, mqttEnabled, mqttConnected, inverterConnected);
+            _cyclePulses = determinePulseCount(wifiConnected, inverterConnected);
         }
 
         if (_cyclePulses == 0)

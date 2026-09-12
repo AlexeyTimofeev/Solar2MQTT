@@ -6,7 +6,6 @@
 
 #include "core/GitHubOtaUpdater.h"
 #include "core/LogSerial.h"
-#include "core/MqttHandler.h"
 #include "core/SettingsPrefs.h"
 #include "core/SolarState.h"
 #include "core/TelegramService.h"
@@ -20,8 +19,6 @@ extern Settings _settings;
 
 namespace
 {
-String s_restoreBody;
-
 void copyObjectSection(JsonDocument &target, const char *key, JsonObjectConst source)
 {
     JsonObject destination = target[key].to<JsonObject>();
@@ -124,16 +121,12 @@ WebServerHandler::WebServerHandler(AsyncWebServer &server,
                                    WiFiManager &wifiManager,
                                    SolarState &state,
                                    SolarInverterService &inverterService,
-                                   MqttHandler &mqttHandler,
                                    GitHubOtaUpdater &otaUpdater)
     : _server(server),
       _wifiManager(wifiManager),
       _state(state),
       _inverterService(inverterService),
-      _mqttHandler(mqttHandler),
       _otaUpdater(otaUpdater),
-      _wsStatus("/ws-status"),
-      _mqttConnected(false),
       _inverterConnected(false),
       _statusDirty(true),
       _lastStatusRefreshMs(0),
@@ -145,7 +138,6 @@ WebServerHandler::WebServerHandler(AsyncWebServer &server,
 void WebServerHandler::begin()
 {
     registerRoutes();
-    setupStatusWebSocket();
     LogSerial.begin(&_server, MONITOR_SPEED, 256);
     _server.begin();
 }
@@ -211,29 +203,19 @@ void WebServerHandler::registerRoutes()
         }
 
         sendAsset(request, index_html_gz_mime, index_html_gz, index_html_gz_len); });
+    // Only Wi-Fi and the Telegram bot are configured here; everything else lives in the bot's Dashboard. Old page
+    // addresses land on the start page.
     serveAsset("/status", index_html_gz_mime, index_html_gz, index_html_gz_len);
-    serveAsset("/menu", menu_html_gz_mime, menu_html_gz, menu_html_gz_len);
-    serveAsset("/settings", menu_html_gz_mime, menu_html_gz, menu_html_gz_len);
+    serveAsset("/menu", index_html_gz_mime, index_html_gz, index_html_gz_len);
+    serveAsset("/settings", index_html_gz_mime, index_html_gz, index_html_gz_len);
     serveAsset("/wifi", wifi_html_gz_mime, wifi_html_gz, wifi_html_gz_len);
     serveAsset("/wifisetup", wifi_html_gz_mime, wifi_html_gz, wifi_html_gz_len);
-    serveAsset("/mqtt", mqtt_html_gz_mime, mqtt_html_gz, mqtt_html_gz_len);
-    serveAsset("/mqttsettings", mqtt_html_gz_mime, mqtt_html_gz, mqtt_html_gz_len);
-    serveAsset("/device", device_html_gz_mime, device_html_gz, device_html_gz_len);
-    serveAsset("/settingsedit", device_html_gz_mime, device_html_gz, device_html_gz_len);
-    serveAsset("/devicesettings", device_html_gz_mime, device_html_gz, device_html_gz_len);
     serveAsset("/telegram", telegram_html_gz_mime, telegram_html_gz, telegram_html_gz_len);
     serveAsset("/telegramsettings", telegram_html_gz_mime, telegram_html_gz, telegram_html_gz_len);
-    serveAsset("/firmware", firmware_html_gz_mime, firmware_html_gz, firmware_html_gz_len);
-    serveAsset("/firmwareupdate", firmware_html_gz_mime, firmware_html_gz, firmware_html_gz_len);
-    serveAsset("/debug", debug_html_gz_mime, debug_html_gz, debug_html_gz_len);
-    serveAsset("/webserial", webserial_html_gz_mime, webserial_html_gz, webserial_html_gz_len);
-    serveAsset("/app.js", app_js_gz_mime, app_js_gz, app_js_gz_len);
     serveAsset("/style.css", style_css_gz_mime, style_css_gz, style_css_gz_len);
     serveAsset("/backgroundCanvas.js", backgroundCanvas_js_gz_mime, backgroundCanvas_js_gz, backgroundCanvas_js_gz_len);
-    serveAsset("/statusbar.js", statusbar_js_gz_mime, statusbar_js_gz, statusbar_js_gz_len);
     serveAsset("/favicon.svg", favicon_svg_gz_mime, favicon_svg_gz, favicon_svg_gz_len);
     serveAsset("/logo.svg", logo_svg_gz_mime, logo_svg_gz, logo_svg_gz_len);
-    serveAsset("/solar2mqtt.png", solar2mqtt_png_gz_mime, solar2mqtt_png_gz, solar2mqtt_png_gz_len);
 
     auto captivePortalRedirect = [this](AsyncWebServerRequest *request)
     {
@@ -289,7 +271,6 @@ void WebServerHandler::registerRoutes()
         }
 
         JsonDocument doc;
-        doc["mqttConnected"] = _mqttConnected;
         doc["inverterConnected"] = _inverterConnected;
         doc["wifiConnected"] = _wifiManager.getConnectionState();
         doc["ethActive"] = _wifiManager.isEthActive();
@@ -341,18 +322,6 @@ void WebServerHandler::registerRoutes()
         network["ethEnabled"] = _settings.get.ethEnabled();
         network["lanSupported"] = _wifiManager.hasLanSupport();
 
-        JsonObject mqtt = doc["mqtt"].to<JsonObject>();
-        mqtt["host"] = _settings.get.mqttHost();
-        mqtt["user"] = _settings.get.mqttUser();
-        mqtt["password"] = _settings.get.mqttPassword();
-        mqtt["port"] = _settings.get.mqttPort();
-        mqtt["topic"] = _settings.get.mqttTopic();
-        mqtt["refresh"] = _settings.get.mqttRefresh();
-        mqtt["ssl"] = _settings.get.mqttSSL();
-        mqtt["jsonMode"] = _settings.get.mqttJson();
-        mqtt["ha"] = _settings.get.mqttHAEnabled();
-        mqtt["triggerTopic"] = _settings.get.mqttTriggerPath();
-
         JsonObject device = doc["device"].to<JsonObject>();
         device["uartRx"] = _settings.get.inverterRxPin();
         device["uartTx"] = _settings.get.inverterTxPin();
@@ -367,14 +336,15 @@ void WebServerHandler::registerRoutes()
         device["batteryReserve"] = _settings.get.batteryReservePct();
         device["inverterIdleW"] = _settings.get.inverterIdleW();
         device["inverterEfficiency"] = _settings.get.inverterEfficiencyPct();
+        device["batteryFullPct"] = _settings.get.batteryFullPct();
+        device["learnBattery"] = _settings.get.learnBattery();
 #if HAS_TELEGRAM
         JsonObject telegram = doc["telegram"].to<JsonObject>();
         telegram["enabled"] = _settings.get.telegramEnabled();
         telegram["token"] = _settings.get.telegramToken();
         telegram["chatId"] = _settings.get.telegramChatId();
         telegram["batteryAlerts"] = _settings.get.telegramBatteryAlerts();
-        telegram["autoSummary"] = _settings.get.telegramAutoSummary();
-        telegram["loadAlert"] = _settings.get.telegramLoadAlert();
+        telegram["powerAlertW"] = _settings.get.telegramPowerAlertW();
         telegram["gridAlerts"] = _settings.get.telegramGridAlerts();
         telegram["gridPowerAlert"] = _settings.get.telegramGridPowerAlert();
 #endif
@@ -445,104 +415,6 @@ void WebServerHandler::registerRoutes()
 
         response->addHeader("Cache-Control", "no-store");
         request->send(response); });
-
-    _server.on("/api/settings/network", HTTP_POST, [this](AsyncWebServerRequest *request)
-               {
-        if (!isAuthorized(request))
-        {
-            return request->requestAuthentication();
-        }
-
-        const String oldDeviceName = _settings.get.deviceName();
-        const String oldWifiSsid0 = _settings.get.wifiSsid0();
-        const String oldWifiPassword0 = _settings.get.wifiPassword0();
-        const String oldWifiBssid0 = _settings.get.wifiBssid0();
-        const String oldWifiSsid1 = _settings.get.wifiSsid1();
-        const String oldWifiPassword1 = _settings.get.wifiPassword1();
-        const String oldWifiBssid1 = _settings.get.wifiBssid1();
-        const String oldStaticIp = _settings.get.staticIP();
-        const String oldStaticGw = _settings.get.staticGW();
-        const String oldStaticSn = _settings.get.staticSN();
-        const String oldStaticDns = _settings.get.staticDNS();
-        const bool oldBssidLock = _settings.get.wifiBssidLock();
-        const bool oldEthEnabled = _settings.get.ethEnabled();
-
-        for (int i = 0; i < request->params(); ++i)
-        {
-            const AsyncWebParameter *param = request->getParam(i);
-            const String &name = param->name();
-            const String &value = param->value();
-
-            if (name == "deviceName") _settings.set.deviceName(value);
-            else if (name == "wifiSsid0") _settings.set.wifiSsid0(value);
-            else if (name == "wifiPassword0") _settings.set.wifiPassword0(value);
-            else if (name == "wifiBssid0") _settings.set.wifiBssid0(value);
-            else if (name == "wifiSsid1") _settings.set.wifiSsid1(value);
-            else if (name == "wifiPassword1") _settings.set.wifiPassword1(value);
-            else if (name == "wifiBssid1") _settings.set.wifiBssid1(value);
-            else if (name == "wifiBssidLock") _settings.set.wifiBssidLock(value.toInt() != 0);
-            else if (name == "staticIP") _settings.set.staticIP(value);
-            else if (name == "staticGW") _settings.set.staticGW(value);
-            else if (name == "staticSN") _settings.set.staticSN(value);
-            else if (name == "staticDNS") _settings.set.staticDNS(value);
-            else if (name == "webUIuser") _settings.set.webUIuser(value);
-            else if (name == "webUIPassword") _settings.set.webUIPassword(value);
-            else if (name == "ethEnabled") _settings.set.ethEnabled(value.toInt() != 0);
-        }
-
-        _settings.save();
-
-        const bool networkTransportChanged =
-            oldWifiSsid0 != String(_settings.get.wifiSsid0()) ||
-            oldWifiPassword0 != String(_settings.get.wifiPassword0()) ||
-            oldWifiBssid0 != String(_settings.get.wifiBssid0()) ||
-            oldWifiSsid1 != String(_settings.get.wifiSsid1()) ||
-            oldWifiPassword1 != String(_settings.get.wifiPassword1()) ||
-            oldWifiBssid1 != String(_settings.get.wifiBssid1()) ||
-            oldStaticIp != String(_settings.get.staticIP()) ||
-            oldStaticGw != String(_settings.get.staticGW()) ||
-            oldStaticSn != String(_settings.get.staticSN()) ||
-            oldStaticDns != String(_settings.get.staticDNS()) ||
-            oldBssidLock != _settings.get.wifiBssidLock() ||
-            oldEthEnabled != _settings.get.ethEnabled();
-        const bool deviceNameChanged = oldDeviceName != String(_settings.get.deviceName());
-
-        if (deviceNameChanged && !networkTransportChanged)
-        {
-            _wifiManager.refreshMdns();
-        }
-
-        if (networkTransportChanged)
-        {
-            g_pendingNetworkReconfigure = true;
-            g_networkReconfigureAt = millis() + 50;
-        }
-
-        _mqttHandler.triggerFullStatePublish();
-        if (_settings.get.mqttHAEnabled())
-        {
-            _mqttHandler.triggerHaDiscovery();
-        }
-        notifyStatusBar();
-
-        JsonDocument response;
-        response["success"] = true;
-        response["restartRequired"] = false;
-        response["connectionMayChange"] = networkTransportChanged;
-        response["hostName"] = _wifiManager.hostName();
-        response["statusPath"] = "/status";
-        response["statusUrlHint"] = String("http://") + _wifiManager.hostName() + ".local/status";
-        response["statusUrlIpHint"] = "";
-        if (*_settings.get.staticIP())
-        {
-            response["statusUrlIpHint"] = String("http://") + _settings.get.staticIP() + "/status";
-        }
-        response["message"] = networkTransportChanged
-                                  ? "Network settings saved. Connection is being reconfigured."
-                                  : "Settings saved.";
-        String json;
-        serializeJson(response, json);
-        request->send(200, "application/json", json); });
 
     _server.on("/submitConfig", HTTP_POST, [this](AsyncWebServerRequest *request)
                {
@@ -618,11 +490,6 @@ void WebServerHandler::registerRoutes()
             g_networkReconfigureAt = millis() + 50;
         }
 
-        _mqttHandler.triggerFullStatePublish();
-        if (_settings.get.mqttHAEnabled())
-        {
-            _mqttHandler.triggerHaDiscovery();
-        }
         notifyStatusBar();
 
         JsonDocument response;
@@ -630,61 +497,16 @@ void WebServerHandler::registerRoutes()
         response["restartRequired"] = false;
         response["connectionMayChange"] = shouldReconfigureNetwork;
         response["hostName"] = _wifiManager.hostName();
-        response["statusPath"] = "/status";
-        response["statusUrlHint"] = String("http://") + _wifiManager.hostName() + ".local/status";
+        response["statusPath"] = "/";
+        response["statusUrlHint"] = String("http://") + _wifiManager.hostName() + ".local/";
         response["statusUrlIpHint"] = "";
         if (*_settings.get.staticIP())
         {
-            response["statusUrlIpHint"] = String("http://") + _settings.get.staticIP() + "/status";
+            response["statusUrlIpHint"] = String("http://") + _settings.get.staticIP() + "/";
         }
         response["message"] = shouldReconfigureNetwork
                                   ? "Network settings saved. Connection is being reconfigured."
                                   : "Settings saved.";
-        String json;
-        serializeJson(response, json);
-        request->send(200, "application/json", json); });
-
-    _server.on("/api/settings/mqtt", HTTP_POST, [this](AsyncWebServerRequest *request)
-               {
-        if (!isAuthorized(request))
-        {
-            return request->requestAuthentication();
-        }
-
-        for (int i = 0; i < request->params(); ++i)
-        {
-            const AsyncWebParameter *param = request->getParam(i);
-            const String &name = param->name();
-            const String &value = param->value();
-
-            if (name == "host") _settings.set.mqttHost(value);
-            else if (name == "user") _settings.set.mqttUser(value);
-            else if (name == "password") _settings.set.mqttPassword(value);
-            else if (name == "topic") _settings.set.mqttTopic(value);
-            else if (name == "triggerTopic") _settings.set.mqttTriggerPath(value);
-            else if (name == "port") _settings.set.mqttPort(static_cast<uint16_t>(value.toInt()));
-            else if (name == "refresh") _settings.set.mqttRefresh(static_cast<uint16_t>(value.toInt()));
-            else if (name == "ssl") _settings.set.mqttSSL(value.toInt() != 0);
-            else if (name == "jsonMode") _settings.set.mqttJson(value.toInt() != 0);
-            else if (name == "ha") _settings.set.mqttHAEnabled(value.toInt() != 0);
-        }
-
-        if (_settings.get.mqttJson() && _settings.get.mqttHAEnabled())
-        {
-            _settings.set.mqttJson(false);
-        }
-
-        _settings.save();
-        _mqttHandler.reconfigure();
-        setMqttConnected(_mqttHandler.isConnected());
-        notifyStatusBar();
-
-        JsonDocument response;
-        response["success"] = true;
-        response["restartRequired"] = false;
-        response["message"] = strlen(_settings.get.mqttHost()) > 0
-                                  ? "MQTT settings applied. Broker reconnecting."
-                                  : "MQTT disabled.";
         String json;
         serializeJson(response, json);
         request->send(200, "application/json", json); });
@@ -707,8 +529,7 @@ void WebServerHandler::registerRoutes()
             else if (name == "token") _settings.set.telegramToken(value);
             else if (name == "chatId") _settings.set.telegramChatId(value);
             else if (name == "batteryAlerts") _settings.set.telegramBatteryAlerts(value.toInt() != 0);
-            else if (name == "autoSummary") _settings.set.telegramAutoSummary(value.toInt() != 0);
-            else if (name == "loadAlert") _settings.set.telegramLoadAlert(value.toInt() != 0);
+            else if (name == "powerAlertW") _settings.set.telegramPowerAlertW(static_cast<uint16_t>(value.toInt()));
             else if (name == "gridAlerts") _settings.set.telegramGridAlerts(value.toInt() != 0);
             else if (name == "gridPowerAlert") _settings.set.telegramGridPowerAlert(value.toInt() != 0);
         }
@@ -787,6 +608,8 @@ void WebServerHandler::registerRoutes()
             else if (name == "batteryReserve") _settings.set.batteryReservePct(static_cast<uint16_t>(value.toInt()));
             else if (name == "inverterIdleW") _settings.set.inverterIdleW(static_cast<uint16_t>(value.toInt()));
             else if (name == "inverterEfficiency") _settings.set.inverterEfficiencyPct(static_cast<uint16_t>(value.toInt()));
+            else if (name == "batteryFullPct") _settings.set.batteryFullPct(static_cast<uint16_t>(value.toInt()));
+            else if (name == "learnBattery") _settings.set.learnBattery(value.toInt() != 0);
         }
 
         _settings.save();
@@ -821,15 +644,6 @@ void WebServerHandler::registerRoutes()
         _inverterService.queueCommand(command);
         request->send(200, "application/json", "{\"success\":true}"); });
 
-    _server.on("/api/mqtt/discovery", HTTP_POST, [this](AsyncWebServerRequest *request)
-               {
-        if (!isAuthorized(request))
-        {
-            return request->requestAuthentication();
-        }
-        _mqttHandler.triggerHaDiscovery();
-        request->send(200, "application/json", "{\"success\":true}"); });
-
     _server.on("/api/reboot", HTTP_POST, [this](AsyncWebServerRequest *request)
                {
         if (!isAuthorized(request))
@@ -839,35 +653,6 @@ void WebServerHandler::registerRoutes()
         g_pendingRestart = true;
         g_restartAt = millis() + 500;
         request->send(200, "application/json", "{\"success\":true}"); });
-
-    _server.on("/api/loopback/start", HTTP_POST, [this](AsyncWebServerRequest *request)
-               {
-        if (!isAuthorized(request))
-        {
-            return request->requestAuthentication();
-        }
-        const bool started = _inverterService.requestLoopback();
-        request->send(started ? 200 : 409,
-                      "application/json",
-                      started ? "{\"success\":true}" : "{\"success\":false}"); });
-
-    /*
-    _server.on("/api/loopback/status", HTTP_GET, [this](AsyncWebServerRequest *request)
-               {
-        if (!isAuthorized(request))
-        {
-            return request->requestAuthentication();
-        }
-
-        JsonDocument doc;
-        doc["running"] = _inverterService.loopbackRunning();
-        doc["done"] = _inverterService.loopbackDone();
-        doc["ok"] = _inverterService.loopbackOk();
-        doc["message"] = _inverterService.loopbackMessage();
-        String json;
-        serializeJson(doc, json);
-        request->send(200, "application/json", json); });
-    */
 
     _server.on("/api/debug/report", HTTP_GET, [this](AsyncWebServerRequest *request)
                {
@@ -879,109 +664,6 @@ void WebServerHandler::registerRoutes()
         response->addHeader("Cache-Control", "no-store");
         response->addHeader("Content-Disposition", "attachment; filename=solar2mqtt-debug.txt");
         _state.writeDebugReport(*response);
-        request->send(response); });
-
-    _server.on("/api/settings/backup", HTTP_GET, [this](AsyncWebServerRequest *request)
-               {
-        if (!isAuthorized(request))
-        {
-            return request->requestAuthentication();
-        }
-
-        bool pretty = false;
-        if (request->hasParam("pretty"))
-        {
-            pretty = request->getParam("pretty")->value().toInt() != 0;
-        }
-
-        request->send(200, "application/json", _settings.backup(pretty)); });
-
-    _server.on(
-        "/api/settings/restore",
-        HTTP_POST,
-        [this](AsyncWebServerRequest *request)
-        {
-            if (!isAuthorized(request))
-            {
-                return request->requestAuthentication();
-            }
-        },
-        nullptr,
-        [this](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
-        {
-            if (!isAuthorized(request))
-            {
-                request->requestAuthentication();
-                return;
-            }
-
-            static bool saveAfter = true;
-
-            if (index == 0)
-            {
-                s_restoreBody = "";
-                s_restoreBody.reserve(total);
-                saveAfter = true;
-
-                if (request->hasParam("save"))
-                {
-                    saveAfter = request->getParam("save")->value().toInt() != 0;
-                }
-            }
-
-            s_restoreBody.concat(reinterpret_cast<const char *>(data), len);
-            if (index + len < total)
-            {
-                return;
-            }
-
-            if (!s_restoreBody.length())
-            {
-                request->send(400, "application/json", "{\"success\":false,\"message\":\"Empty request body\"}");
-                return;
-            }
-
-            const bool ok = _settings.restore(s_restoreBody, saveAfter);
-            if (!ok)
-            {
-                request->send(400, "application/json", "{\"success\":false,\"message\":\"Failed to parse or restore settings\"}");
-                return;
-            }
-
-            if (saveAfter)
-            {
-                g_pendingRestart = true;
-                g_restartAt = millis() + 2000;
-            }
-
-            request->send(200, "application/json", "{\"success\":true,\"message\":\"Settings restored\"}");
-        });
-
-    _server.on("/api/ping", HTTP_GET, [this](AsyncWebServerRequest *request)
-               {
-        if (!isAuthorized(request))
-        {
-            return request->requestAuthentication();
-        }
-
-        JsonDocument doc;
-        doc["ok"] = true;
-        doc["uptimeMs"] = millis();
-        doc["restartPending"] = g_pendingRestart;
-        if (g_pendingRestart)
-        {
-            int32_t remaining = static_cast<int32_t>(g_restartAt) - static_cast<int32_t>(millis());
-            if (remaining < 0)
-            {
-                remaining = 0;
-            }
-            doc["restartInMs"] = remaining;
-        }
-
-        String json;
-        serializeJson(doc, json);
-        AsyncWebServerResponse *response = request->beginResponse(200, "application/json", json);
-        response->addHeader("Cache-Control", "no-store");
         request->send(response); });
 
     auto finishUpdate = [this](AsyncWebServerRequest *request)
@@ -1034,7 +716,6 @@ void WebServerHandler::registerRoutes()
     };
 
     _server.on("/update_firmware", HTTP_POST, finishUpdate, uploadUpdate);
-    _server.on("/update", HTTP_POST, finishUpdate, uploadUpdate);
 
     _server.on("/ota/status", HTTP_GET, [this](AsyncWebServerRequest *request)
                {
@@ -1075,30 +756,11 @@ void WebServerHandler::registerRoutes()
         request->send(response); });
 }
 
-void WebServerHandler::setupStatusWebSocket()
-{
-    _wsStatus.onEvent([this](AsyncWebSocket *, AsyncWebSocketClient *client, AwsEventType type, void *, uint8_t *, size_t)
-                      {
-        if (type == WS_EVT_CONNECT)
-        {
-            const String payload = lastStatusPayloadCopy();
-            if (payload.length() > 0)
-            {
-                client->text(payload);
-            }
-        } });
-
-    _server.addHandler(&_wsStatus);
-}
-
 void WebServerHandler::buildStatusJson(JsonDocument &doc)
 {
     JsonDocument snapshot;
     _state.snapshotTo(snapshot);
 
-    const bool snapshotMqttConnected =
-        snapshot["Status"]["mqttConnected"].is<bool>() ? snapshot["Status"]["mqttConnected"].as<bool>() :
-        (snapshot["EspData"]["MQTTStatus"].is<bool>() ? snapshot["EspData"]["MQTTStatus"].as<bool>() : _mqttConnected);
     const bool snapshotInverterConnected =
         snapshot["Status"]["inverterConnected"].is<bool>() ? snapshot["Status"]["inverterConnected"].as<bool>() :
         (snapshot["EspData"]["Inverter_Connected"].is<bool>() ? snapshot["EspData"]["Inverter_Connected"].as<bool>() : _inverterConnected);
@@ -1110,7 +772,6 @@ void WebServerHandler::buildStatusJson(JsonDocument &doc)
     const String ip = _wifiManager.ipAddress();
     const char *networkType = ethActive ? "ethernet" : (apMode ? "ap" : (wifiConnected ? "wifi" : "offline"));
 
-    doc["mqttConnected"] = snapshotMqttConnected;
     doc["inverterConnected"] = snapshotInverterConnected;
     doc["wifiConnected"] = wifiConnected;
     doc["ethActive"] = ethActive;
@@ -1132,7 +793,6 @@ void WebServerHandler::buildStatusJson(JsonDocument &doc)
     doc["wifi"]["rssi"] = wifiRssi;
     doc["wifi"]["ethActive"] = ethActive;
     doc["wifi"]["type"] = networkType;
-    doc["mqtt"] = snapshotMqttConnected;
     doc["inverter"] = snapshotInverterConnected;
     doc["service"]["apMode"] = apMode;
     doc["service"]["loopbackRunning"] = _inverterService.loopbackRunning();
@@ -1150,7 +810,7 @@ void WebServerHandler::buildStatusJson(JsonDocument &doc)
 void WebServerHandler::refreshStatusPayload()
 {
     // A firmware download's TLS session needs nearly all free memory, and an allocation failure elsewhere
-    // (AsyncWebSocket::textAll uses operator new) aborts the board, so skip the refresh until the updater is done.
+    // (building the status JSON allocates) aborts the board, so skip the refresh until the updater is done.
     if (_otaUpdater.isBusy())
     {
         return;
@@ -1162,11 +822,6 @@ void WebServerHandler::refreshStatusPayload()
     payload.reserve(2048);
     serializeJson(doc, payload);
     setLastStatusPayload(payload);
-    // textAll allocates a shared buffer even when no client is connected.
-    if (_wsStatus.count() > 0 && ESP.getMaxAllocHeap() > payload.length() + 8192)
-    {
-        _wsStatus.textAll(payload);
-    }
 }
 
 String WebServerHandler::lastStatusPayloadCopy()

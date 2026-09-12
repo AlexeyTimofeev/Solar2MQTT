@@ -13,14 +13,10 @@
   <div id="container">
     <div id="header">
       <a href="/"><img id="logo" src="/logo.svg" alt="Solar2MQTT Logo"></a>
-      <h1>Telegram Settings</h1>
+      <h1>Telegram Bot</h1>
     </div>
 
-    <div id="statusbar"></div>
-
-    <form id="telegramForm" class="panel">
-      <div class="panel-title">Telegram Bot</div>
-
+    <form id="telegramForm" class="panel" autocomplete="off">
       <div class="detailSplitter">Status</div>
       <p class="field-note" id="telegramStatusText">Loading status...</p>
 
@@ -28,60 +24,96 @@
 
       <label class="switch-row" for="telegramEnabled">
         <span>Enable Telegram bot</span>
-        <input type="checkbox" id="telegramEnabled" name="enabled" value="1" class="ea-switch">
+        <input type="checkbox" id="telegramEnabled" class="ea-switch">
       </label>
 
       <label for="telegramToken">Bot token</label>
-      <input type="password" id="telegramToken" name="token" autocomplete="off" placeholder="123456789:ABC...">
+      <input type="password" id="telegramToken" autocomplete="off" placeholder="123456789:ABC...">
       <p class="field-note">Create a bot with <code>@BotFather</code> in Telegram and paste its token here.</p>
 
       <label for="telegramChatId">Chat IDs (comma separated)</label>
-      <input type="text" id="telegramChatId" name="chatId" autocomplete="off" inputmode="numeric" placeholder="e.g. 123456789, 987654321">
-      <p class="field-note">Leave empty first: send <code>/start</code> to your bot and it replies with the chat id. Several ids can be listed, separated by commas. Every listed chat can request summaries and receives the automatic summaries and alerts; each chat keeps only its latest summary.</p>
-
-      <div class="detailSplitter">Behaviour</div>
-
-      <label class="switch-row" for="telegramBatteryAlerts">
-        <span>Battery alerts at 30 / 25 / 20 / 15 / 10 %</span>
-        <input type="checkbox" id="telegramBatteryAlerts" name="batteryAlerts" value="1" class="ea-switch">
-      </label>
-      <p class="field-note">Sends a summary with notification sound and a "Battery below …" headline when the battery percentage drops through one of these levels. A level re-arms after the battery climbs 3 points back above it.</p>
-
-      <label class="switch-row" for="telegramAutoSummary">
-        <span>Automatic summary every 15 seconds</span>
-        <input type="checkbox" id="telegramAutoSummary" name="autoSummary" value="1" class="ea-switch">
-      </label>
-      <p class="field-note">Updates the summary, and the Dashboard button's data, in place every 15 seconds, without a new message or notification. A manual summary restarts the timer.</p>
-
-      <label class="switch-row" for="telegramLoadAlert">
-        <span>Summary with sound when load exceeds 80 %</span>
-        <input type="checkbox" id="telegramLoadAlert" name="loadAlert" value="1" class="ea-switch">
-      </label>
-      <p class="field-note">Sends one immediate summary with notification sound and a "High load" headline when the load goes above 80 %. It re-arms once the load falls below 70 %.</p>
-
-      <label class="switch-row" for="telegramGridAlerts">
-        <span>Summary with sound when the grid goes off or comes back</span>
-        <input type="checkbox" id="telegramGridAlerts" name="gridAlerts" value="1" class="ea-switch">
-      </label>
-      <p class="field-note">Sends a new summary with notification sound and a "Grid off" or "Grid back after …" headline once the change has lasted 10 seconds; shorter dips are ignored. The previous summary is removed, so the chat still holds only the summary.</p>
-
-      <label class="switch-row" for="telegramGridPowerAlert">
-        <span>Summary with sound when grid power exceeds 5 kW</span>
-        <input type="checkbox" id="telegramGridPowerAlert" name="gridPowerAlert" value="1" class="ea-switch">
-      </label>
-      <p class="field-note">Sends one summary with notification sound and a "Grid power … kW, above 5 kW" headline once the power drawn from the grid (appliances plus battery charging) has stayed above 5 kW for 10 seconds. It re-arms after the power has stayed below 5 kW for 30 seconds.</p>
+      <input type="text" id="telegramChatId" autocomplete="off" inputmode="numeric" placeholder="e.g. 123456789, 987654321">
+      <p class="field-note">Leave empty first: send <code>/start</code> to your bot and it replies with the chat id. Several ids can be listed, separated by commas.</p>
+      <p class="field-note">Alerts, the automatic summary and the battery values are set in the bot: 📊 Dashboard → ⚙️ Settings.</p>
 
       <div class="button-stack actions">
         <button type="submit" class="btn">Save</button>
         <button type="button" class="btn btn-outline" id="telegramTestBtn">Send summary now</button>
-        <a class="btn btn-outline" href="/menu">Back</a>
+        <a class="btn btn-outline" href="/">Back</a>
       </div>
     </form>
   </div>
 
   <div id="toast"><span id="toast-icon">i</span><span id="toast-msg"></span></div>
-  <script src="/statusbar.js"></script>
   <script src="/backgroundCanvas.js"></script>
-  <script src="/app.js"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let toastTimer = 0;
+    function toast(message) {
+      $('toast-msg').textContent = message;
+      $('toast').classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => $('toast').classList.remove('show'), 3000);
+    }
+
+    async function loadSettings() {
+      try {
+        const d = await (await fetch('/api/settings', { cache: 'no-store' })).json();
+        const t = d.telegram || {};
+        $('telegramEnabled').checked = !!t.enabled;
+        $('telegramToken').value = t.token || '';
+        $('telegramChatId').value = t.chatId || '';
+      } catch (e) {
+        toast('Could not load the settings');
+      }
+    }
+
+    async function refreshStatus() {
+      const node = $('telegramStatusText');
+      try {
+        const s = await (await fetch('/api/telegram/status', { cache: 'no-store' })).json();
+        if (s.supported === false) {
+          node.textContent = 'This firmware has no Telegram support.';
+        } else if (s.ready) {
+          node.textContent = 'Connected' + (s.botUsername ? ' as @' + s.botUsername : '') +
+            (typeof s.summariesSent === 'number' ? ' · ' + s.summariesSent + ' summaries since the last restart' : '');
+        } else {
+          node.textContent = 'Not connected.' + (s.lastError ? ' Last error: ' + s.lastError : '');
+        }
+      } catch (e) {
+        node.textContent = 'Status unavailable.';
+      }
+    }
+
+    $('telegramForm').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      // Only these three fields: alerts and battery values come from the Dashboard's ⚙️ Settings and stay as they are.
+      const body = new URLSearchParams({
+        enabled: $('telegramEnabled').checked ? '1' : '0',
+        token: $('telegramToken').value.trim(),
+        chatId: $('telegramChatId').value.trim(),
+      });
+      try {
+        const r = await (await fetch('/api/settings/telegram', { method: 'POST', body })).json();
+        toast(r.message || 'Saved');
+      } catch (e) {
+        toast('Saving failed');
+      }
+      setTimeout(refreshStatus, 3000);
+    });
+
+    $('telegramTestBtn').addEventListener('click', async () => {
+      try {
+        const r = await (await fetch('/api/telegram/test', { method: 'POST' })).json();
+        toast(r.message || 'Summary requested');
+      } catch (e) {
+        toast('Request failed');
+      }
+    });
+
+    loadSettings();
+    refreshStatus();
+    setInterval(refreshStatus, 5000);
+  </script>
 </body>
 </html>

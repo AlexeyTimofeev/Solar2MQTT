@@ -444,7 +444,7 @@
       add(payload.statusUrlIpHint || "");
       add(payload.statusUrlHint || "");
       if (payload.hostName) {
-        add(`http://${payload.hostName}.local/status`);
+        add(`http://${payload.hostName}.local/`);
       }
       return candidates;
     }
@@ -480,7 +480,7 @@
       setupRedirectActive = true;
 
       const candidates = buildStatusCandidates(payload);
-      setSetupProgress("Connecting to Wi-Fi. Redirecting to the status page when it becomes reachable...");
+      setSetupProgress("Connecting to Wi-Fi. Redirecting to the device page when it becomes reachable...");
 
       const startedAt = Date.now();
       while ((Date.now() - startedAt) < 90000) {
@@ -489,7 +489,7 @@
           if (res.ok) {
             const status = await res.json();
             if (status.apMode === false && status.ip) {
-              window.location.replace(`http://${status.ip}/status`);
+              window.location.replace(`http://${status.ip}/`);
               return;
             }
           }

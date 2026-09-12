@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>Solar2MQTT Status</title>
+  <title>Solar2MQTT</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any">
   <link rel="stylesheet" href="/style.css">
 </head>
@@ -13,72 +13,48 @@
   <div id="container">
     <div id="header">
       <a href="/"><img id="logo" src="/logo.svg" alt="Solar2MQTT Logo"></a>
-      <h1><span id="pageTitleDevice">Solar2MQTT</span></h1>
-    </div>
-
-    <div id="statusbar"></div>
-
-    <div class="panel status-overview-panel">
-      <div class="detailSplitter">Energy Overview</div>
-      <div class="meter-grid">
-        <div class="value-meter" id="meterBatteryCard">
-          <div class="meter-head">
-            <span>Battery</span>
-            <strong id="meterBatteryValue">-</strong>
-          </div>
-          <div class="progress meter-progress">
-            <div id="meterBatteryBar" class="progress-bar meter-bar"></div>
-          </div>
-          <div class="meter-meta" id="meterBatteryMeta">Waiting for data</div>
-        </div>
-        <div class="value-meter" id="meterLoadCard">
-          <div class="meter-head">
-            <span>Load</span>
-            <strong id="meterLoadValue">-</strong>
-          </div>
-          <div class="progress meter-progress">
-            <div id="meterLoadBar" class="progress-bar meter-bar meter-bar-load"></div>
-          </div>
-          <div class="meter-meta" id="meterLoadMeta">Waiting for data</div>
-        </div>
-        <div class="value-meter" id="meterSolarCard">
-          <div class="meter-head">
-            <span>Solar</span>
-            <strong id="meterSolarValue">-</strong>
-          </div>
-          <div class="progress meter-progress">
-            <div id="meterSolarBar" class="progress-bar meter-bar meter-bar-solar"></div>
-          </div>
-          <div class="meter-meta" id="meterSolarMeta">Waiting for data</div>
-        </div>
-        <div class="value-meter" id="meterChargeCard">
-          <div class="meter-head">
-            <span id="meterChargeLabel">Charge</span>
-            <strong id="meterChargeValue">-</strong>
-          </div>
-          <div class="progress meter-progress">
-            <div id="meterChargeBar" class="progress-bar meter-bar meter-bar-charge"></div>
-          </div>
-          <div class="meter-meta" id="meterChargeMeta">Waiting for data</div>
-        </div>
-      </div>
+      <h1 id="deviceName">Solar2MQTT</h1>
     </div>
 
     <div class="panel">
-      <div class="detailSplitter">Inverter Overview</div>
-      <div id="overviewRows" class="overview-list">
-        <div class="overview-empty">Waiting for inverter data.</div>
-      </div>
+      <div class="detailSplitter">Status</div>
+      <p class="field-note" id="wifiLine">Wi-Fi: …</p>
+      <p class="field-note" id="botLine">Telegram bot: …</p>
+      <p class="field-note" id="inverterLine">Inverter: …</p>
+      <p class="field-note" id="fwLine"></p>
     </div>
 
     <div class="button-stack">
-      <a class="btn btn-outline" href="/menu">Settings</a>
+      <button type="button" class="btn" onclick="location.href='/wifi'">Wi-Fi settings</button>
+      <button type="button" class="btn" onclick="location.href='/telegram'">Telegram bot</button>
     </div>
+    <p class="field-note" style="text-align:center">Alerts, battery values and charts are in the bot: 📊 Dashboard in Telegram.</p>
   </div>
 
-  <div id="toast"><span id="toast-icon">i</span><span id="toast-msg"></span></div>
-  <script src="/statusbar.js"></script>
   <script src="/backgroundCanvas.js"></script>
-  <script src="/app.js"></script>
+  <script>
+    (async () => {
+      const set = (id, text) => { document.getElementById(id).textContent = text; };
+      try {
+        const s = await (await fetch('/api/status', { cache: 'no-store' })).json();
+        if (s.deviceName) { set('deviceName', s.deviceName); document.title = s.deviceName; }
+        const rssi = s.wifi && typeof s.wifi.rssi === 'number' ? s.wifi.rssi : null;
+        set('wifiLine', 'Wi-Fi: ' + (s.wifiConnected
+          ? 'connected' + (s.ip ? ', ' + s.ip : '') + (rssi !== null ? ' · ' + (rssi >= -70 ? 'good' : 'weak') + ' signal (' + rssi + ' dBm)' : '')
+          : 'not connected'));
+        set('inverterLine', 'Inverter: ' + (s.inverterConnected ? 'connected' + (s.protocol ? ' (' + s.protocol + ')' : '') : 'not connected'));
+        set('fwLine', 'Firmware ' + (s.fw || '?'));
+        let bot = 'Telegram bot: ' + (s.telegramConnected ? 'connected' : 'not connected');
+        try {
+          const t = await (await fetch('/api/telegram/status', { cache: 'no-store' })).json();
+          if (t.ready && t.botUsername) bot = 'Telegram bot: connected as @' + t.botUsername;
+          else if (t.lastError) bot += ' (' + t.lastError + ')';
+        } catch (e) {}
+        set('botLine', bot);
+      } catch (e) {
+        set('wifiLine', 'Status unavailable');
+      }
+    })();
+  </script>
 </body>
 </html>

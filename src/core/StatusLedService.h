@@ -8,7 +8,7 @@ class StatusLedService
 public:
     void begin(int32_t pin, uint8_t brightness);
     void configure(int32_t pin, uint8_t brightness);
-    void loop(bool wifiConnected, bool mqttEnabled, bool mqttConnected, bool inverterConnected);
+    void loop(bool wifiConnected, bool inverterConnected);
 
 private:
     static constexpr uint32_t kRepeatMs = 5000;
@@ -23,8 +23,6 @@ private:
     std::atomic<int32_t> _desiredPin {-1};
     std::atomic<uint8_t> _desiredBrightness {0};
     std::atomic<bool> _wifiConnected {false};
-    std::atomic<bool> _mqttEnabled {false};
-    std::atomic<bool> _mqttConnected {false};
     std::atomic<bool> _inverterConnected {false};
 
     TaskHandle_t _taskHandle = nullptr;
@@ -34,7 +32,7 @@ private:
     uint8_t _cyclePulses = 0;
     bool _attached = false;
 
-    uint8_t determinePulseCount(bool wifiConnected, bool mqttEnabled, bool mqttConnected, bool inverterConnected) const;
+    uint8_t determinePulseCount(bool wifiConnected, bool inverterConnected) const;
     static void taskEntry(void* arg);
     void taskLoop();
     void applyConfiguration();

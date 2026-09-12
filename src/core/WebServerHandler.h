@@ -11,7 +11,6 @@
 class WiFiManager;
 class SolarState;
 class SolarInverterService;
-class MqttHandler;
 class GitHubOtaUpdater;
 class TelegramService;
 
@@ -22,12 +21,10 @@ public:
                      WiFiManager &wifiManager,
                      SolarState &state,
                      SolarInverterService &inverterService,
-                     MqttHandler &mqttHandler,
                      GitHubOtaUpdater &otaUpdater);
 
     void begin();
     void loop();
-    void setMqttConnected(bool value) { _mqttConnected = value; }
     void setInverterConnected(bool value) { _inverterConnected = value; }
     void notifyStatusBar();
     void setTelegramService(TelegramService *service) { _telegram = service; }
@@ -39,11 +36,8 @@ private:
     WiFiManager &_wifiManager;
     SolarState &_state;
     SolarInverterService &_inverterService;
-    MqttHandler &_mqttHandler;
     GitHubOtaUpdater &_otaUpdater;
     TelegramService *_telegram = nullptr;
-    AsyncWebSocket _wsStatus;
-    bool _mqttConnected;
     bool _inverterConnected;
     std::atomic<bool> _statusDirty;
     uint32_t _lastStatusRefreshMs;
@@ -52,7 +46,6 @@ private:
 
     bool isAuthorized(AsyncWebServerRequest *request);
     void registerRoutes();
-    void setupStatusWebSocket();
     void buildStatusJson(JsonDocument &doc);
     void refreshStatusPayload();
     String lastStatusPayloadCopy();

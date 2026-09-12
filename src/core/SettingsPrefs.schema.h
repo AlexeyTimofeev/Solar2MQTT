@@ -9,9 +9,8 @@
   X(STRING, "telegram", "token", telegramToken, "", 0, 0) \
   X(STRING, "telegram", "chatId", telegramChatId, "", 0, 0) \
   X(BOOL,   "telegram", "batteryAlerts", telegramBatteryAlerts, false, 0, 1) \
-  X(BOOL,   "telegram", "autoSummary", telegramAutoSummary, false, 0, 1) \
-  X(BOOL,   "telegram", "loadAlert", telegramLoadAlert, false, 0, 1) \
   X(BOOL,   "telegram", "gridAlerts", telegramGridAlerts, true, 0, 1) \
+  X(UINT16, "telegram", "powerAlertW", telegramPowerAlertW, 5000, 500, 20000) \
   X(BOOL,   "telegram", "gridPowerAlert", telegramGridPowerAlert, true, 0, 1)
 #else
 #define SETTINGS_ITEMS_TELEGRAM(X)
@@ -33,16 +32,6 @@
   X(STRING, "network", "webUIuser", webUIuser, "", 0, 0) \
   X(STRING, "network", "webUIPassword", webUIPassword, "", 0, 0) \
   X(BOOL,   "network", "ethEnabled", ethEnabled, HAS_LAN, 0, 1) \
-  X(BOOL,   "mqtt", "SSLenabled", mqttSSL, false, 0, 1) \
-  X(STRING, "mqtt", "host", mqttHost, "", 0, 0) \
-  X(STRING, "mqtt", "user", mqttUser, "", 0, 0) \
-  X(STRING, "mqtt", "password", mqttPassword, "", 0, 0) \
-  X(UINT16, "mqtt", "port", mqttPort, 1883, 1, 65535) \
-  X(STRING, "mqtt", "topic", mqttTopic, "Solar", 0, 0) \
-  X(UINT16, "mqtt", "refresh", mqttRefresh, 30, 0, 86400) \
-  X(BOOL,   "mqtt", "jsonMode", mqttJson, false, 0, 1) \
-  X(BOOL,   "mqtt", "HAEnabled", mqttHAEnabled, false, 0, 1) \
-  X(STRING, "mqtt", "triggerTopic", mqttTriggerPath, "", 0, 0) \
   X(INT32,  "device", "uartRx", inverterRxPin, PIN_INVERTER_RX_DEFAULT, -1, 48) \
   X(INT32,  "device", "uartTx", inverterTxPin, PIN_INVERTER_TX_DEFAULT, -1, 48) \
   X(INT32,  "device", "uartDir", inverterDirPin, PIN_INVERTER_DE_DEFAULT, -1, 48) \
@@ -56,4 +45,6 @@
   X(UINT16, "device", "batteryReserve", batteryReservePct, 10, 0, 100) \
   X(UINT16, "device", "inverterIdleW", inverterIdleW, 40, 0, 1000) \
   X(UINT16, "device", "inverterEfficiency", inverterEfficiencyPct, 95, 50, 100) \
+  X(UINT16, "device", "batteryFullPct", batteryFullPct, 100, 50, 100) \
+  X(BOOL,   "device", "learnBattery", learnBattery, true, 0, 1) \
   SETTINGS_ITEMS_TELEGRAM(X)

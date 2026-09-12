@@ -603,7 +603,7 @@ void DisplayService::begin()
     }
 
     _page = PageBattery;
-    render(false, false, false, false, String());
+    render(false, false, false, String());
     _drawnOnce = true;
     _lastDrawMs = millis();
 }
@@ -662,7 +662,7 @@ bool DisplayService::pollTouch(uint32_t now, bool &next)
 #endif
 }
 
-void DisplayService::loop(bool wifiConnected, bool apMode, bool mqttConnected, bool inverterConnected, const String &ipAddress)
+void DisplayService::loop(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress)
 {
     if (_impl == nullptr)
     {
@@ -696,14 +696,14 @@ void DisplayService::loop(bool wifiConnected, bool apMode, bool mqttConnected, b
     }
     _lastPollMs = now;
 
-    const String signature = buildSignature(wifiConnected, apMode, mqttConnected, inverterConnected, ipAddress);
+    const String signature = buildSignature(wifiConnected, apMode, inverterConnected, ipAddress);
     const bool changed = signature != _lastSignature;
     if (!_forceRedraw && !changed && (now - _lastDrawMs) < kForceRedrawMs)
     {
         return;
     }
 
-    render(wifiConnected, apMode, mqttConnected, inverterConnected, ipAddress);
+    render(wifiConnected, apMode, inverterConnected, ipAddress);
     _lastSignature = signature;
     _lastDrawMs = now;
     _forceRedraw = false;
@@ -711,14 +711,13 @@ void DisplayService::loop(bool wifiConnected, bool apMode, bool mqttConnected, b
 }
 
 // Cheap change detector: everything the current page shows, concatenated.
-String DisplayService::buildSignature(bool wifiConnected, bool apMode, bool mqttConnected, bool inverterConnected, const String &ipAddress) const
+String DisplayService::buildSignature(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress) const
 {
     String s;
     s.reserve(160);
     s += _page;
     s += wifiConnected ? 'W' : 'w';
     s += apMode ? 'A' : 'a';
-    s += mqttConnected ? 'M' : 'm';
     s += inverterConnected ? 'I' : 'i';
     s += ipAddress;
     s += '|';
@@ -750,7 +749,7 @@ String DisplayService::buildSignature(bool wifiConnected, bool apMode, bool mqtt
     return s;
 }
 
-void DisplayService::render(bool wifiConnected, bool apMode, bool mqttConnected, bool inverterConnected, const String &ipAddress)
+void DisplayService::render(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress)
 {
     lgfx::LGFXBase &g = _impl->target();
     Impl &I = *_impl;
@@ -765,7 +764,7 @@ void DisplayService::render(bool wifiConnected, bool apMode, bool mqttConnected,
 
     static const char *const kTitles[PageCount] = {"BATTERY", "LOAD", "SOLAR", "STATUS"};
 
-    // Header: page title, page dots, link status letters (W = WiFi, M = MQTT, I = inverter).
+    // Header: page title, page dots, link status letters (W = WiFi, I = inverter).
     g.setFont(&fonts::Font2);
     _impl->text(kTitles[_page], I.X(4), I.headerY, textdatum_t::top_left, I.X(90), TFT_LIGHTGREY);
 
@@ -803,8 +802,7 @@ void DisplayService::render(bool wifiConnected, bool apMode, bool mqttConnected,
     {
         _impl->text("W", I.W - I.X(4), I.headerY, textdatum_t::top_right, I.X(20), wifiConnected ? TFT_GREEN : TFT_RED);
     }
-    _impl->text("M", I.W - I.X(26), I.headerY, textdatum_t::top_right, I.X(12), mqttConnected ? TFT_GREEN : TFT_RED);
-    _impl->text("I", I.W - I.X(40), I.headerY, textdatum_t::top_right, I.X(12), inverterConnected ? TFT_GREEN : TFT_RED);
+    _impl->text("I", I.W - I.X(26), I.headerY, textdatum_t::top_right, I.X(12), inverterConnected ? TFT_GREEN : TFT_RED);
 
     const String mode = inverterConnected ? readText(DESCR_Inverter_Operation_Mode) : String();
     String rowA;
@@ -830,7 +828,8 @@ void DisplayService::render(bool wifiConnected, bool apMode, bool mqttConnected,
         const int inset = static_cast<int>(2 * I.fs);
         g.drawRoundRect(barX, barY, barW, barH, static_cast<int>(3 * I.fs), TFT_WHITE);
         const int inner = barW - 2 * inset;
-        const int fill = percent >= 0 ? (inner * percent) / 100 : 0;
+        const int fullPct = _settings.get.batteryFullPct() > 0 ? _settings.get.batteryFullPct() : 100; // bar full at this level
+        const int fill = percent >= 0 ? (inner * constrain(percent, 0, fullPct)) / fullPct : 0;
         if (fill > 0)
         {
             g.fillRect(barX + inset, barY + inset, fill, barH - 2 * inset, color);
