@@ -39,8 +39,56 @@ constexpr uint32_t kErrorBackoffMs = 15000;
 constexpr uint32_t kIdleDelayMs = 1000;
 constexpr const char *kApiHost = "https://api.telegram.org/bot";
 constexpr const char *kPrefsNamespace = "tg";
-constexpr int kBatteryAlertLevels[] = {30, 25, 20, 15, 10};
-constexpr size_t kBatteryAlertCount = sizeof(kBatteryAlertLevels) / sizeof(kBatteryAlertLevels[0]);
+constexpr size_t kBatteryAlertMax = 8; // battery alert levels, from Settings (comma separated, default 30,25,20,15,10)
+
+// "30, 20,10" (also with ';', spaces or '-') -> {30, 20, 10}: whole numbers 1-99, no repeats, highest first; at most
+// `max` of them. Returns how many, or -1 when the text holds anything else.
+int parseAlertLevels(const String &text, int *out, size_t max)
+{
+    size_t count = 0;
+    int value = -1;
+    for (size_t i = 0; i <= text.length(); ++i)
+    {
+        const char c = i < text.length() ? text[i] : ',';
+        if (c >= '0' && c <= '9')
+        {
+            value = (value < 0 ? 0 : value * 10) + (c - '0');
+            if (value > 99)
+            {
+                return -1;
+            }
+            continue;
+        }
+        if (c != ',' && c != ';' && c != ' ' && c != '-')
+        {
+            return -1;
+        }
+        if (value < 0)
+        {
+            continue;
+        }
+        if (value < 1)
+        {
+            return -1;
+        }
+        bool repeated = false;
+        for (size_t k = 0; k < count; ++k)
+        {
+            repeated = repeated || out[k] == value;
+        }
+        if (!repeated)
+        {
+            if (count == max)
+            {
+                return -1;
+            }
+            out[count++] = value;
+        }
+        value = -1;
+    }
+    std::sort(out, out + count, [](int a, int b) { return a > b; });
+    return static_cast<int>(count);
+}
 constexpr int kBatteryRearmMargin = 3;
 constexpr uint32_t kBatteryConfirmMs = 30000; // a level must stay crossed this long before it alerts
 constexpr uint32_t kGridConfirmMs = 10000;       // grid off / back must last this long before it is announced
@@ -630,8 +678,11 @@ struct TelegramService::Impl
             requestLoud("\xF0\x9F\x94\xB4 <b>Inverter offline</b>"); // 🔴
         }
     }
-    bool alertArmed[kBatteryAlertCount] = {true, true, true, true, true};
-    uint32_t lowSinceMs[kBatteryAlertCount] = {0, 0, 0, 0, 0};
+    int alertLevels[kBatteryAlertMax] = {};
+    size_t alertLevelCount = 0;
+    String alertLevelsText; // the setting the levels were parsed from
+    bool alertArmed[kBatteryAlertMax] = {};
+    uint32_t lowSinceMs[kBatteryAlertMax] = {};
 
     std::vector<String> chatList()
     {
@@ -670,15 +721,23 @@ struct TelegramService::Impl
         }
     }
 
-    // Main thread: battery threshold alerts (30/25/20/15/10 %). A level has to stay crossed for kBatteryConfirmMs before
+    // Main thread: battery threshold alerts (levels from Settings, default 30/25/20/15/10 %). A level has to stay crossed for kBatteryConfirmMs before
     // it alerts, so a single bad frame can never trigger it, and a drop through several levels at once sends one message
     // for the lowest level. Each level re-arms once the battery is 3 points above it.
     void checkBatteryAlerts(bool inverterConnected)
     {
-        if (!_settings.get.telegramBatteryAlerts() || !inverterConnected)
+        const String levelsText = _settings.get.telegramBatteryAlertLevels();
+        if (levelsText != alertLevelsText)
+        {
+            alertLevelsText = levelsText;
+            const int count = parseAlertLevels(levelsText, alertLevels, kBatteryAlertMax);
+            alertLevelCount = count > 0 ? static_cast<size_t>(count) : 0;
+            lastBatteryPercent = -1; // arm again against the new levels
+        }
+        if (!_settings.get.telegramBatteryAlerts() || !inverterConnected || alertLevelCount == 0)
         {
             lastBatteryPercent = -1;
-            for (size_t i = 0; i < kBatteryAlertCount; ++i)
+            for (size_t i = 0; i < kBatteryAlertMax; ++i)
             {
                 lowSinceMs[i] = 0;
             }
@@ -694,17 +753,17 @@ struct TelegramService::Impl
         if (lastBatteryPercent < 0)
         {
             lastBatteryPercent = current;
-            for (size_t i = 0; i < kBatteryAlertCount; ++i)
+            for (size_t i = 0; i < alertLevelCount; ++i)
             {
-                alertArmed[i] = current > kBatteryAlertLevels[i];
+                alertArmed[i] = current > alertLevels[i];
                 lowSinceMs[i] = 0;
             }
             return;
         }
         int fireLevel = -1;
-        for (size_t i = 0; i < kBatteryAlertCount; ++i)
+        for (size_t i = 0; i < alertLevelCount; ++i)
         {
-            const int level = kBatteryAlertLevels[i];
+            const int level = alertLevels[i];
             if (current >= level + kBatteryRearmMargin)
             {
                 alertArmed[i] = true;
@@ -2051,7 +2110,20 @@ struct TelegramService::Impl
         return "s3_" + String(flags, HEX) + "_" + String(_settings.get.batteryCapacityWh()) + "_" +
                String(_settings.get.batteryReservePct()) + "_" + String(_settings.get.batteryFullPct()) + "_" +
                String(_settings.get.inverterIdleW()) + "_" + String(_settings.get.inverterEfficiencyPct()) + "_" +
-               String(_settings.get.telegramPowerAlertW() / 100);
+               String(_settings.get.telegramPowerAlertW() / 100) + "_" + levelsCode(_settings.get.telegramBatteryAlertLevels());
+    }
+
+    // The battery alert levels as the settings code carries them: "30-25-20-15-10", "0" for none.
+    static String levelsCode(const String &text)
+    {
+        int levels[kBatteryAlertMax];
+        const int count = parseAlertLevels(text, levels, kBatteryAlertMax);
+        String code;
+        for (int i = 0; i < count; ++i)
+        {
+            code += (i ? "-" : "") + String(levels[i]);
+        }
+        return code.length() ? code : String("0");
     }
 
     static bool parseField(const String &text, int base, long &out)
@@ -2086,7 +2158,7 @@ struct TelegramService::Impl
             start = sep + 1;
         }
         const size_t count = parts.size();
-        if ((version == 1 && count != 5) || (version == 2 && count != 6) || (version == 3 && count != 7 && count != 10))
+        if ((version == 1 && count != 5) || (version == 2 && count != 6) || (version == 3 && count != 7 && count != 8 && count != 10))
         {
             return false;
         }
@@ -2110,6 +2182,21 @@ struct TelegramService::Impl
             return false;
         }
         const bool solar = version >= 2 ? (flags & 32) != 0 : _settings.get.solarConnected();
+        // s3 with 8 fields: the battery alert levels ("30-20-10", "0" = keep them; bit 8 switches the alerts).
+        String alertLevels;
+        if (count == 8 && parts[7] != "0")
+        {
+            int levels[kBatteryAlertMax];
+            const int n = parseAlertLevels(parts[7], levels, kBatteryAlertMax);
+            if (n <= 0)
+            {
+                return false;
+            }
+            for (int k = 0; k < n; ++k)
+            {
+                alertLevels += (k ? "," : "") + String(levels[k]);
+            }
+        }
         std::vector<std::pair<String, String>> commands;
         if (count == 10)
         {
@@ -2155,6 +2242,10 @@ struct TelegramService::Impl
         _settings.set.inverterIdleW(static_cast<uint16_t>(idle));
         _settings.set.inverterEfficiencyPct(static_cast<uint16_t>(efficiency));
         _settings.set.telegramPowerAlertW(static_cast<uint16_t>(alert * 100));
+        if (alertLevels.length())
+        {
+            _settings.set.telegramBatteryAlertLevels(alertLevels);
+        }
         _settings.save();
         if (version == 3 && (flags & 128) != 0)
         {

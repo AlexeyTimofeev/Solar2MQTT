@@ -11,6 +11,7 @@
   X(BOOL,   "telegram", "batteryAlerts", telegramBatteryAlerts, false, 0, 1) \
   X(BOOL,   "telegram", "gridAlerts", telegramGridAlerts, true, 0, 1) \
   X(UINT16, "telegram", "powerAlertW", telegramPowerAlertW, 5000, 500, 20000) \
+  X(STRING, "telegram", "batteryAlertLevels", telegramBatteryAlertLevels, "30,25,20,15,10", 0, 0) \
   X(BOOL,   "telegram", "gridPowerAlert", telegramGridPowerAlert, true, 0, 1)
 #else
 #define SETTINGS_ITEMS_TELEGRAM(X)
