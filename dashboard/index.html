@@ -38,6 +38,10 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
 .btn{display:block;width:100%;margin-top:12px;padding:11px;border:0;border-radius:10px;background:var(--blue);color:#04121f;font-weight:600;font-size:15px}
 .btn:disabled{opacity:.4}
 details summary{cursor:pointer;font-size:14px;list-style-position:inside}
+.sw select{background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:5px 8px;font:inherit;max-width:58%}
+.hint{font-size:12px;color:var(--muted);margin:0 0 6px}
+.hint a{color:var(--blue)}
+.btn2{display:block;width:100%;margin-top:8px;padding:9px;border:1px solid var(--border);border-radius:10px;background:transparent;color:var(--muted);font-size:14px}
 .empty{text-align:center;color:var(--muted);padding-top:35vh}
 </style>
 </head>
@@ -92,21 +96,34 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
   </div>
   <details id="setPanel" class="pn hidden">
     <summary>⚙️ Settings</summary>
-    <div class="lb" style="margin-top:10px">Summary and alerts</div>
-    <label class="sw"><span>Update summary every 15 s</span><input type="checkbox" id="sAuto"></label>
+    <div class="lb" style="margin-top:10px">Alerts (a summary with sound)</div>
     <label class="sw"><span>Grid off / back</span><input type="checkbox" id="sGrid"></label>
-    <label class="sw"><span>Grid power above 5 kW</span><input type="checkbox" id="sGridW"></label>
-    <label class="sw"><span>Battery low</span><input type="checkbox" id="sBatt"></label>
-    <label class="sw"><span>High load above 80 %</span><input type="checkbox" id="sLoad"></label>
-    <div class="lb" style="margin-top:10px">Battery and inverter</div>
+    <label class="sw"><span>Power alert</span><input type="checkbox" id="sGridW"></label>
+    <label class="sw" id="rowAlertKw"><span>… above, kW</span><input type="number" id="sAlertKw" min="0.5" max="20" step="0.1" inputmode="decimal"></label>
+    <div class="hint" id="hintAlert">Grid draw while the grid is on, the house load during an outage.</div>
+    <label class="sw"><span>Battery low (30 · 25 · 20 · 15 · 10 %)</span><input type="checkbox" id="sBatt"></label>
+    <label class="sw" id="rowAuto"><span>Update summary every 15 s</span><input type="checkbox" id="sAuto"></label>
+    <label class="sw" id="rowLoad"><span>High load above 80 %</span><input type="checkbox" id="sLoad"></label>
+    <div class="lb" style="margin-top:12px">Battery</div>
     <label class="sw" id="rowSolar"><span>Solar panels connected</span><input type="checkbox" id="sSolar"></label>
-    <label class="sw"><span>Battery capacity, kWh</span><input type="number" id="sWh" min="0" max="200" step="0.1" inputmode="decimal"></label>
-    <label class="sw" id="rowFull"><span>Battery full at, %</span><input type="number" id="sFull" min="50" max="100" step="1" inputmode="numeric"></label>
+    <label class="sw"><span>Capacity, kWh</span><input type="number" id="sWh" min="0" max="200" step="0.1" inputmode="decimal"></label>
+    <label class="sw" id="rowFull"><span>Full at, %</span><input type="number" id="sFull" min="50" max="100" step="1" inputmode="numeric"></label>
     <label class="sw"><span>Inverter cut-off, %</span><input type="number" id="sRes" min="0" max="90" step="1" inputmode="numeric"></label>
+    <label class="sw" id="rowLearn"><span>Learn from outages</span><input type="checkbox" id="sLearn"></label>
+    <div class="hint" id="learnInfo"></div>
     <label class="sw"><span>Inverter own use, W</span><input type="number" id="sIdle" min="0" max="1000" step="1" inputmode="numeric"></label>
     <label class="sw"><span>Inverter efficiency, %</span><input type="number" id="sEff" min="50" max="100" step="1" inputmode="numeric"></label>
+    <div class="hint" id="preview"></div>
+    <div id="invSection" class="hidden">
+      <div class="lb" style="margin-top:12px">Inverter (changes the inverter's own settings)</div>
+      <label class="sw"><span>Output priority</span><select id="sOp"><option value="0">Utility first</option><option value="1">Solar first</option><option value="2">Battery first (SBU)</option></select></label>
+      <label class="sw"><span>Charger priority</span><select id="sCp"><option value="0">Utility first</option><option value="1">Solar first</option><option value="2">Solar + utility</option><option value="3">Only solar</option></select></label>
+      <label class="sw"><span>Grid charging, max</span><select id="sAmps"></select></label>
+      <div class="hint" id="ampsHint"></div>
+    </div>
     <button id="sSave" class="btn" disabled>Save</button>
-    <div class="sm" style="margin-top:8px;text-align:center">Save sends a short command to the bot; it is removed from the chat right away.</div>
+    <button id="sReset" class="btn2" type="button">Reset to defaults</button>
+    <div class="sm" style="margin-top:8px;text-align:center">Save sends a short command to the bot (removed from the chat right away); the summary then shows “✅ Settings saved”.</div>
   </details>
   <p class="sm" style="text-align:center;margin-top:14px">Data from the latest summary. Close and tap 📊 Dashboard again for newer values.</p>
 </main>
@@ -200,29 +217,96 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
   $('temp').textContent = tc !== null ? tc + ' °C · ' + (tc < 60 ? 'normal' : tc < 75 ? 'warm' : 'hot') : '–';
   if (pv !== null) { $('solarRow').classList.remove('hidden'); $('solar').textContent = pv + ' W'; }
   // ⚙️ Settings, only inside Telegram (a plain browser can't hand changes to the bot). Save opens the bot link
-  // t.me/<bot>?start=s2_<flags>_<Wh>_<reserve>_<full>_<idle>_<efficiency>; the board applies it and deletes that message.
-  // Firmware 2.1.16 sends s1 (no <full>, no solar flag): the page then answers in s1 and hides those two controls.
+  // t.me/<bot>?start=<code>; the board applies it and deletes that message. This firmware sends and takes s3:
+  // flags_Wh_reserve_full_idle_efficiency_alert[_output_charger_amps] (inverter fields a number, or x = unchanged);
+  // the link's cfg has the first seven. Older firmware sends s2 / s1 and gets the matching older code back.
   var cfgText = q.get('cfg') || '', bot = q.get('bu');
-  var v2 = /^s2_([0-9a-f]{1,2})_(\d{1,6})_(\d{1,3})_(\d{1,3})_(\d{1,4})_(\d{1,3})$/.exec(cfgText);
-  var v1 = v2 ? null : /^s1_([0-9a-f]{1,2})_(\d{1,6})_(\d{1,3})_(\d{1,4})_(\d{1,3})$/.exec(cfgText);
-  var cfg = v2 ? [v2[1], v2[2], v2[3], v2[5], v2[6], v2[4]] : v1 ? [v1[1], v1[2], v1[3], v1[4], v1[5], null] : null; // flags, Wh, reserve, idle, efficiency, full
-  if (cfg && bot && tg && tg.initData) {
-    var bits = [['sAuto', 1], ['sGrid', 2], ['sGridW', 4], ['sBatt', 8], ['sLoad', 16]];
-    if (v2) { bits.push(['sSolar', 32]); } else { $('rowSolar').classList.add('hidden'); $('rowFull').classList.add('hidden'); }
-    var flags0 = parseInt(cfg[0], 16);
-    bits.forEach(function (x) { $(x[0]).checked = (flags0 & x[1]) !== 0; });
-    $('sWh').value = +(cfg[1] / 1000).toFixed(2); $('sRes').value = cfg[2]; $('sIdle').value = cfg[3]; $('sEff').value = cfg[4];
-    if (v2) $('sFull').value = cfg[5];
+  var m3 = /^s3_([0-9a-f]{1,2})_(\d{1,6})_(\d{1,3})_(\d{1,3})_(\d{1,4})_(\d{1,3})_(\d{1,3})$/.exec(cfgText);
+  var m2 = m3 ? null : /^s2_([0-9a-f]{1,2})_(\d{1,6})_(\d{1,3})_(\d{1,3})_(\d{1,4})_(\d{1,3})$/.exec(cfgText);
+  var m1 = (m3 || m2) ? null : /^s1_([0-9a-f]{1,2})_(\d{1,6})_(\d{1,3})_(\d{1,4})_(\d{1,3})$/.exec(cfgText);
+  var ver = m3 ? 3 : m2 ? 2 : m1 ? 1 : 0;
+  if (ver && bot && tg && tg.initData) {
+    var m = m3 || m2 || m1, hide = function (id) { $(id).classList.add('hidden'); };
+    var cur = { f: parseInt(m[1], 16), wh: +m[2], res: +m[3], full: ver > 1 ? +m[4] : null, idle: +m[ver > 1 ? 5 : 4],
+                eff: +m[ver > 1 ? 6 : 5], alert: ver === 3 ? +m[7] : null };
+    var bits = ver === 3 ? [['sGrid', 2], ['sGridW', 4], ['sBatt', 8], ['sSolar', 32], ['sLearn', 64]]
+                         : [['sAuto', 1], ['sGrid', 2], ['sGridW', 4], ['sBatt', 8], ['sLoad', 16]].concat(ver === 2 ? [['sSolar', 32]] : []);
+    if (ver === 3) { hide('rowAuto'); hide('rowLoad'); } else { hide('rowAlertKw'); hide('hintAlert'); hide('rowLearn'); hide('learnInfo'); }
+    if (ver === 1) { hide('rowSolar'); hide('rowFull'); }
+    bits.forEach(function (x) { $(x[0]).checked = (cur.f & x[1]) !== 0; });
+    $('sWh').value = +(cur.wh / 1000).toFixed(2); $('sRes').value = cur.res; $('sIdle').value = cur.idle; $('sEff').value = cur.eff;
+    if (cur.full !== null) $('sFull').value = cur.full;
+    if (cur.alert !== null) $('sAlertKw').value = +(cur.alert / 10).toFixed(1);
+    // What the board has learned during outages (lh hours on battery, lc capacity Wh, le efficiency %, li own use W).
+    var lh = num('lh'), lc = num('lc'), le = num('le'), li = num('li'), resetLearn = false, changed;
+    var showLearn = function () {
+      var box = $('learnInfo');
+      if (resetLearn) { box.textContent = 'The learned values will be forgotten when you save.'; return; }
+      if (!lh) { box.textContent = 'Nothing learned yet: the board learns while the inverter runs on battery.'; return; }
+      var parts = [lc ? (lc / 1000).toFixed(1) + ' kWh' : 'capacity after an outage that uses 8 % or more',
+                   le ? 'efficiency ' + le + ' %, own use ' + li + ' W' : 'efficiency and own use after 30 min at varied loads'];
+      box.innerHTML = 'Learned from ' + (lh < 1 ? Math.round(lh * 60) + ' min' : lh.toFixed(1) + ' h') + ' on battery: ' + parts.join(' · ') +
+        '. <a href="#" id="sForget">Forget</a>';
+      $('sForget').addEventListener('click', function (e) { e.preventDefault(); resetLearn = true; showLearn(); changed(); });
+    };
+    // The inverter's own settings (io output priority, ic charger priority, iu grid charging A, il allowed values).
+    var io = num('io'), ic = num('ic'), iu = num('iu'), inv = ver === 3 && io !== null && ic !== null && iu !== null;
+    if (inv) {
+      $('invSection').classList.remove('hidden');
+      $('sOp').value = String(io); $('sCp').value = String(ic);
+      var amps = (q.get('il') || '2.10.20.30.40.50.60.70.80.90.100').split('.').map(Number).filter(function (a) { return a > 0; });
+      if (amps.indexOf(iu) < 0) { amps.push(iu); amps.sort(function (a, c) { return a - c; }); }
+      $('sAmps').innerHTML = amps.map(function (a) { return '<option value="' + a + '">' + a + ' A</option>'; }).join('');
+      $('sAmps').value = String(iu);
+    }
     var field = function (id, lo, hi, k) { var s = $(id).value; if (s === '') return null; var v = Math.round(Number(s) * (k || 1)); return isFinite(v) ? Math.min(hi, Math.max(lo, v)) : null; };
     var code = function () {
-      var f = 0; bits.forEach(function (x) { if ($(x[0]).checked) f |= x[1]; });
-      var vals = v2 ? [field('sWh', 0, 200000, 1000), field('sRes', 0, 90), field('sFull', 50, 100), field('sIdle', 0, 1000), field('sEff', 50, 100)]
-                    : [field('sWh', 0, 200000, 1000), field('sRes', 0, 90), field('sIdle', 0, 1000), field('sEff', 50, 100)];
-      return vals.indexOf(null) >= 0 ? null : (v2 ? 's2_' : 's1_') + f.toString(16) + '_' + vals.join('_');
+      var f = resetLearn ? 128 : 0; bits.forEach(function (x) { if ($(x[0]).checked) f |= x[1]; });
+      var vals = [field('sWh', 0, 200000, 1000), field('sRes', 0, 90)];
+      if (ver > 1) vals.push(field('sFull', 50, 100));
+      vals.push(field('sIdle', 0, 1000), field('sEff', 50, 100));
+      if (ver === 3) vals.push(field('sAlertKw', 5, 200, 10)); // kW -> 100 W steps
+      if (vals.indexOf(null) >= 0) return null;
+      var c = 's' + ver + '_' + f.toString(16) + '_' + vals.join('_');
+      if (inv) {
+        var pick = function (id, now) { var v = $(id).value; return v === String(now) ? 'x' : v; };
+        var tail = [pick('sOp', io), pick('sCp', ic), pick('sAmps', iu)];
+        if (tail.join('') !== 'xxx') c += '_' + tail.join('_');
+      }
+      return c;
+    };
+    // Live preview: discharge time at the house load now with these values (learned ones when learning is on and known).
+    var preview = function () {
+      var learnOn = ver === 3 && $('sLearn').checked && !resetLearn;
+      var cap = learnOn && lc ? lc : Number($('sWh').value) * 1000, res = Number($('sRes').value);
+      var eff = (learnOn && le ? le : Number($('sEff').value)) / 100, idle = learnOn && le ? li : Number($('sIdle').value);
+      var drawW = l !== null ? Math.max(l, 0) / eff + idle : 0;
+      if (b === null || !(cap > 0) || !(drawW > 0)) { $('preview').textContent = ''; return; }
+      $('preview').textContent = 'At the house load now (' + Math.round(l) + ' W): ≈ ' + dur(cap * Math.max(b - res, 0) / 100 / drawW * 3600) +
+        ' from ' + Math.round(b) + ' % down to the ' + res + ' % cut-off' + (learnOn && (lc || le) ? ' (learned values)' : '') + '.';
+    };
+    // What the grid charging limit means for the grid draw, against the inverter's rating.
+    var ampsHint = function () {
+      if (!inv) return;
+      var a = Number($('sAmps').value), eff = (num('we') || 95) / 100;
+      var chargeKw = a * (bv || 54) / eff / 1000, houseKw = Math.max(l || 0, 0) / 1000;
+      $('ampsHint').textContent = 'Charging at ' + a + ' A takes ≈ ' + chargeKw.toFixed(1) + ' kW from the grid; with the house now at ' +
+        houseKw.toFixed(1) + ' kW that is ≈ ' + (chargeKw + houseKw).toFixed(1) + ' of ' + ((lr || 6000) / 1000).toFixed(0) + ' kW.';
+      $('sCp').options[3].disabled = !$('sSolar').checked; // only solar charging needs panels
     };
     var initial = code(), save = $('sSave');
-    var changed = function () { var c = code(); save.disabled = !c || c === initial; };
+    changed = function () { var c = code(); save.disabled = !c || c === initial; preview(); ampsHint(); };
+    if (ver === 3) showLearn();
+    preview(); ampsHint();
     $('setPanel').addEventListener('input', changed); $('setPanel').addEventListener('change', changed);
+    $('sReset').addEventListener('click', function () {
+      // Alerts and model values back to their defaults; capacity, solar and the inverter's settings describe the hardware and stay.
+      $('sGrid').checked = true; $('sGridW').checked = true; $('sBatt').checked = false;
+      if (ver === 3) { $('sAlertKw').value = 5; $('sLearn').checked = true; }
+      if (ver > 1) $('sFull').value = 100;
+      $('sRes').value = 10; $('sIdle').value = 40; $('sEff').value = 95;
+      changed();
+    });
     save.addEventListener('click', function () {
       var c = code(); if (!c || c === initial) return;
       save.disabled = true; save.textContent = 'Sending…';

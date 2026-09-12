@@ -9,9 +9,8 @@
   X(STRING, "telegram", "token", telegramToken, "", 0, 0) \
   X(STRING, "telegram", "chatId", telegramChatId, "", 0, 0) \
   X(BOOL,   "telegram", "batteryAlerts", telegramBatteryAlerts, false, 0, 1) \
-  X(BOOL,   "telegram", "autoSummary", telegramAutoSummary, false, 0, 1) \
-  X(BOOL,   "telegram", "loadAlert", telegramLoadAlert, false, 0, 1) \
   X(BOOL,   "telegram", "gridAlerts", telegramGridAlerts, true, 0, 1) \
+  X(UINT16, "telegram", "powerAlertW", telegramPowerAlertW, 5000, 500, 20000) \
   X(BOOL,   "telegram", "gridPowerAlert", telegramGridPowerAlert, true, 0, 1)
 #else
 #define SETTINGS_ITEMS_TELEGRAM(X)
@@ -47,4 +46,5 @@
   X(UINT16, "device", "inverterIdleW", inverterIdleW, 40, 0, 1000) \
   X(UINT16, "device", "inverterEfficiency", inverterEfficiencyPct, 95, 50, 100) \
   X(UINT16, "device", "batteryFullPct", batteryFullPct, 100, 50, 100) \
+  X(BOOL,   "device", "learnBattery", learnBattery, true, 0, 1) \
   SETTINGS_ITEMS_TELEGRAM(X)

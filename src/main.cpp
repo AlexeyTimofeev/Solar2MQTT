@@ -168,6 +168,7 @@ void setup()
     telegramService.begin([]() { return wifiManager.getConnectionState() && !wifiManager.isInApMode(); });
     webServerHandler.setTelegramService(&telegramService);
     telegramService.setUpdater(&otaUpdater);
+    telegramService.setInverterCommandHook([](const String &command) { inverterService.queueCommand(command); });
     otaUpdater.setNetworkPauseHook([](bool pause) {
         if (pause)
         {

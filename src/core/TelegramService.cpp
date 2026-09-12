@@ -44,16 +44,21 @@ constexpr size_t kBatteryAlertCount = sizeof(kBatteryAlertLevels) / sizeof(kBatt
 constexpr int kBatteryRearmMargin = 3;
 constexpr uint32_t kBatteryConfirmMs = 30000; // a level must stay crossed this long before it alerts
 constexpr uint32_t kGridConfirmMs = 10000;       // grid off / back must last this long before it is announced
-constexpr uint32_t kGridPowerAlertW = 5000;      // one alert when the grid power goes above this
-constexpr uint32_t kGridPowerConfirmMs = 10000;  // ... and has stayed above it this long
+constexpr uint32_t kGridPowerConfirmMs = 10000;  // power alert: above the threshold from Settings this long
 constexpr uint32_t kGridPowerRearmMs = 30000;    // re-armed once it has stayed below the threshold this long
 constexpr uint32_t kAutoSummaryIntervalMs = 15000; // also refreshes the Dashboard button's data
 constexpr uint32_t kSettingsRefreshDelayMs = 3000;  // dashboard Save: edit the summary once the link carries the new values
 constexpr uint32_t kBootSummaryDelayMs = 45000; // first summary after a restart, once the inverter values are in
 constexpr uint32_t kFirstUpdateCheckMs = 120000;                 // first look for new firmware after boot
 constexpr uint32_t kUpdateCheckIntervalMs = 12UL * 3600UL * 1000UL; // then twice a day
-constexpr int kLoadAlertOnPercent = 80;
-constexpr int kLoadAlertOffPercent = 70;
+constexpr uint32_t kInverterCmdTimeoutMs = 10000;              // a queued inverter command without an answer is given up
+constexpr double kLearnMinSamples = 900;                        // 30 min on battery (one sample per snapshot) before the fit counts
+constexpr double kLearnMinLoadSpreadW = 100.0;                  // ... with the load varying at least this much (standard deviation)
+constexpr int kLearnMinSocDrop = 8;                             // an outage counts for the capacity once the charge fell this far
+constexpr uint32_t kLearnSaveIntervalMs = 30UL * 60UL * 1000UL; // save the samples at least this often during an outage
+constexpr const char *kLearnNamespace = "learn";
+const char *const kOutputPriorityNames[] = {"Utility first", "Solar first", "SBU (battery first)"};
+const char *const kChargerPriorityNames[] = {"Utility first", "Solar first", "Solar + Utility", "Only solar"};
 
 #ifndef DASHBOARD_URL
 #define DASHBOARD_URL ""
@@ -333,7 +338,6 @@ struct TelegramService::Impl
     Preferences prefs;
     std::vector<String> pendingLogs; // written by the task, flushed by loop() on the main thread
     int lastBatteryPercent = -1;
-    bool loadAlertArmed = true;
     std::atomic<bool> loudSummaryRequested {false};
     String loudHeadline;              // set together with loudSummaryRequested (under lock)
     bool inverterWasUp = false;       // inverter link state tracking (main thread)
@@ -346,6 +350,31 @@ struct TelegramService::Impl
     std::atomic<uint8_t> dashSlotsAllowed {static_cast<uint8_t>(kDashSlots)}; // halves when Telegram rejects the link
     std::atomic<bool> dashDisabled {false};
     std::atomic<uint32_t> settingsSavedMs {0}; // settings arrived from the dashboard; the summary is edited shortly after
+    String settingsHeadline;                   // under lock: silent headline for that edit ("Settings saved ...")
+
+    // Dashboard ⚙️ inverter settings: the bot task queues commands (under lock), the main thread sends them one at a
+    // time through the hook and collects the inverter's ACK / NAK.
+    std::function<void(const String &)> inverterCommandHook;
+    std::vector<std::pair<String, String>> pendingInverterCmds; // command, label for the summary
+    String inverterCmdInFlight;                                 // main thread from here on
+    String inverterCmdLabel;
+    uint32_t inverterCmdSentMs = 0;
+    String inverterCmdResults;
+    String allowedUtilityAmps; // "2.10.20...", from QMUCHGCR
+    bool allowedAmpsRequested = false;
+
+    // Learned battery model (main thread): sums for the load -> battery power line fit, and energy per % of charge.
+    struct Learn
+    {
+        double n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0; // x = house load W, y = battery power W, one sample per snapshot
+        double capWh = 0, capSoc = 0;                  // finished outages: energy drawn and % of charge used
+        double outWh = 0;                              // the current outage so far
+        int outStartSoc = -1;
+        int outLastSoc = -1;
+    };
+    Learn learn;
+    std::atomic<bool> learnResetRequested {false};
+    uint32_t lastLearnSaveMs = 0;
     uint32_t slotStartMs = 0;
     uint32_t slotLoadSum = 0;
     uint16_t slotSamples = 0;
@@ -490,13 +519,14 @@ struct TelegramService::Impl
         {
             readNumber(DESCR_PV_Charging_Power, pvW);
         }
-        const float efficiency = std::max<float>(_settings.get.inverterEfficiencyPct(), 50.0f) / 100.0f;
+        const float efficiency = effectiveEfficiency();
         const float gridChargeW = charging ? std::max(batteryV * chargeA - pvW, 0.0f) / efficiency : 0.0f;
-        return std::max(loadW, 0.0f) + gridChargeW + _settings.get.inverterIdleW();
+        return std::max(loadW, 0.0f) + gridChargeW + effectiveIdleW();
     }
 
-    // Main thread: one summary with sound once the grid power has stayed above kGridPowerAlertW for kGridPowerConfirmMs;
-    // it re-arms after the power has stayed below the threshold for kGridPowerRearmMs.
+    // Main thread: one summary with sound once the power has stayed above the threshold from Settings (default 5 kW) for
+    // kGridPowerConfirmMs: the grid draw while the grid is on, the house load while the inverter runs on battery. It
+    // re-arms after the power has stayed below the threshold for kGridPowerRearmMs.
     void checkGridPower(bool inverterConnected)
     {
         if (!_settings.get.telegramGridPowerAlert() || !inverterConnected)
@@ -504,9 +534,19 @@ struct TelegramService::Impl
             gridPowerAboveSinceMs = 0;
             return;
         }
-        const float watts = gridPowerW();
+        const bool onBattery = gridIsOff();
+        float watts = 0;
+        if (onBattery)
+        {
+            readNumber(DESCR_AC_Out_Watt, watts);
+        }
+        else
+        {
+            watts = gridPowerW();
+        }
+        const float thresholdW = _settings.get.telegramPowerAlertW();
         const uint32_t now = millis();
-        if (watts > kGridPowerAlertW)
+        if (watts > thresholdW)
         {
             gridPowerBelowSinceMs = 0;
             if (!gridPowerArmed)
@@ -524,8 +564,9 @@ struct TelegramService::Impl
             }
             gridPowerArmed = false;
             gridPowerAboveSinceMs = 0;
-            requestLoud("\xE2\x9A\xA1 <b>Grid power " + String(watts / 1000.0f, 1) + " kW</b>, above " + String(kGridPowerAlertW / 1000) +
-                        " kW"); // ⚡
+            const String limit = String(thresholdW / 1000.0f, (static_cast<uint32_t>(thresholdW) % 1000) ? 1 : 0);
+            requestLoud("\xE2\x9A\xA1 <b>" + String(onBattery ? "Load " : "Grid power ") + String(watts / 1000.0f, 1) + " kW</b>" +
+                        (onBattery ? " on battery" : "") + ", above " + limit + " kW"); // ⚡
         }
         else
         {
@@ -677,31 +718,6 @@ struct TelegramService::Impl
         requestLoud("\xF0\x9F\xAA\xAB <b>Battery below " + String(fireLevel) + " %</b>"); // 🪫 a summary with sound, no extra message
     }
 
-    // Main thread: one loud summary when the load rises above 80 %, re-armed below 70 %.
-    void checkLoadAlert(bool inverterConnected)
-    {
-        if (!_settings.get.telegramLoadAlert() || !inverterConnected)
-        {
-            loadAlertArmed = true;
-            return;
-        }
-        float value = 0;
-        if (!readNumber(DESCR_AC_Out_Percent, value))
-        {
-            return;
-        }
-        const int current = static_cast<int>(value + 0.5f);
-        if (loadAlertArmed && current > kLoadAlertOnPercent)
-        {
-            loadAlertArmed = false;
-            requestLoud("\xF0\x9F\x94\x94 <b>High load</b>"); // 🔔
-        }
-        else if (!loadAlertArmed && current < kLoadAlertOffPercent)
-        {
-            loadAlertArmed = true;
-        }
-    }
-
     // LogSerial forwards to WebSerial (async web socket) and must only be used from the main thread,
     // so the task queues its lines and loop() emits them.
     void taskLog(const String &line)
@@ -733,7 +749,7 @@ struct TelegramService::Impl
     {
         lockTake();
         enabled = _settings.get.telegramEnabled();
-        autoSummary = _settings.get.telegramAutoSummary();
+        autoSummary = true; // always on: the Dashboard button's data comes with it
         token = _settings.get.telegramToken();
         chatIdsRaw = _settings.get.telegramChatId();
         token.trim();
@@ -1515,7 +1531,18 @@ struct TelegramService::Impl
             {
                 loadSettings();
                 taskLog("[Telegram] Settings changed from the dashboard: " + code);
-                settingsSavedMs = millis() | 1u;
+                bool inverterPending = false;
+                lockTake();
+                inverterPending = !pendingInverterCmds.empty();
+                if (!inverterPending)
+                {
+                    settingsHeadline = "\xE2\x9C\x85 <b>Settings saved</b>"; // ✅
+                }
+                lockGive();
+                if (!inverterPending)
+                {
+                    settingsSavedMs = millis() | 1u; // with inverter changes: once the inverter has answered
+                }
             }
             else
             {
@@ -1690,7 +1717,12 @@ struct TelegramService::Impl
             {
                 settingsSavedMs = 0;
                 lastAutoSummaryMs = millis();
-                broadcastSummary(true, String(), true);
+                String headline;
+                lockTake();
+                headline = settingsHeadline;
+                settingsHeadline = "";
+                lockGive();
+                broadcastSummary(true, headline, true); // silent; the next automatic edit drops the headline
                 continue;
             }
 
@@ -1843,16 +1875,17 @@ struct TelegramService::Impl
         err = lastError;
         lockGive();
         t += "Telegram: " + String(summariesSent) + " summaries sent, last error: " + (err.length() ? htmlEscape(err) : String("none")) + "\n";
-        t += "Updates: " + updateStatusText();
+        t += "Updates: " + updateStatusText() + "\n";
+        t += "Battery model: " + learnText();
         return t;
     }
 
     // Main thread: estimated time until the inverter's low-battery cut-off while it runs on battery. The usable energy
-    // above the reserve is drawn at load / efficiency + the inverter's own consumption (all from Device settings).
+    // above the reserve is drawn at load / efficiency + the inverter's own consumption (learned, or from Settings).
     // Empty when not on battery or the capacity is not set.
     String timeLeftText(const String &mode, float batteryPct)
     {
-        const uint32_t capacityWh = _settings.get.batteryCapacityWh();
+        const uint32_t capacityWh = effectiveCapacityWh();
         String upper = mode;
         upper.toUpperCase();
         float loadW = 0;
@@ -1861,8 +1894,7 @@ struct TelegramService::Impl
             return String();
         }
         const float reserve = _settings.get.batteryReservePct();
-        const float efficiency = std::max<float>(_settings.get.inverterEfficiencyPct(), 50.0f) / 100.0f;
-        const float drawW = std::max(loadW, 0.0f) / efficiency + _settings.get.inverterIdleW();
+        const float drawW = std::max(loadW, 0.0f) / effectiveEfficiency() + effectiveIdleW();
         if (drawW < 1.0f)
         {
             return String();
@@ -1980,74 +2012,443 @@ struct TelegramService::Impl
     }
 
     // The dashboard's ⚙️ panel sends changes back as the bot link parameter (/start <code>; Telegram allows 64 characters of
-    // A-Z a-z 0-9 _ -): s2_<flags hex>_<battery Wh>_<reserve %>_<full %>_<inverter idle W>_<efficiency %>. Flag bits:
-    // 1 automatic summary, 2 grid on/off alerts, 4 grid power alert, 8 battery alerts, 16 high load alert, 32 solar
-    // panels connected. s1 (the 2.1.16 format: no <full>, no solar bit) is still accepted.
+    // A-Z a-z 0-9 _ -): s3_<flags hex>_<battery Wh>_<reserve %>_<full %>_<inverter idle W>_<efficiency %>_<power alert in
+    // 100 W>[_<output priority>_<charger priority>_<grid charging A>], the inverter fields a number or "x" for unchanged.
+    // Flag bits: 2 grid on/off alerts, 4 power alert, 8 battery alerts, 32 solar panels connected, 64 learn the battery
+    // model, 128 forget what was learned (once). The link's cfg carries the first seven fields. s1 and s2 from 2.1.16
+    // pages are still accepted (their bits 1 and 16, automatic summary and high load alert, no longer exist).
     String settingsCode()
     {
-        const unsigned flags = (_settings.get.telegramAutoSummary() ? 1u : 0u) | (_settings.get.telegramGridAlerts() ? 2u : 0u) |
-                               (_settings.get.telegramGridPowerAlert() ? 4u : 0u) | (_settings.get.telegramBatteryAlerts() ? 8u : 0u) |
-                               (_settings.get.telegramLoadAlert() ? 16u : 0u) | (_settings.get.solarConnected() ? 32u : 0u);
-        return "s2_" + String(flags, HEX) + "_" + String(_settings.get.batteryCapacityWh()) + "_" +
+        const unsigned flags = (_settings.get.telegramGridAlerts() ? 2u : 0u) | (_settings.get.telegramGridPowerAlert() ? 4u : 0u) |
+                               (_settings.get.telegramBatteryAlerts() ? 8u : 0u) | (_settings.get.solarConnected() ? 32u : 0u) |
+                               (_settings.get.learnBattery() ? 64u : 0u);
+        return "s3_" + String(flags, HEX) + "_" + String(_settings.get.batteryCapacityWh()) + "_" +
                String(_settings.get.batteryReservePct()) + "_" + String(_settings.get.batteryFullPct()) + "_" +
-               String(_settings.get.inverterIdleW()) + "_" + String(_settings.get.inverterEfficiencyPct());
+               String(_settings.get.inverterIdleW()) + "_" + String(_settings.get.inverterEfficiencyPct()) + "_" +
+               String(_settings.get.telegramPowerAlertW() / 100);
     }
 
-    // Bot task: validate the whole code before changing anything; false leaves the settings untouched.
-    bool applySettingsCode(const String &code)
+    static bool parseField(const String &text, int base, long &out)
     {
-        const bool v2 = code.startsWith("s2_");
-        if (!v2 && !code.startsWith("s1_"))
+        if (text.length() == 0 || text.length() > 6)
         {
             return false;
         }
-        const int fieldCount = v2 ? 6 : 5;
-        long values[6];
-        int start = 3;
-        for (int i = 0; i < fieldCount; ++i)
+        char *end = nullptr;
+        out = strtol(text.c_str(), &end, base);
+        return end != nullptr && *end == '\0';
+    }
+
+    // Bot task: validate the whole code before changing anything; false leaves the settings untouched. Inverter changes
+    // are queued for the main thread, which sends them one at a time.
+    bool applySettingsCode(const String &code)
+    {
+        const int version = code.startsWith("s3_") ? 3 : code.startsWith("s2_") ? 2 : code.startsWith("s1_") ? 1 : 0;
+        if (version == 0)
+        {
+            return false;
+        }
+        std::vector<String> parts;
+        for (int start = 3;;)
         {
             const int sep = code.indexOf('_', start);
-            if ((sep < 0) != (i == fieldCount - 1))
+            parts.push_back(sep < 0 ? code.substring(start) : code.substring(start, sep));
+            if (sep < 0 || parts.size() > 10)
             {
-                return false; // too few or too many fields
-            }
-            const String part = sep < 0 ? code.substring(start) : code.substring(start, sep);
-            if (part.length() == 0 || part.length() > 6)
-            {
-                return false;
-            }
-            char *end = nullptr;
-            values[i] = strtol(part.c_str(), &end, i == 0 ? 16 : 10);
-            if (end == nullptr || *end != '\0')
-            {
-                return false;
+                break;
             }
             start = sep + 1;
         }
-        const long flags = values[0], wh = values[1], reserve = values[2];
-        const long full = v2 ? values[3] : static_cast<long>(_settings.get.batteryFullPct());
-        const long idle = values[v2 ? 4 : 3], efficiency = values[v2 ? 5 : 4];
-        if (flags < 0 || flags > (v2 ? 63 : 31) || wh < 0 || wh > 200000 || reserve < 0 || reserve > 90 || full < 50 ||
-            full > 100 || reserve >= full || idle < 0 || idle > 1000 || efficiency < 50 || efficiency > 100)
+        const size_t count = parts.size();
+        if ((version == 1 && count != 5) || (version == 2 && count != 6) || (version == 3 && count != 7 && count != 10))
         {
             return false;
         }
-        _settings.set.telegramAutoSummary((flags & 1) != 0);
+        long flags = 0, wh = 0, reserve = 0, full = _settings.get.batteryFullPct(), idle = 0, efficiency = 0;
+        long alert = _settings.get.telegramPowerAlertW() / 100;
+        size_t i = 0;
+        bool ok = parseField(parts[i++], 16, flags) && parseField(parts[i++], 10, wh) && parseField(parts[i++], 10, reserve);
+        if (ok && version >= 2)
+        {
+            ok = parseField(parts[i++], 10, full);
+        }
+        ok = ok && parseField(parts[i++], 10, idle) && parseField(parts[i++], 10, efficiency);
+        if (ok && version == 3)
+        {
+            ok = parseField(parts[i++], 10, alert);
+        }
+        if (!ok || flags < 0 || flags > 255 || wh < 0 || wh > 200000 || reserve < 0 || reserve > 90 || full < 50 ||
+            full > 100 || reserve >= full || idle < 0 || idle > 1000 || efficiency < 50 || efficiency > 100 || alert < 5 ||
+            alert > 200)
+        {
+            return false;
+        }
+        const bool solar = version >= 2 ? (flags & 32) != 0 : _settings.get.solarConnected();
+        std::vector<std::pair<String, String>> commands;
+        if (count == 10)
+        {
+            long value = 0;
+            if (parts[7] != "x")
+            {
+                if (!parseField(parts[7], 10, value) || value < 0 || value > 2)
+                {
+                    return false;
+                }
+                commands.push_back({"POP0" + String(value), String("output ") + kOutputPriorityNames[value]});
+            }
+            if (parts[8] != "x")
+            {
+                // "Only solar" would stop charging from the grid: refused while no panels are connected.
+                if (!parseField(parts[8], 10, value) || value < 0 || value > 3 || (value == 3 && !solar))
+                {
+                    return false;
+                }
+                commands.push_back({"PCP0" + String(value), String("charger ") + kChargerPriorityNames[value]});
+            }
+            if (parts[9] != "x")
+            {
+                if (!parseField(parts[9], 10, value) || value < 1 || value > 200)
+                {
+                    return false;
+                }
+                // The PowMr takes the amps without zero padding (MUCHGC60 ACK, MUCHGC060 NAK).
+                commands.push_back({"MUCHGC" + String(value), "grid charging " + String(value) + " A"});
+            }
+        }
         _settings.set.telegramGridAlerts((flags & 2) != 0);
         _settings.set.telegramGridPowerAlert((flags & 4) != 0);
         _settings.set.telegramBatteryAlerts((flags & 8) != 0);
-        _settings.set.telegramLoadAlert((flags & 16) != 0);
-        if (v2)
+        _settings.set.solarConnected(solar);
+        if (version == 3)
         {
-            _settings.set.solarConnected((flags & 32) != 0);
-            _settings.set.batteryFullPct(static_cast<uint16_t>(full));
+            _settings.set.learnBattery((flags & 64) != 0);
         }
         _settings.set.batteryCapacityWh(static_cast<uint32_t>(wh));
         _settings.set.batteryReservePct(static_cast<uint16_t>(reserve));
+        _settings.set.batteryFullPct(static_cast<uint16_t>(full));
         _settings.set.inverterIdleW(static_cast<uint16_t>(idle));
         _settings.set.inverterEfficiencyPct(static_cast<uint16_t>(efficiency));
+        _settings.set.telegramPowerAlertW(static_cast<uint16_t>(alert * 100));
         _settings.save();
+        if (version == 3 && (flags & 128) != 0)
+        {
+            learnResetRequested = true;
+        }
+        if (!commands.empty())
+        {
+            lockTake();
+            for (const auto &command : commands)
+            {
+                pendingInverterCmds.push_back(command);
+            }
+            lockGive();
+        }
         return true;
+    }
+
+    // Inverter priority text (as the PI30 driver stores it) back to its number; -1 when unknown.
+    static int priorityIndex(const String &text, bool output)
+    {
+        if (output)
+        {
+            if (text == "Utility first" || text == "Utility-Solar-Battery") return 0;
+            if (text == "Solar first" || text == "Solar-Utility-Battery") return 1;
+            if (text == "SBU first" || text == "Solar-Battery-Utility") return 2;
+            return -1;
+        }
+        if (text == "Utility first") return 0;
+        if (text == "Solar first") return 1;
+        if (text == "Solar + Utility") return 2;
+        if (text == "Only solar charging permitted") return 3;
+        return -1;
+    }
+
+    // Main thread, every snapshot: hand the ⚙️ panel's inverter commands to the inverter one at a time and collect the
+    // answers; when the last one is in, edit the summary with a silent "Settings saved" headline listing the result.
+    // Also asks the inverter once which grid charging currents it allows (QMUCHGCR), for the panel's list.
+    void pumpInverterCommands(bool inverterConnected)
+    {
+        if (!inverterCommandHook)
+        {
+            return;
+        }
+        const uint32_t now = millis();
+        if (inverterCmdInFlight.length())
+        {
+            const String answer = g_stateDoc["RawData"]["CommandAnswer"] | "";
+            const bool timedOut = now - inverterCmdSentMs > kInverterCmdTimeoutMs;
+            if (!answer.length() && !timedOut)
+            {
+                return;
+            }
+            if (inverterCmdInFlight == "QMUCHGCR")
+            {
+                String list; // "002 010 ... 100" -> "2.10....100"
+                int value = 0;
+                bool inNumber = false, valid = answer.length() > 0;
+                for (size_t i = 0; valid && i <= answer.length(); ++i)
+                {
+                    const char c = i < answer.length() ? answer[i] : ' ';
+                    if (c >= '0' && c <= '9')
+                    {
+                        value = value * 10 + (c - '0');
+                        inNumber = true;
+                    }
+                    else if (c == ' ')
+                    {
+                        if (inNumber)
+                        {
+                            list += (list.length() ? "." : "") + String(value);
+                        }
+                        value = 0;
+                        inNumber = false;
+                    }
+                    else
+                    {
+                        valid = false;
+                    }
+                }
+                if (valid && list.length())
+                {
+                    allowedUtilityAmps = list;
+                }
+            }
+            else
+            {
+                const bool accepted = answer == "ACK";
+                if (inverterCmdResults.length())
+                {
+                    inverterCmdResults += ", ";
+                }
+                inverterCmdResults += inverterCmdLabel + (accepted ? String(" \xE2\x9C\x93") : timedOut ? String(" (no answer)") : String(" refused"));
+                LogSerial.println("[Telegram] Inverter " + inverterCmdInFlight + ": " + (answer.length() ? answer : String("no answer")));
+            }
+            inverterCmdInFlight = "";
+            lockTake();
+            const bool more = !pendingInverterCmds.empty();
+            const bool finished = !more && inverterCmdResults.length();
+            if (finished)
+            {
+                settingsHeadline = "\xE2\x9C\x85 <b>Settings saved</b> \xC2\xB7 inverter: " + inverterCmdResults; // ✅ ·
+            }
+            lockGive();
+            if (finished)
+            {
+                inverterCmdResults = "";
+                settingsSavedMs = millis() | 1u;
+            }
+        }
+        if (!inverterConnected || inverterCmdInFlight.length())
+        {
+            return;
+        }
+        std::pair<String, String> next;
+        lockTake();
+        const bool have = !pendingInverterCmds.empty();
+        if (have)
+        {
+            next = pendingInverterCmds.front();
+            pendingInverterCmds.erase(pendingInverterCmds.begin());
+        }
+        lockGive();
+        if (!have)
+        {
+            if (!allowedAmpsRequested && now > 60000UL)
+            {
+                allowedAmpsRequested = true;
+                next = {"QMUCHGCR", ""};
+            }
+            else
+            {
+                return;
+            }
+        }
+        inverterCmdInFlight = next.first;
+        inverterCmdLabel = next.second;
+        inverterCmdSentMs = now;
+        inverterCommandHook(next.first);
+    }
+
+    // Learned battery model (main thread). While the inverter runs on battery without solar input, battery power
+    // (volts x discharge amps) against the house load is a straight line: slope = 1 / efficiency, offset = own use.
+    // The energy drawn per % of charge over whole outages gives the capacity. Kept in flash (namespace "learn").
+    bool fitModel(float &efficiency, float &idleW) const
+    {
+        if (learn.n < kLearnMinSamples)
+        {
+            return false;
+        }
+        const double meanX = learn.sx / learn.n;
+        const double varX = learn.sxx / learn.n - meanX * meanX;
+        if (varX < kLearnMinLoadSpreadW * kLearnMinLoadSpreadW)
+        {
+            return false; // the load hardly changed: slope and offset cannot be told apart yet
+        }
+        const double slope = (learn.sxy / learn.n - meanX * (learn.sy / learn.n)) / varX;
+        const double offset = learn.sy / learn.n - slope * meanX;
+        if (slope < 1.0 || slope > 1.0 / 0.75 || offset < 0.0 || offset > 200.0)
+        {
+            return false; // outside what an inverter can do: not enough good data yet
+        }
+        efficiency = static_cast<float>(1.0 / slope);
+        idleW = static_cast<float>(offset);
+        return true;
+    }
+
+    uint32_t learnedCapacityWh() const
+    {
+        if (learn.capSoc < kLearnMinSocDrop)
+        {
+            return 0;
+        }
+        const double wh = learn.capWh * 100.0 / learn.capSoc;
+        return (wh >= 500.0 && wh <= 200000.0) ? static_cast<uint32_t>(wh + 0.5) : 0;
+    }
+
+    // The values the estimates use: learned ones once known (and learning is on), else the ones from Settings.
+    float effectiveEfficiency() const
+    {
+        float efficiency = 0, idle = 0;
+        if (_settings.get.learnBattery() && fitModel(efficiency, idle))
+        {
+            return efficiency;
+        }
+        return std::max<float>(_settings.get.inverterEfficiencyPct(), 50.0f) / 100.0f;
+    }
+
+    float effectiveIdleW() const
+    {
+        float efficiency = 0, idle = 0;
+        if (_settings.get.learnBattery() && fitModel(efficiency, idle))
+        {
+            return idle;
+        }
+        return _settings.get.inverterIdleW();
+    }
+
+    uint32_t effectiveCapacityWh() const
+    {
+        const uint32_t learned = _settings.get.learnBattery() ? learnedCapacityWh() : 0;
+        return learned ? learned : _settings.get.batteryCapacityWh();
+    }
+
+    String learnText() const
+    {
+        const double hours = learn.n * (kSnapshotIntervalMs / 1000.0) / 3600.0;
+        if (hours <= 0.0)
+        {
+            return "nothing learned yet";
+        }
+        String t = "learned from " + String(hours, 1) + " h on battery";
+        const uint32_t wh = learnedCapacityWh();
+        if (wh)
+        {
+            t += ", " + String(wh / 1000.0f, 1) + " kWh";
+        }
+        float efficiency = 0, idle = 0;
+        if (fitModel(efficiency, idle))
+        {
+            t += ", efficiency " + String(lroundf(efficiency * 100.0f)) + " %, own use " + String(lroundf(idle)) + " W";
+        }
+        t += _settings.get.learnBattery() ? " (in use)" : " (not used)";
+        return t;
+    }
+
+    void learnLoad()
+    {
+        Preferences p;
+        if (!p.begin(kLearnNamespace, true))
+        {
+            return; // nothing saved yet
+        }
+        learn.n = p.getDouble("n", 0);
+        learn.sx = p.getDouble("sx", 0);
+        learn.sy = p.getDouble("sy", 0);
+        learn.sxx = p.getDouble("sxx", 0);
+        learn.sxy = p.getDouble("sxy", 0);
+        learn.capWh = p.getDouble("capWh", 0);
+        learn.capSoc = p.getDouble("capSoc", 0);
+        p.end();
+    }
+
+    void learnSave()
+    {
+        Preferences p;
+        if (p.begin(kLearnNamespace, false))
+        {
+            p.putDouble("n", learn.n);
+            p.putDouble("sx", learn.sx);
+            p.putDouble("sy", learn.sy);
+            p.putDouble("sxx", learn.sxx);
+            p.putDouble("sxy", learn.sxy);
+            p.putDouble("capWh", learn.capWh);
+            p.putDouble("capSoc", learn.capSoc);
+            p.end();
+        }
+        lastLearnSaveMs = millis();
+    }
+
+    // Main thread, every snapshot.
+    void learnSample(bool inverterConnected, bool gridOff, int batteryPct, float loadW)
+    {
+        if (learnResetRequested.exchange(false))
+        {
+            learn = Learn();
+            learnSave();
+            LogSerial.println("[Telegram] Learned battery model cleared");
+        }
+        if (!inverterConnected)
+        {
+            return;
+        }
+        float volts = 0, dischargeA = 0, chargeA = 0, pvW = 0;
+        readNumber(DESCR_Battery_Charge_Current, chargeA);
+        if (_settings.get.solarConnected())
+        {
+            readNumber(DESCR_PV_Charging_Power, pvW);
+        }
+        const bool discharging = gridOff && readNumber(DESCR_Battery_Voltage, volts) &&
+                                 readNumber(DESCR_Battery_Discharge_Current, dischargeA) && volts > 30.0f &&
+                                 dischargeA > 0.0f && chargeA <= 0.0f && pvW < 20.0f && loadW >= 0.0f;
+        if (discharging)
+        {
+            const double x = loadW;
+            const double y = static_cast<double>(volts) * dischargeA;
+            learn.n += 1;
+            learn.sx += x;
+            learn.sy += y;
+            learn.sxx += x * x;
+            learn.sxy += x * y;
+            learn.outWh += y * (kSnapshotIntervalMs / 1000.0) / 3600.0;
+            if (batteryPct >= 0)
+            {
+                if (learn.outStartSoc < 0)
+                {
+                    learn.outStartSoc = batteryPct;
+                }
+                learn.outLastSoc = batteryPct;
+            }
+            if (millis() - lastLearnSaveMs >= kLearnSaveIntervalMs)
+            {
+                learnSave(); // long outages: keep the samples even if the power fails later
+            }
+            return;
+        }
+        if (!gridOff && learn.outStartSoc >= 0)
+        {
+            // The outage is over: it counts for the capacity if the charge fell far enough.
+            const int drop = learn.outStartSoc - learn.outLastSoc;
+            if (drop >= kLearnMinSocDrop)
+            {
+                learn.capWh += learn.outWh;
+                learn.capSoc += drop;
+            }
+            learn.outWh = 0;
+            learn.outStartSoc = -1;
+            learn.outLastSoc = -1;
+            learnSave();
+            LogSerial.println("[Telegram] Battery model " + learnText());
+        }
     }
 
     // Main thread: the Dashboard link. Everything after '#' stays on the phone (browsers never send the fragment), so
@@ -2119,15 +2520,40 @@ struct TelegramService::Impl
                 add("oa", String((millis() - outageStartMs) / 1000));
             }
         }
-        const uint32_t batteryWh = _settings.get.batteryCapacityWh();
+        // The estimates use the learned battery model once known (and learning is on), else the values from Settings.
+        const uint32_t batteryWh = effectiveCapacityWh();
         if (batteryWh)
         {
             add("wh", String(batteryWh));
         }
         add("wr", String(_settings.get.batteryReservePct()));
         add("bf", String(_settings.get.batteryFullPct())); // the battery ring is complete at this level
-        add("wi", String(_settings.get.inverterIdleW()));        // also used by the power flow panel
-        add("we", String(_settings.get.inverterEfficiencyPct()));
+        add("wi", String(lroundf(effectiveIdleW())));      // also used by the power flow panel
+        add("we", String(lroundf(effectiveEfficiency() * 100.0f)));
+        // For the ⚙️ panel: what has been learned (hours on battery, capacity, efficiency, own use) ...
+        if (learn.n > 0)
+        {
+            add("lh", String(learn.n * (kSnapshotIntervalMs / 1000.0) / 3600.0, 1));
+        }
+        const uint32_t learnedWh = learnedCapacityWh();
+        if (learnedWh)
+        {
+            add("lc", String(learnedWh));
+        }
+        float fitEfficiency = 0, fitIdle = 0;
+        if (fitModel(fitEfficiency, fitIdle))
+        {
+            add("le", String(lroundf(fitEfficiency * 100.0f)));
+            add("li", String(lroundf(fitIdle)));
+        }
+        // ... and the inverter's own settings: output / charger priority, grid charging limit and its allowed values.
+        const int outputIndex = priorityIndex(readStaticText(DESCR_Output_Source_Priority), true);
+        const int chargerIndex = priorityIndex(readStaticText(DESCR_Charger_Source_Priority), false);
+        const String utilityAmps = readStaticText(DESCR_Current_Max_AC_Charging_Current);
+        if (outputIndex >= 0) add("io", String(outputIndex));
+        if (chargerIndex >= 0) add("ic", String(chargerIndex));
+        if (utilityAmps.toInt() > 0) add("iu", String(utilityAmps.toInt()));
+        if (allowedUtilityAmps.length()) add("il", allowedUtilityAmps);
         add("cfg", settingsCode()); // the ⚙️ panel's current values, and the bot its Save link goes to
         lockTake();
         const String bot = botUsername;
@@ -2235,6 +2661,7 @@ struct TelegramService::Impl
         lockGive();
 
         dashRecord(inverterConnected, gridOff, batteryPct, loadW);
+        learnSample(inverterConnected, gridOff, batteryPct, loadW);
         const String url = buildDashboardUrl(inverterConnected, modeRaw, alerts, solarConnected);
         lockTake();
         dashboardUrl = url;
@@ -2253,6 +2680,7 @@ void TelegramService::begin(std::function<bool()> networkConnected)
     _impl->networkConnected = std::move(networkConnected);
     _impl->loadSettings();
     _impl->dashInit();
+    _impl->learnLoad();
     configTime(0, 0, "pool.ntp.org", "time.google.com"); // UTC for the dashboard; the page shows the phone's local time
     if (xTaskCreate(Impl::taskEntry, "telegram", kTaskStack, _impl, 1, &_impl->task) != pdPASS)
     {
@@ -2297,10 +2725,10 @@ void TelegramService::loop(bool inverterConnected, int wifiRssi)
     _impl->lastSnapshotBuildMs = now;
     _impl->buildSnapshot(inverterConnected, wifiRssi);
     _impl->checkBatteryAlerts(inverterConnected);
-    _impl->checkLoadAlert(inverterConnected);
     _impl->checkGridChange(inverterConnected);
     _impl->checkGridPower(inverterConnected);
     _impl->checkInverterLink(inverterConnected);
+    _impl->pumpInverterCommands(inverterConnected);
 
     // Look for new firmware 2 minutes after start and then twice a day, for the summary's "new version" line.
     if (_impl->updater != nullptr && _impl->ready.load() && _impl->upgradeStage.load() == 0 && !_impl->updater->isBusy())
@@ -2322,6 +2750,14 @@ void TelegramService::reconfigure()
         return;
     }
     _impl->configChanged = true;
+}
+
+void TelegramService::setInverterCommandHook(std::function<void(const String &)> hook)
+{
+    if (_impl != nullptr)
+    {
+        _impl->inverterCommandHook = std::move(hook);
+    }
 }
 
 bool TelegramService::requestSummary()
@@ -2404,6 +2840,7 @@ String TelegramService::statusJson() const
 void TelegramService::begin(std::function<bool()>) {}
 void TelegramService::loop(bool, int) {}
 void TelegramService::reconfigure() {}
+void TelegramService::setInverterCommandHook(std::function<void(const String &)>) {}
 bool TelegramService::requestSummary() { return false; }
 void TelegramService::setUpdater(GitHubOtaUpdater *) {}
 bool TelegramService::pause(uint32_t) { return true; }

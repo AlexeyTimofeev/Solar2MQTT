@@ -24,6 +24,8 @@ public:
     void resume();
     // Firmware updater used by /upgrade, the periodic update check and the summary's "new version" line.
     void setUpdater(GitHubOtaUpdater *updater);
+    // Sends a raw command to the inverter (the main loop's SolarInverterService); used for the Dashboard's inverter settings.
+    void setInverterCommandHook(std::function<void(const String &)> hook);
     String statusJson() const;
 
 private:

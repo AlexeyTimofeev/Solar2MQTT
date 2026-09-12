@@ -337,14 +337,14 @@ void WebServerHandler::registerRoutes()
         device["inverterIdleW"] = _settings.get.inverterIdleW();
         device["inverterEfficiency"] = _settings.get.inverterEfficiencyPct();
         device["batteryFullPct"] = _settings.get.batteryFullPct();
+        device["learnBattery"] = _settings.get.learnBattery();
 #if HAS_TELEGRAM
         JsonObject telegram = doc["telegram"].to<JsonObject>();
         telegram["enabled"] = _settings.get.telegramEnabled();
         telegram["token"] = _settings.get.telegramToken();
         telegram["chatId"] = _settings.get.telegramChatId();
         telegram["batteryAlerts"] = _settings.get.telegramBatteryAlerts();
-        telegram["autoSummary"] = _settings.get.telegramAutoSummary();
-        telegram["loadAlert"] = _settings.get.telegramLoadAlert();
+        telegram["powerAlertW"] = _settings.get.telegramPowerAlertW();
         telegram["gridAlerts"] = _settings.get.telegramGridAlerts();
         telegram["gridPowerAlert"] = _settings.get.telegramGridPowerAlert();
 #endif
@@ -529,8 +529,7 @@ void WebServerHandler::registerRoutes()
             else if (name == "token") _settings.set.telegramToken(value);
             else if (name == "chatId") _settings.set.telegramChatId(value);
             else if (name == "batteryAlerts") _settings.set.telegramBatteryAlerts(value.toInt() != 0);
-            else if (name == "autoSummary") _settings.set.telegramAutoSummary(value.toInt() != 0);
-            else if (name == "loadAlert") _settings.set.telegramLoadAlert(value.toInt() != 0);
+            else if (name == "powerAlertW") _settings.set.telegramPowerAlertW(static_cast<uint16_t>(value.toInt()));
             else if (name == "gridAlerts") _settings.set.telegramGridAlerts(value.toInt() != 0);
             else if (name == "gridPowerAlert") _settings.set.telegramGridPowerAlert(value.toInt() != 0);
         }
@@ -610,6 +609,7 @@ void WebServerHandler::registerRoutes()
             else if (name == "inverterIdleW") _settings.set.inverterIdleW(static_cast<uint16_t>(value.toInt()));
             else if (name == "inverterEfficiency") _settings.set.inverterEfficiencyPct(static_cast<uint16_t>(value.toInt()));
             else if (name == "batteryFullPct") _settings.set.batteryFullPct(static_cast<uint16_t>(value.toInt()));
+            else if (name == "learnBattery") _settings.set.learnBattery(value.toInt() != 0);
         }
 
         _settings.save();
