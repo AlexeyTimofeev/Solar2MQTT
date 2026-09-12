@@ -173,7 +173,8 @@ the PowMr VMII-6000 with a no-op write of its current value:
 | Total charging, max | `MNCHGCnnn` | allowed values from `QMCHGCR` (10 … 120 A); three digits (`MNCHGC090` ACK, `MNCHGC0090` NAK); grid charging can not exceed it |
 | Grid input range | `PGR0n` | 0 Appliance (wide window), 1 UPS (fast switch-over) |
 | Buzzer, overload bypass, restart after overload, restart after overheating | `PEa`/`PDa`, `b`, `u`, `v` | on / off (backlight `x`, grid-loss alarm `y` and power saving `j` never answer on this model) |
-| Back to grid (recharge), back to battery (re-discharge), cut-off, bulk, float | `PBCV`, `PBDV`, `PSDV`, `PCVV`, `PBFT` + `nn.n` | 44.0-51.0, 0 (when full) or 48.0-58.0, 40.0-48.0, 48.0-58.4, 48.0-58.4 V; folded away with a warning (the battery has a BMS) and a confirmation |
+| Battery % points (lithium with BMS): back to grid, back to battery, cut-off | `PBCC`, `PBDC`, `PSDC` + `nnn` (3 digits), read with `QDOP` (fields 9-11) | 5-95, 10-100, 0-90 %; cut-off <= back to grid < back to battery; back to grid / back to battery are shown only in Solar first or Battery first mode (the only modes that use them); `PSDC` answers only after a ~20 s pause |
+| Battery voltages (other battery types only: with a BMS the inverter uses the % points, and the BMS sets C.V. / float) | `PBCV`, `PBDV`, `PSDV`, `PCVV`, `PBFT` + `nn.n` | 44.0-51.0, 0 (when full) or 48.0-58.0, 40.0-48.0, 48.0-58.4, 48.0-58.4 V; with a warning and a confirmation |
 
 The allowed currents are asked once a minute after start. Apply sends `/start i1_<key><value>_...` with only the
 changed settings (Telegram allows 64 characters, too few next to the board's settings): o, c, u, t, g, z buzzer,
@@ -186,6 +187,14 @@ when there is no answer; the driver re-reads QPIRI and QFLAG after each, so the 
 summary then shows a silent "✅ Inverter: total charging 100 A ✓, restart after overload on ✓" headline until the next
 automatic edit. The link carries `io ic iu il it itl ig ix vr vd vc vb vf`. Firmware 2.1.17 (no `it` key) still gets
 its priorities and grid charging as a tail on the Save code.
+
+The board asks `QDOP` (battery % points) and `QBMS` (what the BMS reports: connected, SOC, force-charge / stop-discharge
+/ stop-charge flags, C.V. and float voltage, cut-off voltage, max charge and discharge current) a minute after start,
+every 6 hours and after a % change; queries no longer make the driver re-read QPIRI (only setting commands do). With a
+cut-off % known, the discharge estimate stops there (the Battery & estimates cut-off field is then hidden), and the
+Dashboard's details show a "Battery BMS" line. Protocol source: Voltronic "Axpert Remote Panel Protocol (VMIII&KING&MKSIII)
+20220616" (github.com/ardupic/voltronic-inverter-communication-protocols); on BMS loss the inverter stops (code 61), it
+does not fall back to the voltage setpoints.
 
 Found but not offered: the inverter has hour-by-hour output and charger priority tables (`QOPPT`, `QCHPT`) and LED
 settings (`QLED`), but the commands to change them are unknown.

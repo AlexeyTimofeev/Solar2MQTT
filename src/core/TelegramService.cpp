@@ -53,6 +53,8 @@ constexpr uint32_t kFirstUpdateCheckMs = 120000;                 // first look f
 constexpr uint32_t kUpdateCheckIntervalMs = 12UL * 3600UL * 1000UL; // then twice a day
 constexpr uint32_t kInverterCmdTimeoutMs = 10000;              // a queued inverter command without an answer is given up
 constexpr uint32_t kInverterCmdGapMs = 8000;                   // pause between inverter commands (flags right after another command go unanswered)
+constexpr uint32_t kInverterSlowCmdGapMs = 20000;              // ... and before the cut-off % (PSDC), which needs a longer one
+constexpr uint32_t kInverterQueryIntervalMs = 6UL * 3600UL * 1000UL; // QDOP / QBMS again this often
 constexpr double kLearnMinSamples = 900;                        // 30 min on battery (one sample per snapshot) before the fit counts
 constexpr double kLearnMinLoadSpreadW = 100.0;                  // ... with the load varying at least this much (standard deviation)
 constexpr int kLearnMinSocDrop = 8;                             // an outage counts for the capacity once the charge fell this far
@@ -368,6 +370,12 @@ struct TelegramService::Impl
     uint32_t inverterLastAnswerMs = 0;
     bool inverterCmdRetried = false;
     bool inverterCmdFailed = false;
+    int socBackToGrid = -1; // QDOP: battery % back to utility, back to battery and cut-off (lithium with BMS)
+    int socBackToBattery = -1;
+    int socCutoff = -1;
+    String bmsInfo;         // raw QBMS answer: what the battery's BMS tells the inverter
+    uint32_t lastInverterQueryMs = 0;
+    bool socQueryWanted = false; // read QDOP back after the ⚙️ panel changed a % point
 
     // Learned battery model (main thread): sums for the load -> battery power line fit, and energy per % of charge.
     struct Learn
@@ -1911,7 +1919,7 @@ struct TelegramService::Impl
         {
             return String();
         }
-        const float reserve = _settings.get.batteryReservePct();
+        const float reserve = effectiveReservePct();
         const float drawW = std::max(loadW, 0.0f) / effectiveEfficiency() + effectiveIdleW();
         if (drawW < 1.0f)
         {
@@ -2278,6 +2286,9 @@ struct TelegramService::Impl
         current['x'] = number(DESCR_Battery_Under_Voltage, 10.0f);
         current['k'] = number(DESCR_Battery_Bulk_Voltage, 10.0f);
         current['f'] = number(DESCR_Battery_Float_Voltage, 10.0f);
+        current['b'] = socBackToGrid;
+        current['e'] = socBackToBattery;
+        current['s'] = socCutoff;
         long wanted['z' + 1];
         bool given['z' + 1] = {};
         for (int i = 0; i <= 'z'; ++i)
@@ -2356,6 +2367,24 @@ struct TelegramService::Impl
                 return;
             }
         }
+        if (given['b'] || given['e'] || given['s'])
+        {
+            if (outside('s', 0, 90) || outside('b', 5, 95) || outside('e', 10, 100))
+            {
+                fail("battery % out of range");
+                return;
+            }
+            if (wanted['s'] > wanted['b'])
+            {
+                fail("cut-off % above back to grid %");
+                return;
+            }
+            if (wanted['b'] >= wanted['e'])
+            {
+                fail("back to grid % not below back to battery %");
+                return;
+            }
+        }
 
         std::vector<std::pair<String, String>> commands;
         auto changed = [&](char key) { return given[static_cast<int>(key)] && wanted[static_cast<int>(key)] != current[static_cast<int>(key)]; };
@@ -2418,38 +2447,48 @@ struct TelegramService::Impl
                 commands.push_back({String(wanted[static_cast<int>(f.key)] ? "PE" : "PD") + f.letter, String(f.label) + " " + onOff(wanted[static_cast<int>(f.key)])});
             }
         }
-        // Battery voltages, two chains that must stay in order: cut-off < back to grid < back to battery, and
-        // float <= bulk. Lower values go first from the bottom up, raised ones from the top down.
-        struct VoltCommand
+        // Battery % points (lithium with BMS) and battery voltages: chains that must stay in order (cut-off % <= back to
+        // grid % < back to battery %, cut-off V < back to grid V < back to battery V, float <= bulk). Lowered values go
+        // first from the bottom up, raised ones from the top down.
+        struct ChainCommand
         {
             char key;
-            int rank;
             const char *command;
             const char *label;
         };
-        const VoltCommand chains[2][3] = {{{'x', 0, "PSDV", "cut-off"}, {'r', 1, "PBCV", "back to grid"}, {'d', 2, "PBDV", "back to battery"}},
-                                          {{'f', 0, "PBFT", "float"}, {'k', 1, "PCVV", "bulk"}, {0, 0, nullptr, nullptr}}};
+        const ChainCommand chains[3][3] = {{{'s', "PSDC", "cut-off"}, {'b', "PBCC", "back to grid"}, {'e', "PBDC", "back to battery"}},
+                                           {{'x', "PSDV", "cut-off"}, {'r', "PBCV", "back to grid"}, {'d', "PBDV", "back to battery"}},
+                                           {{'f', "PBFT", "float"}, {'k', "PCVV", "bulk"}, {0, nullptr, nullptr}}};
         auto level = [](char key, long value) { return key == 'd' && value == 0 ? 10000L : value; }; // 0 = "when full"
-        for (const auto &chain : chains)
+        for (int c = 0; c < 3; ++c)
         {
+            const bool percent = c == 0;
             for (int pass = 0; pass < 2; ++pass)
             {
                 for (int n = 0; n < 3; ++n)
                 {
-                    const VoltCommand &v = chain[pass == 0 ? n : 2 - n];
+                    const ChainCommand &v = chains[c][pass == 0 ? n : 2 - n];
                     if (v.key == 0 || !changed(v.key))
                     {
                         continue;
                     }
-                    const long now = level(v.key, current[static_cast<int>(v.key)]);
-                    const long next = level(v.key, wanted[static_cast<int>(v.key)]);
-                    if ((pass == 0) != (next < now))
+                    const int key = static_cast<int>(v.key);
+                    if ((pass == 0) != (level(v.key, wanted[key]) < level(v.key, current[key])))
                     {
                         continue;
                     }
-                    const long tenths = wanted[static_cast<int>(v.key)];
-                    commands.push_back({String(v.command) + volts(tenths),
-                                        String(v.label) + (v.key == 'd' && tenths == 0 ? String(" when full") : " " + volts(tenths) + " V")});
+                    const long value = wanted[key];
+                    if (percent)
+                    {
+                        char command[12];
+                        snprintf(command, sizeof(command), "%s%03ld", v.command, value); // three digits (PSDC010)
+                        commands.push_back({command, String(v.label) + " " + String(value) + " %"});
+                    }
+                    else
+                    {
+                        commands.push_back({String(v.command) + volts(value),
+                                            String(v.label) + (v.key == 'd' && value == 0 ? String(" when full") : " " + volts(value) + " V")});
+                    }
                 }
             }
         }
@@ -2470,9 +2509,38 @@ struct TelegramService::Impl
         LogSerial.println("[Telegram] Inverter: " + String(commands.size()) + " command(s) queued");
     }
 
+    // Main thread: QDOP -> the battery % switch points (fields 9-11: back to grid, back to battery, cut-off).
+    void parseQdop(const String &answer)
+    {
+        int values[20];
+        int count = 0;
+        for (int start = 0; start < static_cast<int>(answer.length()) && count < 20;)
+        {
+            int sep = answer.indexOf(' ', start);
+            if (sep < 0)
+            {
+                sep = answer.length();
+            }
+            if (sep > start)
+            {
+                values[count++] = answer.substring(start, sep).toInt();
+            }
+            start = sep + 1;
+        }
+        if (count >= 11 && values[8] >= 0 && values[8] <= 100 && values[9] >= 0 && values[9] <= 100 && values[10] >= 0 &&
+            values[10] <= 100)
+        {
+            socBackToGrid = values[8];
+            socBackToBattery = values[9];
+            socCutoff = values[10];
+        }
+    }
+
     // Main thread, every snapshot: hand the ⚙️ panel's inverter commands to the inverter one at a time (kInverterCmdGapMs
-    // apart, one retry when unanswered) and collect the answers; when the last one is in, edit the summary with a silent
-    // "Inverter: ..." headline listing the result. Also asks once which charging currents the inverter allows.
+    // apart, kInverterSlowCmdGapMs before PSDC, one retry when unanswered) and collect the answers; when the last one is
+    // in, edit the summary with a silent "Inverter: ..." headline listing the result. Also asks, a minute after start and
+    // then every 6 hours, which charging currents the inverter allows (QMUCHGCR, QMCHGCR), its battery % points (QDOP)
+    // and what the BMS reports (QBMS).
     void pumpInverterCommands(bool inverterConnected)
     {
         if (!inverterCommandHook)
@@ -2500,12 +2568,24 @@ struct TelegramService::Impl
             inverterLastAnswerMs = now;
             const String command = inverterCmdInFlight;
             inverterCmdInFlight = "";
-            if (command == "QMUCHGCR" || command == "QMCHGCR")
+            const bool usable = answer.length() && answer != "NAK" && answer != "NOA";
+            if (command.startsWith("Q"))
             {
-                const String list = ampsList(answer);
-                if (list.length())
+                if (command == "QMUCHGCR" || command == "QMCHGCR")
                 {
-                    (command == "QMUCHGCR" ? allowedUtilityAmps : allowedTotalAmps) = list;
+                    const String list = ampsList(answer);
+                    if (list.length())
+                    {
+                        (command == "QMUCHGCR" ? allowedUtilityAmps : allowedTotalAmps) = list;
+                    }
+                }
+                else if (command == "QDOP" && usable)
+                {
+                    parseQdop(answer);
+                }
+                else if (command == "QBMS" && usable)
+                {
+                    bmsInfo = answer;
                 }
             }
             else if ((answer == "NOA" || !answer.length()) && !inverterCmdRetried)
@@ -2520,6 +2600,13 @@ struct TelegramService::Impl
                 const bool accepted = answer == "ACK";
                 inverterCmdRetried = false;
                 inverterCmdFailed = inverterCmdFailed || !accepted;
+                if (accepted && (command.startsWith("PBCC") || command.startsWith("PBDC") || command.startsWith("PSDC")))
+                {
+                    // Show the new % at once; QDOP reads it back afterwards.
+                    int &point = command.startsWith("PBCC") ? socBackToGrid : command.startsWith("PBDC") ? socBackToBattery : socCutoff;
+                    point = command.substring(4).toInt();
+                    socQueryWanted = true;
+                }
                 if (inverterCmdResults.length())
                 {
                     inverterCmdResults += ", ";
@@ -2548,18 +2635,35 @@ struct TelegramService::Impl
         std::pair<String, String> next;
         lockTake();
         const bool have = !pendingInverterCmds.empty();
-        if (have)
+        const bool wait = have && pendingInverterCmds.front().first.startsWith("PSDC") && now - inverterLastAnswerMs < kInverterSlowCmdGapMs;
+        if (have && !wait)
         {
             next = pendingInverterCmds.front();
             pendingInverterCmds.erase(pendingInverterCmds.begin());
         }
         lockGive();
+        if (wait)
+        {
+            return; // the cut-off % only answers after a longer pause
+        }
         if (!have)
         {
-            static const char *const kBootQueries[] = {"QMUCHGCR", "QMCHGCR"};
-            if (bootQueryStep < 2 && now > 60000UL)
+            static const char *const kQueries[] = {"QMUCHGCR", "QMCHGCR", "QDOP", "QBMS"};
+            if (socQueryWanted)
             {
-                next = {kBootQueries[bootQueryStep++], ""};
+                socQueryWanted = false;
+                next = {"QDOP", ""};
+            }
+            else if (bootQueryStep < 4 && now > 60000UL)
+            {
+                next = {kQueries[bootQueryStep++], ""};
+                lastInverterQueryMs = now;
+            }
+            else if (bootQueryStep >= 4 && now - lastInverterQueryMs > kInverterQueryIntervalMs)
+            {
+                bootQueryStep = 2; // QDOP, then QBMS
+                next = {kQueries[bootQueryStep++], ""};
+                lastInverterQueryMs = now;
             }
             else
             {
@@ -2633,6 +2737,13 @@ struct TelegramService::Impl
     {
         const uint32_t learned = _settings.get.learnBattery() ? learnedCapacityWh() : 0;
         return learned ? learned : _settings.get.batteryCapacityWh();
+    }
+
+    // The discharge estimate stops at the inverter's own cut-off % when it reports one (lithium with BMS), else at the
+    // cut-off level from Settings.
+    float effectiveReservePct() const
+    {
+        return socCutoff >= 0 ? static_cast<float>(socCutoff) : static_cast<float>(_settings.get.batteryReservePct());
     }
 
     String learnText() const
@@ -2829,7 +2940,7 @@ struct TelegramService::Impl
         {
             add("wh", String(batteryWh));
         }
-        add("wr", String(_settings.get.batteryReservePct()));
+        add("wr", String(lroundf(effectiveReservePct())));
         add("bf", String(_settings.get.batteryFullPct())); // the battery ring is complete at this level
         add("wi", String(lroundf(effectiveIdleW())));      // also used by the power flow panel
         add("we", String(lroundf(effectiveEfficiency() * 100.0f)));
@@ -2886,6 +2997,18 @@ struct TelegramService::Impl
                 add(v[0], String(lroundf(device[v[1]].as<float>() * 10.0f)));
             }
         }
+        // Battery % points from QDOP (sg back to grid, sd back to battery, sc cut-off), the battery type (bt) and the BMS
+        // data from QBMS (bms, as the inverter sends it: connected, SOC, force-charge / stop-discharge / stop-charge
+        // flags, C.V. and float volts x10, cut-off volts x10, max charge and discharge amps).
+        if (socCutoff >= 0)
+        {
+            add("sg", String(socBackToGrid));
+            add("sd", String(socBackToBattery));
+            add("sc", String(socCutoff));
+        }
+        const String batteryType = device["Battery_Type"] | "";
+        if (batteryType.length()) add("bt", batteryType);
+        if (bmsInfo.length()) add("bms", bmsInfo);
         add("cfg", settingsCode()); // the ⚙️ panel's current values, and the bot its Save link goes to
         lockTake();
         const String bot = botUsername;

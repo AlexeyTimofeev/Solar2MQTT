@@ -451,7 +451,10 @@ bool PI_Serial::loop()
             if (sendCustomCommand())
             {
                 clearCycleBackup();
-                requestStaticData = true;
+                if (!customCommandIsQuery)
+                {
+                    requestStaticData = true; // a setting may have changed; a query changes nothing
+                }
                 requestCounter = 0;
                 previousTime = millis();
                 if (requestCallback)
@@ -1295,6 +1298,7 @@ bool PI_Serial::sendCustomCommand()
     if (customCommandBuffer == "")
         return false;
 
+    customCommandIsQuery = customCommandBuffer.startsWith("Q");
     if (isModbus())
     {
         get.raw.commandAnswer = modbus->requestData(customCommandBuffer);
