@@ -42,6 +42,12 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
 .hint{font-size:12px;color:var(--muted);margin:0 0 6px}
 .hint a{color:var(--blue)}
 .btn2{display:block;width:100%;margin-top:8px;padding:9px;border:1px solid var(--border);border-radius:10px;background:transparent;color:var(--muted);font-size:14px}
+.grp{margin:18px 0 6px;padding-top:12px;border-top:1px solid var(--border);font-size:14px;font-weight:600}
+.grp.first{border-top:0;padding-top:0;margin-top:12px}
+.grp .sm{font-weight:400}
+details.sub{margin-top:6px}
+details.sub summary{font-size:13px;color:var(--muted);padding:6px 0}
+.hint.warn{color:var(--warn)}
 .empty{text-align:center;color:var(--muted);padding-top:35vh}
 </style>
 </head>
@@ -96,7 +102,8 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
   </div>
   <details id="setPanel" class="pn hidden">
     <summary>⚙️ Settings</summary>
-    <div class="lb" style="margin-top:10px">Alerts (a summary with sound)</div>
+
+    <div class="grp first">🔔 Alerts <span class="sm">· a summary with sound</span></div>
     <label class="sw"><span>Grid off / back</span><input type="checkbox" id="sGrid"></label>
     <label class="sw"><span>Power alert</span><input type="checkbox" id="sGridW"></label>
     <label class="sw" id="rowAlertKw"><span>… above, kW</span><input type="number" id="sAlertKw" min="0.5" max="20" step="0.1" inputmode="decimal"></label>
@@ -104,26 +111,49 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
     <label class="sw"><span>Battery low (30 · 25 · 20 · 15 · 10 %)</span><input type="checkbox" id="sBatt"></label>
     <label class="sw" id="rowAuto"><span>Update summary every 15 s</span><input type="checkbox" id="sAuto"></label>
     <label class="sw" id="rowLoad"><span>High load above 80 %</span><input type="checkbox" id="sLoad"></label>
-    <div class="lb" style="margin-top:12px">Battery</div>
+
+    <div class="grp">🔋 Battery &amp; estimates <span class="sm">· used by the board</span></div>
     <label class="sw" id="rowSolar"><span>Solar panels connected</span><input type="checkbox" id="sSolar"></label>
     <label class="sw"><span>Capacity, kWh</span><input type="number" id="sWh" min="0" max="200" step="0.1" inputmode="decimal"></label>
     <label class="sw" id="rowFull"><span>Full at, %</span><input type="number" id="sFull" min="50" max="100" step="1" inputmode="numeric"></label>
-    <label class="sw"><span>Inverter cut-off, %</span><input type="number" id="sRes" min="0" max="90" step="1" inputmode="numeric"></label>
+    <label class="sw"><span>Cut-off level, %</span><input type="number" id="sRes" min="0" max="90" step="1" inputmode="numeric"></label>
     <label class="sw" id="rowLearn"><span>Learn from outages</span><input type="checkbox" id="sLearn"></label>
     <div class="hint" id="learnInfo"></div>
     <label class="sw"><span>Inverter own use, W</span><input type="number" id="sIdle" min="0" max="1000" step="1" inputmode="numeric"></label>
     <label class="sw"><span>Inverter efficiency, %</span><input type="number" id="sEff" min="50" max="100" step="1" inputmode="numeric"></label>
     <div class="hint" id="preview"></div>
+    <button id="sSave" class="btn" disabled>Save</button>
+    <button id="sReset" class="btn2" type="button">Reset to defaults</button>
+
     <div id="invSection" class="hidden">
-      <div class="lb" style="margin-top:12px">Inverter (changes the inverter's own settings)</div>
+      <div class="grp">⚡ Inverter configuration <span class="sm">· stored in the inverter</span></div>
       <label class="sw"><span>Output priority</span><select id="sOp"><option value="0">Utility first</option><option value="1">Solar first</option><option value="2">Battery first (SBU)</option></select></label>
       <label class="sw"><span>Charger priority</span><select id="sCp"><option value="0">Utility first</option><option value="1">Solar first</option><option value="2">Solar + utility</option><option value="3">Only solar</option></select></label>
       <label class="sw"><span>Grid charging, max</span><select id="sAmps"></select></label>
+      <label class="sw" id="rowTotal"><span>Total charging, max</span><select id="sTotal"></select></label>
       <div class="hint" id="ampsHint"></div>
+      <label class="sw" id="rowRange"><span>Grid input range</span><select id="sRange"><option value="0">Appliance (wide)</option><option value="1">UPS (fast)</option></select></label>
+      <div id="flagRows">
+        <label class="sw"><span>Buzzer</span><input type="checkbox" id="sBuzz"></label>
+        <label class="sw"><span>Overload bypass to grid</span><input type="checkbox" id="sBypass"></label>
+        <label class="sw"><span>Restart after overload</span><input type="checkbox" id="sRestO"></label>
+        <label class="sw"><span>Restart after overheating</span><input type="checkbox" id="sRestT"></label>
+      </div>
+      <details id="voltBox" class="sub">
+        <summary>Battery voltages</summary>
+        <div class="hint warn">The battery is managed by its BMS. Wrong values can stop charging or shut the inverter down early; change them only to match the battery's specification.</div>
+        <label class="sw"><span>Back to grid below, V</span><input type="number" id="sVr" min="44" max="51" step="0.1" inputmode="decimal"></label>
+        <label class="sw"><span>Back to battery above, V</span><input type="number" id="sVd" min="0" max="58" step="0.1" inputmode="decimal"></label>
+        <div class="hint">Both apply in Battery first (SBU) mode; 0 = back to battery only when full.</div>
+        <label class="sw"><span>Cut-off, V</span><input type="number" id="sVc" min="40" max="48" step="0.1" inputmode="decimal"></label>
+        <label class="sw"><span>Bulk (absorption), V</span><input type="number" id="sVb" min="48" max="58.4" step="0.1" inputmode="decimal"></label>
+        <label class="sw"><span>Float, V</span><input type="number" id="sVf" min="48" max="58.4" step="0.1" inputmode="decimal"></label>
+      </details>
+      <div class="hint warn" id="invErr"></div>
+      <button id="sApply" class="btn" disabled>Apply to inverter</button>
+      <div class="sm" id="applyNote" style="margin-top:6px;text-align:center">The board sends the changes one by one, about 8 s apart; the summary then lists what the inverter accepted.</div>
     </div>
-    <button id="sSave" class="btn" disabled>Save</button>
-    <button id="sReset" class="btn2" type="button">Reset to defaults</button>
-    <div class="sm" style="margin-top:8px;text-align:center">Save sends a short command to the bot (removed from the chat right away); the summary then shows “✅ Settings saved”.</div>
+    <div class="sm" style="margin-top:10px;text-align:center">Each button sends a short command to the bot (removed from the chat right away); the summary then confirms it.</div>
   </details>
   <p class="sm" style="text-align:center;margin-top:14px">Data from the latest summary. Close and tap 📊 Dashboard again for newer values.</p>
 </main>
@@ -216,10 +246,11 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
   else { $('grid').textContent = gv !== null ? Math.round(gv) + ' V' : '–'; $('gridSub').textContent = gf !== null ? gf.toFixed(1) + ' Hz' : ''; }
   $('temp').textContent = tc !== null ? tc + ' °C · ' + (tc < 60 ? 'normal' : tc < 75 ? 'warm' : 'hot') : '–';
   if (pv !== null) { $('solarRow').classList.remove('hidden'); $('solar').textContent = pv + ' W'; }
-  // ⚙️ Settings, only inside Telegram (a plain browser can't hand changes to the bot). Save opens the bot link
-  // t.me/<bot>?start=<code>; the board applies it and deletes that message. This firmware sends and takes s3:
-  // flags_Wh_reserve_full_idle_efficiency_alert[_output_charger_amps] (inverter fields a number, or x = unchanged);
-  // the link's cfg has the first seven. Older firmware sends s2 / s1 and gets the matching older code back.
+  // ⚙️ Settings, only inside Telegram (a plain browser can't hand changes to the bot). The buttons open the bot link
+  // t.me/<bot>?start=<code>; the board applies it and deletes that message.
+  // Save (alerts, battery & estimates): s3_flags_Wh_reserve_full_idle_efficiency_alert; older firmware sends s2 / s1 in
+  // cfg and gets the same format back. Apply to inverter: i1_<key><value>_... for each changed inverter setting (firmware
+  // that sends "it"); 2.1.17 without it takes priorities and grid charging as a tail on the s3 code instead.
   var cfgText = q.get('cfg') || '', bot = q.get('bu');
   var m3 = /^s3_([0-9a-f]{1,2})_(\d{1,6})_(\d{1,3})_(\d{1,3})_(\d{1,4})_(\d{1,3})_(\d{1,3})$/.exec(cfgText);
   var m2 = m3 ? null : /^s2_([0-9a-f]{1,2})_(\d{1,6})_(\d{1,3})_(\d{1,3})_(\d{1,4})_(\d{1,3})$/.exec(cfgText);
@@ -238,7 +269,7 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
     if (cur.full !== null) $('sFull').value = cur.full;
     if (cur.alert !== null) $('sAlertKw').value = +(cur.alert / 10).toFixed(1);
     // What the board has learned during outages (lh hours on battery, lc capacity Wh, le efficiency %, li own use W).
-    var lh = num('lh'), lc = num('lc'), le = num('le'), li = num('li'), resetLearn = false, changed;
+    var lh = num('lh'), lc = num('lc'), le = num('le'), li = num('li'), resetLearn = false, refresh;
     var showLearn = function () {
       var box = $('learnInfo');
       if (resetLearn) { box.textContent = 'The learned values will be forgotten when you save.'; return; }
@@ -247,17 +278,32 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
                    le ? 'efficiency ' + le + ' %, own use ' + li + ' W' : 'efficiency and own use after 30 min at varied loads'];
       box.innerHTML = 'Learned from ' + (lh < 1 ? Math.round(lh * 60) + ' min' : lh.toFixed(1) + ' h') + ' on battery: ' + parts.join(' · ') +
         '. <a href="#" id="sForget">Forget</a>';
-      $('sForget').addEventListener('click', function (e) { e.preventDefault(); resetLearn = true; showLearn(); changed(); });
+      $('sForget').addEventListener('click', function (e) { e.preventDefault(); resetLearn = true; showLearn(); refresh(); });
     };
-    // The inverter's own settings (io output priority, ic charger priority, iu grid charging A, il allowed values).
-    var io = num('io'), ic = num('ic'), iu = num('iu'), inv = ver === 3 && io !== null && ic !== null && iu !== null;
+    // Inverter configuration: io / ic output and charger priority, iu / il grid charging A and allowed values, it / itl
+    // total charging, ig input range (0 appliance, 1 UPS), ix flags (1 buzzer, 2 overload bypass, 4 restart after
+    // overload, 8 restart after overheating), vr vd vc vb vf battery volts x10 (back to grid, back to battery, cut-off,
+    // bulk, float).
+    var io = num('io'), ic = num('ic'), iu = num('iu'), it = num('it'), ig = num('ig'), ix = num('ix');
+    var volts = [['r', 'sVr', num('vr')], ['d', 'sVd', num('vd')], ['x', 'sVc', num('vc')], ['k', 'sVb', num('vb')], ['f', 'sVf', num('vf')]];
+    var flags = [['z', 'sBuzz', 1], ['y', 'sBypass', 2], ['w', 'sRestO', 4], ['q', 'sRestT', 8]];
+    var inv = ver === 3 && io !== null && ic !== null && iu !== null, invFull = inv && it !== null;
+    var hasVolts = invFull && volts.every(function (v) { return v[2] !== null; }), hasFlags = invFull && ix !== null;
+    var amps = function (id, list, now, fallback) {
+      var a = (list || fallback).split('.').map(Number).filter(function (v) { return v > 0; });
+      if (a.indexOf(now) < 0) { a.push(now); a.sort(function (p, r) { return p - r; }); }
+      $(id).innerHTML = a.map(function (v) { return '<option value="' + v + '">' + v + ' A</option>'; }).join('');
+      $(id).value = String(now);
+    };
     if (inv) {
       $('invSection').classList.remove('hidden');
       $('sOp').value = String(io); $('sCp').value = String(ic);
-      var amps = (q.get('il') || '2.10.20.30.40.50.60.70.80.90.100').split('.').map(Number).filter(function (a) { return a > 0; });
-      if (amps.indexOf(iu) < 0) { amps.push(iu); amps.sort(function (a, c) { return a - c; }); }
-      $('sAmps').innerHTML = amps.map(function (a) { return '<option value="' + a + '">' + a + ' A</option>'; }).join('');
-      $('sAmps').value = String(iu);
+      amps('sAmps', q.get('il'), iu, '2.10.20.30.40.50.60.70.80.90.100');
+      if (invFull) amps('sTotal', q.get('itl'), it, '10.20.30.40.50.60.70.80.90.100.110.120'); else hide('rowTotal');
+      if (invFull && ig !== null) $('sRange').value = String(ig); else hide('rowRange');
+      if (hasFlags) flags.forEach(function (f) { $(f[1]).checked = (ix & f[2]) !== 0; }); else hide('flagRows');
+      if (hasVolts) volts.forEach(function (v) { $(v[1]).value = (v[2] / 10).toFixed(1); }); else hide('voltBox');
+      if (!invFull) { hide('sApply'); hide('applyNote'); }
     }
     var field = function (id, lo, hi, k) { var s = $(id).value; if (s === '') return null; var v = Math.round(Number(s) * (k || 1)); return isFinite(v) ? Math.min(hi, Math.max(lo, v)) : null; };
     var code = function () {
@@ -268,13 +314,39 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       if (ver === 3) vals.push(field('sAlertKw', 5, 200, 10)); // kW -> 100 W steps
       if (vals.indexOf(null) >= 0) return null;
       var c = 's' + ver + '_' + f.toString(16) + '_' + vals.join('_');
-      if (inv) {
+      if (inv && !invFull) { // 2.1.17: priorities and grid charging ride on the s3 code
         var pick = function (id, now) { var v = $(id).value; return v === String(now) ? 'x' : v; };
         var tail = [pick('sOp', io), pick('sCp', ic), pick('sAmps', iu)];
         if (tail.join('') !== 'xxx') c += '_' + tail.join('_');
       }
       return c;
     };
+    var tenths = function (id) { var s = $(id).value; var t = Math.round(Number(s) * 10); return s === '' || !isFinite(t) ? null : t; };
+    var invCode = function () {
+      var parts = [], add = function (key, value, now) { if (value !== null && value !== now) parts.push(key + value); };
+      add('o', Number($('sOp').value), io); add('c', Number($('sCp').value), ic);
+      add('u', Number($('sAmps').value), iu); add('t', Number($('sTotal').value), it);
+      if (ig !== null) add('g', Number($('sRange').value), ig);
+      if (hasFlags) flags.forEach(function (f) { add(f[0], $(f[1]).checked ? 1 : 0, (ix & f[2]) ? 1 : 0); });
+      if (hasVolts) volts.forEach(function (v) { add(v[0], tenths(v[1]), v[2]); });
+      return parts.length ? 'i1_' + parts.join('_') : '';
+    };
+    var invProblem = function () {
+      if (Number($('sAmps').value) > Number($('sTotal').value)) return 'Grid charging can not be above total charging.';
+      if (!hasVolts) return '';
+      var v = {}, missing = false;
+      volts.forEach(function (x) { v[x[0]] = tenths(x[1]); if (v[x[0]] === null) missing = true; });
+      if (missing) return 'Enter all battery voltages.';
+      if (v.x < 400 || v.x > 480) return 'Cut-off: 40.0–48.0 V.';
+      if (v.r < 440 || v.r > 510) return 'Back to grid: 44.0–51.0 V.';
+      if (v.d !== 0 && (v.d < 480 || v.d > 580)) return 'Back to battery: 0 (when full) or 48.0–58.0 V.';
+      if (v.k < 480 || v.k > 584 || v.f < 480 || v.f > 584) return 'Bulk and float: 48.0–58.4 V.';
+      if (v.f > v.k) return 'Float can not be above bulk.';
+      if (v.x >= v.r) return 'Cut-off must be below back to grid.';
+      if (v.d !== 0 && v.r >= v.d) return 'Back to grid must be below back to battery.';
+      return '';
+    };
+    var voltsChanged = function () { return hasVolts && volts.some(function (v) { return tenths(v[1]) !== v[2]; }); };
     // Live preview: discharge time at the house load now with these values (learned ones when learning is on and known).
     var preview = function () {
       var learnOn = ver === 3 && $('sLearn').checked && !resetLearn;
@@ -285,34 +357,52 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       $('preview').textContent = 'At the house load now (' + Math.round(l) + ' W): ≈ ' + dur(cap * Math.max(b - res, 0) / 100 / drawW * 3600) +
         ' from ' + Math.round(b) + ' % down to the ' + res + ' % cut-off' + (learnOn && (lc || le) ? ' (learned values)' : '') + '.';
     };
-    // What the grid charging limit means for the grid draw, against the inverter's rating.
+    // What the charging limits mean for the grid draw, against the inverter's rating.
     var ampsHint = function () {
       if (!inv) return;
       var a = Number($('sAmps').value), eff = (num('we') || 95) / 100;
       var chargeKw = a * (bv || 54) / eff / 1000, houseKw = Math.max(l || 0, 0) / 1000;
-      $('ampsHint').textContent = 'Charging at ' + a + ' A takes ≈ ' + chargeKw.toFixed(1) + ' kW from the grid; with the house now at ' +
-        houseKw.toFixed(1) + ' kW that is ≈ ' + (chargeKw + houseKw).toFixed(1) + ' of ' + ((lr || 6000) / 1000).toFixed(0) + ' kW.';
+      $('ampsHint').textContent = 'Grid charging at ' + a + ' A takes ≈ ' + chargeKw.toFixed(1) + ' kW; with the house now at ' +
+        houseKw.toFixed(1) + ' kW that is ≈ ' + (chargeKw + houseKw).toFixed(1) + ' of ' + ((lr || 6000) / 1000).toFixed(0) + ' kW.' +
+        (invFull ? ' Charging from all sources stops at ' + $('sTotal').value + ' A.' : '');
       $('sCp').options[3].disabled = !$('sSolar').checked; // only solar charging needs panels
     };
-    var initial = code(), save = $('sSave');
-    changed = function () { var c = code(); save.disabled = !c || c === initial; preview(); ampsHint(); };
-    if (ver === 3) showLearn();
-    preview(); ampsHint();
-    $('setPanel').addEventListener('input', changed); $('setPanel').addEventListener('change', changed);
+    var initial = code(), save = $('sSave'), apply = $('sApply');
+    refresh = function () {
+      var c = code(); save.disabled = !c || c === initial;
+      if (invFull) { var problem = invProblem(); $('invErr').textContent = problem; apply.disabled = !invCode() || !!problem; }
+      preview(); ampsHint();
+    };
+    var ask = function (text, then) {
+      if (tg.showConfirm) { try { tg.showConfirm(text, function (ok) { if (ok) then(); }); return; } catch (e) {} }
+      if (window.confirm(text)) then();
+    };
+    var send = function (button, c) {
+      button.disabled = true; button.textContent = 'Sending…';
+      tg.openTelegramLink('https://t.me/' + encodeURIComponent(bot) + '?start=' + c);
+      setTimeout(function () { try { tg.close(); } catch (e) {} }, 700);
+    };
+    save.addEventListener('click', function () {
+      var c = code(); if (!c || c === initial) return;
+      if (invFull && invCode()) { ask('The inverter changes are not applied yet and will be lost. Save the other settings anyway?', function () { send(save, c); }); return; }
+      send(save, c);
+    });
+    apply.addEventListener('click', function () {
+      var c = invCode(); if (!c || invProblem()) return;
+      var go = function () { if (voltsChanged()) ask('Changing battery voltages can stop charging or shut the inverter down early. Apply them?', function () { send(apply, c); }); else send(apply, c); };
+      if (code() !== initial) ask('Your other changes are not saved yet and will be lost. Apply the inverter settings anyway?', go); else go();
+    });
     $('sReset').addEventListener('click', function () {
       // Alerts and model values back to their defaults; capacity, solar and the inverter's settings describe the hardware and stay.
       $('sGrid').checked = true; $('sGridW').checked = true; $('sBatt').checked = false;
       if (ver === 3) { $('sAlertKw').value = 5; $('sLearn').checked = true; }
       if (ver > 1) $('sFull').value = 100;
       $('sRes').value = 10; $('sIdle').value = 40; $('sEff').value = 95;
-      changed();
+      refresh();
     });
-    save.addEventListener('click', function () {
-      var c = code(); if (!c || c === initial) return;
-      save.disabled = true; save.textContent = 'Sending…';
-      tg.openTelegramLink('https://t.me/' + encodeURIComponent(bot) + '?start=' + c);
-      setTimeout(function () { try { tg.close(); } catch (e) {} }, 700);
-    });
+    $('setPanel').addEventListener('input', refresh); $('setPanel').addEventListener('change', refresh);
+    if (ver === 3) showLearn();
+    refresh();
     $('setPanel').classList.remove('hidden');
   }
   var w = q.get('w'); if (w) { $('warnPanel').classList.remove('hidden'); $('warnPanel').textContent = '⚠️ ' + w; }
