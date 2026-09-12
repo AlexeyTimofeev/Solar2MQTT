@@ -45,8 +45,6 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
 .grp{margin:18px 0 6px;padding-top:12px;border-top:1px solid var(--border);font-size:14px;font-weight:600}
 .grp.first{border-top:0;padding-top:0;margin-top:12px}
 .grp .sm{font-weight:400}
-details.sub{margin-top:6px}
-details.sub summary{font-size:13px;color:var(--muted);padding:6px 0}
 .hint.warn{color:var(--warn)}
 .empty{text-align:center;color:var(--muted);padding-top:35vh}
 </style>
@@ -148,16 +146,6 @@ details.sub summary{font-size:13px;color:var(--muted);padding:6px 0}
         <label class="sw"><span>Battery cut-off, %</span><input type="number" id="sSc" min="0" max="90" step="1" inputmode="numeric"></label>
         <div class="hint">The inverter stops discharging here; the discharge estimate uses it too.</div>
       </div>
-      <details id="voltBox" class="sub">
-        <summary>Battery voltages</summary>
-        <div class="hint warn">Wrong values can stop charging or shut the inverter down early; change them only to match the battery's specification.</div>
-        <label class="sw"><span>Back to grid below, V</span><input type="number" id="sVr" min="44" max="51" step="0.1" inputmode="decimal"></label>
-        <label class="sw"><span>Back to battery above, V</span><input type="number" id="sVd" min="0" max="58" step="0.1" inputmode="decimal"></label>
-        <div class="hint">Both apply in Battery first (SBU) mode; 0 = back to battery only when full.</div>
-        <label class="sw"><span>Cut-off, V</span><input type="number" id="sVc" min="40" max="48" step="0.1" inputmode="decimal"></label>
-        <label class="sw"><span>Bulk (absorption), V</span><input type="number" id="sVb" min="48" max="58.4" step="0.1" inputmode="decimal"></label>
-        <label class="sw"><span>Float, V</span><input type="number" id="sVf" min="48" max="58.4" step="0.1" inputmode="decimal"></label>
-      </details>
       <div class="hint warn" id="invErr"></div>
       <button id="sApply" class="btn" disabled>Apply to inverter</button>
       <div class="sm" id="applyNote" style="margin-top:6px;text-align:center">The board sends the changes one by one, about 8 s apart; the summary then lists what the inverter accepted.</div>
@@ -299,17 +287,13 @@ details.sub summary{font-size:13px;color:var(--muted);padding:6px 0}
     };
     // Inverter configuration: io / ic output and charger priority, iu / il grid charging A and allowed values, it / itl
     // total charging, ig input range (0 appliance, 1 UPS), ix flags (1 buzzer, 2 overload bypass, 4 restart after
-    // overload, 8 restart after overheating), vr vd vc vb vf battery volts x10 (back to grid, back to battery, cut-off,
-    // bulk, float).
+    // overload, 8 restart after overheating).
     var io = num('io'), ic = num('ic'), iu = num('iu'), it = num('it'), ig = num('ig'), ix = num('ix');
-    var volts = [['r', 'sVr', num('vr')], ['d', 'sVd', num('vd')], ['x', 'sVc', num('vc')], ['k', 'sVb', num('vb')], ['f', 'sVf', num('vf')]];
     var flags = [['z', 'sBuzz', 1], ['y', 'sBypass', 2], ['w', 'sRestO', 4], ['q', 'sRestT', 8]];
     var inv = ver === 3 && io !== null && ic !== null && iu !== null, invFull = inv && it !== null;
-    // With a lithium battery that talks to the inverter the switch points are battery % (sg / sd / sc from QDOP) and the
-    // voltages are not used, so they are only offered for other battery types.
-    var sg = num('sg'), sd = num('sd'), sc = num('sc'), lithium = /^li/i.test(q.get('bt') || '');
-    var hasSoc = invFull && sg !== null && sd !== null && sc !== null;
-    var hasVolts = invFull && !lithium && volts.every(function (v) { return v[2] !== null; }), hasFlags = invFull && ix !== null;
+    // Battery % switch points of the lithium battery (sg back to grid, sd back to battery, sc cut-off, from QDOP).
+    var sg = num('sg'), sd = num('sd'), sc = num('sc');
+    var hasSoc = invFull && sg !== null && sd !== null && sc !== null, hasFlags = invFull && ix !== null;
     var amps = function (id, list, now, fallback) {
       var a = (list || fallback).split('.').map(Number).filter(function (v) { return v > 0; });
       if (a.indexOf(now) < 0) { a.push(now); a.sort(function (p, r) { return p - r; }); }
@@ -323,7 +307,6 @@ details.sub summary{font-size:13px;color:var(--muted);padding:6px 0}
       if (invFull) amps('sTotal', q.get('itl'), it, '10.20.30.40.50.60.70.80.90.100.110.120'); else hide('rowTotal');
       if (invFull && ig !== null) $('sRange').value = String(ig); else hide('rowRange');
       if (hasFlags) flags.forEach(function (f) { $(f[1]).checked = (ix & f[2]) !== 0; }); else hide('flagRows');
-      if (hasVolts) volts.forEach(function (v) { $(v[1]).value = (v[2] / 10).toFixed(1); }); else hide('voltBox');
       if (hasSoc) { $('sSg').value = sg; $('sSd').value = sd; $('sSc').value = sc; } else hide('socBox');
       if (!invFull) { hide('sApply'); hide('applyNote'); }
     }
@@ -348,7 +331,6 @@ details.sub summary{font-size:13px;color:var(--muted);padding:6px 0}
       }
       return c;
     };
-    var tenths = function (id) { var s = $(id).value; var t = Math.round(Number(s) * 10); return s === '' || !isFinite(t) ? null : t; };
     var whole = function (id) { var s = $(id).value; var t = Math.round(Number(s)); return s === '' || !isFinite(t) ? null : t; };
     var invCode = function () {
       var parts = [], add = function (key, value, now) { if (value !== null && value !== now) parts.push(key + value); };
@@ -356,7 +338,6 @@ details.sub summary{font-size:13px;color:var(--muted);padding:6px 0}
       add('u', Number($('sAmps').value), iu); add('t', Number($('sTotal').value), it);
       if (ig !== null) add('g', Number($('sRange').value), ig);
       if (hasFlags) flags.forEach(function (f) { add(f[0], $(f[1]).checked ? 1 : 0, (ix & f[2]) ? 1 : 0); });
-      if (hasVolts) volts.forEach(function (v) { add(v[0], tenths(v[1]), v[2]); });
       if (hasSoc) { add('b', whole('sSg'), sg); add('e', whole('sSd'), sd); add('s', whole('sSc'), sc); }
       return parts.length ? 'i1_' + parts.join('_') : '';
     };
@@ -371,20 +352,8 @@ details.sub summary{font-size:13px;color:var(--muted);padding:6px 0}
         if (pc > pg) return 'Cut-off can not be above back to grid.';
         if (pg >= pd) return 'Back to grid must be below back to battery.';
       }
-      if (!hasVolts) return '';
-      var v = {}, missing = false;
-      volts.forEach(function (x) { v[x[0]] = tenths(x[1]); if (v[x[0]] === null) missing = true; });
-      if (missing) return 'Enter all battery voltages.';
-      if (v.x < 400 || v.x > 480) return 'Cut-off: 40.0–48.0 V.';
-      if (v.r < 440 || v.r > 510) return 'Back to grid: 44.0–51.0 V.';
-      if (v.d !== 0 && (v.d < 480 || v.d > 580)) return 'Back to battery: 0 (when full) or 48.0–58.0 V.';
-      if (v.k < 480 || v.k > 584 || v.f < 480 || v.f > 584) return 'Bulk and float: 48.0–58.4 V.';
-      if (v.f > v.k) return 'Float can not be above bulk.';
-      if (v.x >= v.r) return 'Cut-off must be below back to grid.';
-      if (v.d !== 0 && v.r >= v.d) return 'Back to grid must be below back to battery.';
       return '';
     };
-    var voltsChanged = function () { return hasVolts && volts.some(function (v) { return tenths(v[1]) !== v[2]; }); };
     // Live preview: discharge time at the house load now with these values (learned ones when learning is on and known).
     var preview = function () {
       var learnOn = ver === 3 && $('sLearn').checked && !resetLearn;
@@ -431,7 +400,7 @@ details.sub summary{font-size:13px;color:var(--muted);padding:6px 0}
     });
     apply.addEventListener('click', function () {
       var c = invCode(); if (!c || invProblem()) return;
-      var go = function () { if (voltsChanged()) ask('Changing battery voltages can stop charging or shut the inverter down early. Apply them?', function () { send(apply, c); }); else send(apply, c); };
+      var go = function () { send(apply, c); };
       if (code() !== initial) ask('Your other changes are not saved yet and will be lost. Apply the inverter settings anyway?', go); else go();
     });
     $('sReset').addEventListener('click', function () {
