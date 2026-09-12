@@ -174,19 +174,22 @@ the PowMr VMII-6000 with a no-op write of its current value:
 | Grid input range | `PGR0n` | 0 Appliance (wide window), 1 UPS (fast switch-over) |
 | Buzzer, overload bypass, restart after overload, restart after overheating | `PEa`/`PDa`, `b`, `u`, `v` | on / off (backlight `x`, grid-loss alarm `y` and power saving `j` never answer on this model) |
 | Battery % points (lithium with BMS): back to grid, back to battery, cut-off | `PBCC`, `PBDC`, `PSDC` + `nnn` (3 digits), read with `QDOP` (fields 9-11) | 5-95, 10-100, 0-90 %; cut-off <= back to grid < back to battery; back to grid / back to battery are shown only in Solar first or Battery first mode (the only modes that use them); `PSDC` answers only after a ~20 s pause |
-| Battery voltages (other battery types only: with a BMS the inverter uses the % points, and the BMS sets C.V. / float) | `PBCV`, `PBDV`, `PSDV`, `PCVV`, `PBFT` + `nn.n` | 44.0-51.0, 0 (when full) or 48.0-58.0, 40.0-48.0, 48.0-58.4, 48.0-58.4 V; with a warning and a confirmation |
 
 The allowed currents are asked once a minute after start. Apply sends `/start i1_<key><value>_...` with only the
 changed settings (Telegram allows 64 characters, too few next to the board's settings): o, c, u, t, g, z buzzer,
-y bypass, w restart after overload, q restart after overheating, and volts x10 r, d, x, k, f. The main loop checks the
-whole code against the inverter's current values (ranges, grid <= total, cut-off < back to grid < back to battery,
-float <= bulk) and sends nothing if any part is wrong ("⚠️ Inverter: nothing changed (...)"). Voltage changes are
-ordered so both chains stay valid on the way (lowered values from the bottom up, raised ones from the top down).
-Commands go one at a time, 8 s apart (flag commands that follow another command closely go unanswered), with one retry
-when there is no answer; the driver re-reads QPIRI and QFLAG after each, so the Dashboard shows the new values. The
-summary then shows a silent "✅ Inverter: total charging 100 A ✓, restart after overload on ✓" headline until the next
-automatic edit. The link carries `io ic iu il it itl ig ix vr vd vc vb vf`. Firmware 2.1.17 (no `it` key) still gets
-its priorities and grid charging as a tail on the Save code.
+y bypass, w restart after overload, q restart after overheating, and the battery % points b back to grid, e back to
+battery, s cut-off. The main loop checks the whole code against the inverter's current values (ranges, grid <= total,
+cut-off % <= back to grid % < back to battery %) and sends nothing if any part is wrong ("⚠️ Inverter: nothing changed
+(...)"). % changes are ordered so the chain stays valid on the way (lowered values from the bottom up, raised ones from
+the top down). Commands go one at a time, 8 s apart (20 s before `PSDC`; flag commands that follow another command
+closely go unanswered), with one retry when there is no answer; setting commands make the driver re-read QPIRI and
+QFLAG, so the Dashboard shows the new values. The summary then shows a silent "✅ Inverter: total charging 100 A ✓,
+restart after overload on ✓" headline until the next automatic edit. The link carries `io ic iu il it itl ig ix sg sd sc
+bms`. Firmware 2.1.17 (no `it` key) still gets its priorities and grid charging as a tail on the Save code.
+
+Only lithium batteries with BMS communication are supported: the voltage setpoints (`PBCV`, `PBDV`, `PSDV`, `PCVV`,
+`PBFT`, which the inverter accepts) are not offered, because with a BMS the inverter works with the % points and the BMS
+sets the charging voltages.
 
 The board asks `QDOP` (battery % points) and `QBMS` (what the BMS reports: connected, SOC, force-charge / stop-discharge
 / stop-charge flags, C.V. and float voltage, cut-off voltage, max charge and discharge current) a minute after start,

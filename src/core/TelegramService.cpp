@@ -2241,8 +2241,8 @@ struct TelegramService::Impl
     // Main thread: "Apply to inverter" from the ⚙️ panel. i1 followed by _<key><value> for each changed setting (the
     // board's own settings go separately: Telegram's 64 characters are too few for both). Keys: o output priority 0-2,
     // c charger priority 0-3, u grid charging A, t total charging A, g input range (0 appliance, 1 UPS), z buzzer,
-    // y overload bypass, w restart after overload, q restart after overheating (0/1), and battery volts x10: r back to
-    // grid (recharge), d back to battery (re-discharge, 0 = when full), x cut-off, k bulk, f float. The whole code is
+    // y overload bypass, w restart after overload, q restart after overheating (0/1), and the battery % points (lithium
+    // battery with BMS): b back to grid, e back to battery, s cut-off. The whole code is
     // checked against the inverter's current values first; nothing is sent when any part of it is wrong.
     void queueInverterCode(const String &code)
     {
@@ -2281,11 +2281,6 @@ struct TelegramService::Impl
         current['y'] = flag(DESCR_Overload_Bypass_Enabled);
         current['w'] = flag(DESCR_Overload_Restart_Enabled);
         current['q'] = flag(DESCR_Over_Temperature_Restart_Enabled);
-        current['r'] = number(DESCR_Battery_Recharge_Voltage, 10.0f);
-        current['d'] = number(DESCR_Battery_Redischarge_Voltage, 10.0f);
-        current['x'] = number(DESCR_Battery_Under_Voltage, 10.0f);
-        current['k'] = number(DESCR_Battery_Bulk_Voltage, 10.0f);
-        current['f'] = number(DESCR_Battery_Float_Voltage, 10.0f);
         current['b'] = socBackToGrid;
         current['e'] = socBackToBattery;
         current['s'] = socCutoff;
@@ -2342,31 +2337,6 @@ struct TelegramService::Impl
             fail("grid charging above total charging");
             return;
         }
-        const bool anyVolts = given['r'] || given['d'] || given['x'] || given['k'] || given['f'];
-        if (anyVolts)
-        {
-            if (outside('x', 400, 480) || outside('r', 440, 510) || outside('k', 480, 584) || outside('f', 480, 584) ||
-                (given['d'] && wanted['d'] != 0 && (wanted['d'] < 480 || wanted['d'] > 580)))
-            {
-                fail("voltage out of range");
-                return;
-            }
-            if (wanted['f'] > wanted['k'])
-            {
-                fail("float above bulk");
-                return;
-            }
-            if (wanted['x'] >= wanted['r'])
-            {
-                fail("cut-off not below back to grid");
-                return;
-            }
-            if (wanted['d'] != 0 && wanted['r'] >= wanted['d'])
-            {
-                fail("back to grid not below back to battery");
-                return;
-            }
-        }
         if (given['b'] || given['e'] || given['s'])
         {
             if (outside('s', 0, 90) || outside('b', 5, 95) || outside('e', 10, 100))
@@ -2389,11 +2359,6 @@ struct TelegramService::Impl
         std::vector<std::pair<String, String>> commands;
         auto changed = [&](char key) { return given[static_cast<int>(key)] && wanted[static_cast<int>(key)] != current[static_cast<int>(key)]; };
         auto onOff = [](long value) { return String(value ? "on" : "off"); };
-        auto volts = [](long tenths) {
-            char text[8];
-            snprintf(text, sizeof(text), "%02ld.%ld", tenths / 10, tenths % 10);
-            return String(text);
-        };
         if (changed('o'))
         {
             commands.push_back({"POP0" + String(wanted['o']), String("output ") + kOutputPriorityNames[wanted['o']]});
@@ -2447,49 +2412,28 @@ struct TelegramService::Impl
                 commands.push_back({String(wanted[static_cast<int>(f.key)] ? "PE" : "PD") + f.letter, String(f.label) + " " + onOff(wanted[static_cast<int>(f.key)])});
             }
         }
-        // Battery % points (lithium with BMS) and battery voltages: chains that must stay in order (cut-off % <= back to
-        // grid % < back to battery %, cut-off V < back to grid V < back to battery V, float <= bulk). Lowered values go
-        // first from the bottom up, raised ones from the top down.
-        struct ChainCommand
+        // Battery % points (lithium battery with BMS), which must stay in order cut-off <= back to grid < back to battery:
+        // lowered values go first from the bottom up, raised ones from the top down.
+        struct PercentCommand
         {
             char key;
             const char *command;
             const char *label;
         };
-        const ChainCommand chains[3][3] = {{{'s', "PSDC", "cut-off"}, {'b', "PBCC", "back to grid"}, {'e', "PBDC", "back to battery"}},
-                                           {{'x', "PSDV", "cut-off"}, {'r', "PBCV", "back to grid"}, {'d', "PBDV", "back to battery"}},
-                                           {{'f', "PBFT", "float"}, {'k', "PCVV", "bulk"}, {0, nullptr, nullptr}}};
-        auto level = [](char key, long value) { return key == 'd' && value == 0 ? 10000L : value; }; // 0 = "when full"
-        for (int c = 0; c < 3; ++c)
+        const PercentCommand chain[3] = {{'s', "PSDC", "cut-off"}, {'b', "PBCC", "back to grid"}, {'e', "PBDC", "back to battery"}};
+        for (int pass = 0; pass < 2; ++pass)
         {
-            const bool percent = c == 0;
-            for (int pass = 0; pass < 2; ++pass)
+            for (int n = 0; n < 3; ++n)
             {
-                for (int n = 0; n < 3; ++n)
+                const PercentCommand &v = chain[pass == 0 ? n : 2 - n];
+                const int key = static_cast<int>(v.key);
+                if (!changed(v.key) || (pass == 0) != (wanted[key] < current[key]))
                 {
-                    const ChainCommand &v = chains[c][pass == 0 ? n : 2 - n];
-                    if (v.key == 0 || !changed(v.key))
-                    {
-                        continue;
-                    }
-                    const int key = static_cast<int>(v.key);
-                    if ((pass == 0) != (level(v.key, wanted[key]) < level(v.key, current[key])))
-                    {
-                        continue;
-                    }
-                    const long value = wanted[key];
-                    if (percent)
-                    {
-                        char command[12];
-                        snprintf(command, sizeof(command), "%s%03ld", v.command, value); // three digits (PSDC010)
-                        commands.push_back({command, String(v.label) + " " + String(value) + " %"});
-                    }
-                    else
-                    {
-                        commands.push_back({String(v.command) + volts(value),
-                                            String(v.label) + (v.key == 'd' && value == 0 ? String(" when full") : " " + volts(value) + " V")});
-                    }
+                    continue;
                 }
+                char command[12];
+                snprintf(command, sizeof(command), "%s%03ld", v.command, wanted[key]); // three digits (PSDC010)
+                commands.push_back({command, String(v.label) + " " + String(wanted[key]) + " %"});
             }
         }
         if (commands.empty())
@@ -2968,9 +2912,8 @@ struct TelegramService::Impl
         if (chargerIndex >= 0) add("ic", String(chargerIndex));
         if (utilityAmps.toInt() > 0) add("iu", String(utilityAmps.toInt()));
         if (allowedUtilityAmps.length()) add("il", allowedUtilityAmps);
-        // More of the inverter's settings: total charging (it, allowed itl), input range (ig 0 appliance / 1 UPS), flags
-        // (ix: 1 buzzer, 2 overload bypass, 4 restart after overload, 8 restart after overheating) and battery volts x10
-        // (vr back to grid, vd back to battery, vc cut-off, vb bulk, vf float).
+        // More of the inverter's settings: total charging (it, allowed itl), input range (ig 0 appliance / 1 UPS) and
+        // flags (ix: 1 buzzer, 2 overload bypass, 4 restart after overload, 8 restart after overheating).
         JsonObjectConst device = g_stateDoc["DeviceData"].as<JsonObjectConst>();
         if (device[DESCR_Current_Max_Charging_Current].is<float>())
         {
@@ -2987,27 +2930,15 @@ struct TelegramService::Impl
                                            (device[DESCR_Over_Temperature_Restart_Enabled].as<bool>() ? 8u : 0u);
             add("ix", String(inverterFlags));
         }
-        const char *const voltKeys[][2] = {{"vr", DESCR_Battery_Recharge_Voltage}, {"vd", DESCR_Battery_Redischarge_Voltage},
-                                           {"vc", DESCR_Battery_Under_Voltage}, {"vb", DESCR_Battery_Bulk_Voltage},
-                                           {"vf", DESCR_Battery_Float_Voltage}};
-        for (const auto &v : voltKeys)
-        {
-            if (device[v[1]].is<float>())
-            {
-                add(v[0], String(lroundf(device[v[1]].as<float>() * 10.0f)));
-            }
-        }
-        // Battery % points from QDOP (sg back to grid, sd back to battery, sc cut-off), the battery type (bt) and the BMS
-        // data from QBMS (bms, as the inverter sends it: connected, SOC, force-charge / stop-discharge / stop-charge
-        // flags, C.V. and float volts x10, cut-off volts x10, max charge and discharge amps).
+        // Battery % points from QDOP (sg back to grid, sd back to battery, sc cut-off) and the BMS data from QBMS (bms,
+        // as the inverter sends it: connected, SOC, force-charge / stop-discharge / stop-charge flags, C.V. and float
+        // volts x10, cut-off volts x10, max charge and discharge amps).
         if (socCutoff >= 0)
         {
             add("sg", String(socBackToGrid));
             add("sd", String(socBackToBattery));
             add("sc", String(socCutoff));
         }
-        const String batteryType = device["Battery_Type"] | "";
-        if (batteryType.length()) add("bt", batteryType);
         if (bmsInfo.length()) add("bms", bmsInfo);
         add("cfg", settingsCode()); // the ⚙️ panel's current values, and the bot its Save link goes to
         lockTake();
