@@ -27,7 +27,6 @@ public:
                        protocol_type_t protocol,
                        bool inverterConnected,
                        bool wifiConnected,
-                       bool mqttConnected,
                        bool ethActive,
                        bool apMode,
                        int wifiRssi,

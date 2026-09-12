@@ -8,7 +8,6 @@
 #include "core/GitHubOtaUpdater.h"
 #include "core/InternalTemperatureService.h"
 #include "core/LogSerial.h"
-#include "core/MqttHandler.h"
 #include "core/SettingsPrefs.h"
 #include "core/SolarState.h"
 #include "core/StatusLedService.h"
@@ -63,7 +62,6 @@ WiFiManager wifiManager(server);
 SolarInverterService inverterService(solarState);
 Ds18b20Service ds18b20Service;
 InternalTemperatureService internalTemperatureService;
-MqttHandler mqttHandler(solarState, wifiManager, inverterService);
 StatusLedService statusLedService;
 #if HAS_TFT
 DisplayService displayService;
@@ -72,7 +70,7 @@ DisplayService displayService;
 TelegramService telegramService;
 #endif
 GitHubOtaUpdater otaUpdater(OTA_GITHUB_OWNER, OTA_GITHUB_REPO, STRVERSION, BUILD_VARIANT);
-WebServerHandler webServerHandler(server, wifiManager, solarState, inverterService, mqttHandler, otaUpdater);
+WebServerHandler webServerHandler(server, wifiManager, solarState, inverterService, otaUpdater);
 
 namespace
 {
@@ -94,7 +92,6 @@ void updateRuntimeState()
                              inverterService.protocol(),
                              inverterService.isConnected(),
                              wifiManager.getConnectionState(),
-                             mqttHandler.isConnected(),
                              wifiManager.isEthActive(),
                              wifiManager.isInApMode(),
                              wifiManager.rssi(),
@@ -186,27 +183,21 @@ void setup()
     inverterService.setCallback([]()
                                 {
         updateRuntimeState();
-        webServerHandler.setMqttConnected(mqttHandler.isConnected());
         webServerHandler.setInverterConnected(inverterService.isConnected());
-        mqttHandler.triggerFullStatePublish();
         webServerHandler.notifyStatusBar(); });
     inverterService.setTransportPaused(wifiManager.isInApMode());
     inverterService.begin();
 
-    ds18b20Service.setCallback([](uint8_t index, float temperature)
+    ds18b20Service.setCallback([](uint8_t, float)
                                {
-        mqttHandler.publishSensorImmediate(index, temperature);
-        mqttHandler.triggerFullStatePublish();
         webServerHandler.notifyStatusBar(); });
     configureDs18b20();
 
     internalTemperatureService.setCallback([]()
                                            {
-        mqttHandler.triggerFullStatePublish();
         webServerHandler.notifyStatusBar(); });
     internalTemperatureService.begin(solarState.doc()["EspData"].as<JsonObject>());
 
-    mqttHandler.begin();
     webServerHandler.begin();
 #ifdef DIAG_CRASH_TEST
     // Test builds only: "crashtest" typed in the web serial console crashes the board from the main loop, to
@@ -220,7 +211,6 @@ void setup()
 #endif
 
     updateRuntimeState();
-    webServerHandler.setMqttConnected(mqttHandler.isConnected());
     webServerHandler.setInverterConnected(inverterService.isConnected());
     webServerHandler.notifyStatusBar();
 }
@@ -249,18 +239,12 @@ void loop()
     {
         g_pendingNetworkReconfigure = false;
         wifiManager.reconfigure();
-        mqttHandler.triggerFullStatePublish();
-        if (_settings.get.mqttHAEnabled())
-        {
-            mqttHandler.triggerHaDiscovery();
-        }
         webServerHandler.notifyStatusBar();
     }
     inverterService.setTransportPaused(wifiManager.isInApMode());
     inverterService.loop();
     ds18b20Service.loop();
     internalTemperatureService.loop();
-    mqttHandler.loop();
 
     if (g_pendingInverterReconfigure && static_cast<int32_t>(millis() - g_inverterReconfigureAt) >= 0)
     {
@@ -269,7 +253,6 @@ void loop()
         configureDs18b20();
         statusLedService.configure(_settings.get.statusLedPin(),
                                    static_cast<uint8_t>(_settings.get.statusLedBrightness()));
-        mqttHandler.triggerFullStatePublish();
         webServerHandler.notifyStatusBar();
     }
 
@@ -282,7 +265,6 @@ void loop()
     }
 
     updateRuntimeState();
-    webServerHandler.setMqttConnected(mqttHandler.isConnected());
     webServerHandler.setInverterConnected(inverterService.isConnected());
     webServerHandler.loop();
 #if HAS_TELEGRAM
@@ -292,14 +274,10 @@ void loop()
 #if HAS_TFT
     displayService.loop(wifiManager.getConnectionState(),
                         wifiManager.isInApMode(),
-                        mqttHandler.isConnected(),
                         inverterService.isConnected(),
                         wifiManager.ipAddress());
 #endif
-    statusLedService.loop(wifiManager.getConnectionState(),
-                          strlen(_settings.get.mqttHost()) > 0,
-                          mqttHandler.isConnected(),
-                          inverterService.isConnected());
+    statusLedService.loop(wifiManager.getConnectionState(), inverterService.isConnected());
 
     delay(1);
 }

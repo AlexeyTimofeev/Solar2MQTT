@@ -9,7 +9,7 @@ class DisplayService
 {
 public:
     void begin();
-    void loop(bool wifiConnected, bool apMode, bool mqttConnected, bool inverterConnected, const String &ipAddress);
+    void loop(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress);
 
 private:
 #if HAS_TFT
@@ -55,7 +55,7 @@ private:
     bool pollTouch(uint32_t now, bool &next);
 
     bool pollButton(Button &button, uint32_t now);
-    void render(bool wifiConnected, bool apMode, bool mqttConnected, bool inverterConnected, const String &ipAddress);
-    String buildSignature(bool wifiConnected, bool apMode, bool mqttConnected, bool inverterConnected, const String &ipAddress) const;
+    void render(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress);
+    String buildSignature(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress) const;
 #endif
 };

@@ -67,7 +67,6 @@ void SolarState::begin()
 {
     g_stateDoc.clear();
     ensureObjects();
-    status()["mqttConnected"] = false;
     status()["wifiConnected"] = false;
     status()["inverterConnected"] = false;
     status()["ethActive"] = false;
@@ -121,7 +120,6 @@ void SolarState::updateRuntime(const char *deviceName,
                                protocol_type_t protocol,
                                bool inverterConnected,
                                bool wifiConnected,
-                               bool mqttConnected,
                                bool ethActive,
                                bool apMode,
                                int wifiRssi,
@@ -143,14 +141,12 @@ void SolarState::updateRuntime(const char *deviceName,
     doc["EspData"]["detect_protocol_unknown"] = (protocol == PI30_UNKNOWN);
     doc["EspData"]["IP"] = ipAddress;
     doc["EspData"]["WiFiStatus"] = wifiConnected;
-    doc["EspData"]["MQTTStatus"] = mqttConnected;
     doc["EspData"]["Ethernet_Active"] = ethActive;
     doc["EspData"]["Network_Type"] = networkType;
     doc["EspData"]["AP_Mode"] = apMode;
     doc["EspData"]["Inverter_Connected"] = inverterConnected;
 
     doc["Status"]["wifiConnected"] = wifiConnected;
-    doc["Status"]["mqttConnected"] = mqttConnected;
     doc["Status"]["inverterConnected"] = inverterConnected;
     doc["Status"]["ethActive"] = ethActive;
     doc["Status"]["apMode"] = apMode;

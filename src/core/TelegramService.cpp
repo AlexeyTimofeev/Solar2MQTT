@@ -1843,9 +1843,7 @@ struct TelegramService::Impl
         err = lastError;
         lockGive();
         t += "Telegram: " + String(summariesSent) + " summaries sent, last error: " + (err.length() ? htmlEscape(err) : String("none")) + "\n";
-        t += "Updates: " + updateStatusText() + "\n";
-        const bool mqttConfigured = strlen(_settings.get.mqttHost()) > 0;
-        t += "MQTT: " + String(!mqttConfigured ? "off" : ((esp["MQTTStatus"] | false) ? "connected" : "not connected"));
+        t += "Updates: " + updateStatusText();
         return t;
     }
 

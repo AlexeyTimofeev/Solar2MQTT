@@ -33,16 +33,6 @@
   X(STRING, "network", "webUIuser", webUIuser, "", 0, 0) \
   X(STRING, "network", "webUIPassword", webUIPassword, "", 0, 0) \
   X(BOOL,   "network", "ethEnabled", ethEnabled, HAS_LAN, 0, 1) \
-  X(BOOL,   "mqtt", "SSLenabled", mqttSSL, false, 0, 1) \
-  X(STRING, "mqtt", "host", mqttHost, "", 0, 0) \
-  X(STRING, "mqtt", "user", mqttUser, "", 0, 0) \
-  X(STRING, "mqtt", "password", mqttPassword, "", 0, 0) \
-  X(UINT16, "mqtt", "port", mqttPort, 1883, 1, 65535) \
-  X(STRING, "mqtt", "topic", mqttTopic, "Solar", 0, 0) \
-  X(UINT16, "mqtt", "refresh", mqttRefresh, 30, 0, 86400) \
-  X(BOOL,   "mqtt", "jsonMode", mqttJson, false, 0, 1) \
-  X(BOOL,   "mqtt", "HAEnabled", mqttHAEnabled, false, 0, 1) \
-  X(STRING, "mqtt", "triggerTopic", mqttTriggerPath, "", 0, 0) \
   X(INT32,  "device", "uartRx", inverterRxPin, PIN_INVERTER_RX_DEFAULT, -1, 48) \
   X(INT32,  "device", "uartTx", inverterTxPin, PIN_INVERTER_TX_DEFAULT, -1, 48) \
   X(INT32,  "device", "uartDir", inverterDirPin, PIN_INVERTER_DE_DEFAULT, -1, 48) \
