@@ -262,6 +262,7 @@ private:
     void guardBatteryPercent(float previousPercent, float previousVoltage);
     
     String customCommandBuffer;
+    bool customCommandIsQuery = false; // a query (Q...) changes nothing: no static re-read afterwards
     JsonDocument cycleLiveBackup;
     JsonDocument cycleStaticBackup;
 

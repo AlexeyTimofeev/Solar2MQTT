@@ -345,6 +345,7 @@ void WebServerHandler::registerRoutes()
         telegram["chatId"] = _settings.get.telegramChatId();
         telegram["batteryAlerts"] = _settings.get.telegramBatteryAlerts();
         telegram["powerAlertW"] = _settings.get.telegramPowerAlertW();
+        telegram["batteryAlertLevels"] = _settings.get.telegramBatteryAlertLevels();
         telegram["gridAlerts"] = _settings.get.telegramGridAlerts();
         telegram["gridPowerAlert"] = _settings.get.telegramGridPowerAlert();
 #endif
@@ -530,6 +531,7 @@ void WebServerHandler::registerRoutes()
             else if (name == "chatId") _settings.set.telegramChatId(value);
             else if (name == "batteryAlerts") _settings.set.telegramBatteryAlerts(value.toInt() != 0);
             else if (name == "powerAlertW") _settings.set.telegramPowerAlertW(static_cast<uint16_t>(value.toInt()));
+            else if (name == "batteryAlertLevels") _settings.set.telegramBatteryAlertLevels(value);
             else if (name == "gridAlerts") _settings.set.telegramGridAlerts(value.toInt() != 0);
             else if (name == "gridPowerAlert") _settings.set.telegramGridPowerAlert(value.toInt() != 0);
         }

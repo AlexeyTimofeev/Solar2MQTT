@@ -119,7 +119,9 @@ skips the SOLAR page. Setting key: `device.solarConnected`.
 
 ## Battery alerts
 
-The Dashboard's ⚙️ Settings has a "Battery low" switch for alerts at 30 / 25 / 20 / 15 / 10 % (default off, key `telegram.batteryAlerts`).
+The Dashboard's ⚙️ Settings has a "Battery low at, %" field: comma separated levels (key `telegram.batteryAlertLevels`, default
+30,25,20,15,10, up to 8 levels of 1-99 %); an empty field switches the alerts off (key `telegram.batteryAlerts`). The settings code
+carries the levels as an optional 8th field of `s3` (`30-20-10`, `0` = none).
 When the battery percentage falls through one of these levels the bot sends a new summary with sound and a
 "🪫 Battery below 25 %" headline; the previous summary is removed, so there are no separate alert messages. A level re-arms once the battery has climbed 3 points above it, and the
 tracking restarts whenever the inverter link drops, so reconnects never produce false alerts. Alerts are delivered
@@ -161,15 +163,48 @@ inverter runs on battery without solar input, one sample per 2-second snapshot:
 
 ## Inverter settings from the Dashboard
 
-The ⚙️ panel's Inverter section changes the inverter's own settings: output priority (Utility first, Solar first,
-Battery first / SBU), charger priority (Utility first, Solar first, Solar + utility, Only solar - offered only with
-solar panels connected, since it stops charging from the grid) and the grid charging limit. The allowed currents come
-from the inverter (`QMUCHGCR`, asked once a minute after start: 2, 10 … 100 A on this PowMr), and the panel shows what
-the limit means for the grid draw against the 6 kW rating. The bot queues `POP0n`, `PCP0n` and `MUCHGCn` (this PowMr
-refuses zero padding: `MUCHGC60` ACK, `MUCHGC060` NAK) for the main loop, which sends them one at a time through
-SolarInverterService and reads the ACK / NAK; the driver re-reads QPIRI afterwards, so the Dashboard shows the new
-values. The summary then shows a silent "✅ Settings saved · inverter: grid charging 30 A ✓" headline until the next
-automatic edit.
+The ⚙️ panel is grouped: 🔔 Alerts and 🔋 Battery & estimates (the board's own settings, sent with **Save**) and
+⚡ Inverter configuration (stored in the inverter, sent with **Apply to inverter**). Every setting below was tested on
+the PowMr VMII-6000 with a no-op write of its current value:
+
+| Setting | Command | Values |
+|---|---|---|
+| Output priority | `POP0n` | 0 Utility first, 1 Solar first, 2 Battery first (SBU) |
+| Charger priority | `PCP0n` | 0 Utility first, 1 Solar first, 2 Solar + utility, 3 Only solar (only offered with solar panels connected, since it stops charging from the grid) |
+| Grid charging, max | `MUCHGCn` | allowed values from `QMUCHGCR` (2, 10 … 100 A); no zero padding (`MUCHGC60` ACK, `MUCHGC060` NAK) |
+| Total charging, max | `MNCHGCnnn` | allowed values from `QMCHGCR` (10 … 120 A); three digits (`MNCHGC090` ACK, `MNCHGC0090` NAK); grid charging can not exceed it; hidden while "Solar panels connected" is off, and then set to the grid charging limit (the next allowed value at or above it) whenever that one is changed |
+| Grid input range | `PGR0n` | 0 Appliance (wide window), 1 UPS (fast switch-over) |
+| Buzzer, overload bypass, restart after overload, restart after overheating | `PEa`/`PDa`, `b`, `u`, `v` | on / off (backlight `x`, grid-loss alarm `y` and power saving `j` never answer on this model) |
+| Battery % points (lithium with BMS): back to grid, back to battery, cut-off | `PBCC`, `PBDC`, `PSDC` + `nnn` (3 digits), read with `QDOP` (fields 9-11) | 5-95, 10-100, 0-90 %, any whole % (tested on the VMII-6000: cut-off 5/7/12/15/20/30, back to grid 13/15/20/50, back to battery 83/85/100, each stored as sent); cut-off <= back to grid < back to battery; back to grid / back to battery are shown only in Solar first or Battery first mode (the only modes that use them); `PSDC` answers only after a ~20 s pause |
+
+The panel uses sliders that stop only at accepted values (the charging limits at the inverter's allowed currents, the %
+points at whole percent; also the power alert, full level, own use and efficiency). The allowed currents are asked once a
+minute after start. Apply sends `/start i1_<key><value>_...` with only the
+changed settings (Telegram allows 64 characters, too few next to the board's settings): o, c, u, t, g, z buzzer,
+y bypass, w restart after overload, q restart after overheating, and the battery % points b back to grid, e back to
+battery, s cut-off. The main loop checks the whole code against the inverter's current values (ranges, grid <= total,
+cut-off % <= back to grid % < back to battery %) and sends nothing if any part is wrong ("⚠️ Inverter: nothing changed
+(...)"). % changes are ordered so the chain stays valid on the way (lowered values from the bottom up, raised ones from
+the top down). Commands go one at a time, 8 s apart (20 s before `PSDC`; flag commands that follow another command
+closely go unanswered), with one retry when there is no answer; setting commands make the driver re-read QPIRI and
+QFLAG, so the Dashboard shows the new values. The summary then shows a silent "✅ Inverter: total charging 100 A ✓,
+restart after overload on ✓" headline until the next automatic edit. The link carries `io ic iu il it itl ig ix sg sd sc
+bms`. Firmware 2.1.17 (no `it` key) still gets its priorities and grid charging as a tail on the Save code.
+
+Only lithium batteries with BMS communication are supported: the voltage setpoints (`PBCV`, `PBDV`, `PSDV`, `PCVV`,
+`PBFT`, which the inverter accepts) are not offered, because with a BMS the inverter works with the % points and the BMS
+sets the charging voltages.
+
+The board asks `QDOP` (battery % points) and `QBMS` (what the BMS reports: connected, SOC, force-charge / stop-discharge
+/ stop-charge flags, C.V. and float voltage, cut-off voltage, max charge and discharge current) a minute after start,
+every 6 hours and after a % change; queries no longer make the driver re-read QPIRI (only setting commands do). With a
+cut-off % known, the discharge estimate stops there (the Battery & estimates cut-off field is then hidden), and the
+Dashboard's details show a "Battery BMS" line. Protocol source: Voltronic "Axpert Remote Panel Protocol (VMIII&KING&MKSIII)
+20220616" (github.com/ardupic/voltronic-inverter-communication-protocols); on BMS loss the inverter stops (code 61), it
+does not fall back to the voltage setpoints.
+
+Found but not offered: the inverter has hour-by-hour output and charger priority tables (`QOPPT`, `QCHPT`) and LED
+settings (`QLED`), but the commands to change them are unknown.
 
 ## Memory notes
 
