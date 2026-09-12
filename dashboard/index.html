@@ -319,13 +319,22 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
     var steps = function (id, list, now) {
       var el = $(id), a = list.slice();
       if (now !== null && a.indexOf(now) < 0) { a.push(now); a.sort(function (p, r) { return p - r; }); }
-      el.min = 0; el.max = a.length - 1; el.step = 1; el.value = Math.max(0, a.indexOf(now)); el.list = a;
+      el.min = 0; el.max = a.length - 1; el.step = 1; el.value = Math.max(0, a.indexOf(now)); el.stops = a; // not .list: that one is built in
     };
     var amps = function (id, list, now, fallback) { steps(id, (list || fallback).split('.').map(Number).filter(function (v) { return v > 0; }), now); };
-    var val = function (id) { var el = $(id); return el.list ? el.list[Number(el.value)] : Number(el.value); };
-    // The battery % points this inverter accepts (PBCC back to grid, PBDC back to battery, PSDC cut-off).
+    var val = function (id) { var el = $(id); return el.stops ? el.stops[Number(el.value)] : Number(el.value); };
+    // Without solar panels the total charging limit means nothing on its own: it is hidden and follows the grid charging
+    // limit (the next allowed value at or above it) whenever that one is moved.
+    var totalWanted = function () {
+      var u = val('sAmps'), list = $('sTotal').stops || [];
+      if ($('sSolar').checked || u === iu) return val('sTotal');
+      for (var i = 0; i < list.length; i++) if (list[i] >= u) return list[i];
+      return list.length ? list[list.length - 1] : u;
+    };
+    // The battery % points this inverter accepts (PBCC back to grid, PBDC back to battery, PSDC cut-off): any whole %
+    // in these ranges (tested on the VMII-6000: cut-off 5/7/12/15/20/30, back to grid 13/15/20/50, back to battery 83/85/100).
     var range = function (from, to, step) { var a = []; for (var v = from; v <= to; v += step) a.push(v); return a; };
-    var SOC_STEPS = { b: range(5, 95, 1), e: range(10, 100, 5), s: range(0, 90, 1) };
+    var SOC_STEPS = { b: range(5, 95, 1), e: range(10, 100, 1), s: range(0, 90, 1) };
     if (inv) {
       $('invSection').classList.remove('hidden');
       $('sOp').value = String(io); $('sCp').value = String(ic);
@@ -363,18 +372,17 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       }
       return c;
     };
-    var whole = function (id) { var s = $(id).value; var t = Math.round(Number(s)); return s === '' || !isFinite(t) ? null : t; };
     var invCode = function () {
       var parts = [], add = function (key, value, now) { if (value !== null && value !== now) parts.push(key + value); };
       add('o', Number($('sOp').value), io); add('c', Number($('sCp').value), ic);
-      add('u', val('sAmps'), iu); add('t', val('sTotal'), it);
+      add('u', val('sAmps'), iu); add('t', totalWanted(), it);
       if (ig !== null) add('g', Number($('sRange').value), ig);
       if (hasFlags) flags.forEach(function (f) { add(f[0], $(f[1]).checked ? 1 : 0, (ix & f[2]) ? 1 : 0); });
       if (hasSoc) { add('b', val('sSg'), sg); add('e', val('sSd'), sd); add('s', val('sSc'), sc); }
       return parts.length ? 'i1_' + parts.join('_') : '';
     };
     var invProblem = function () {
-      if (val('sAmps') > val('sTotal')) return 'Grid charging can not be above total charging.';
+      if (val('sAmps') > totalWanted()) return 'Grid charging can not be above total charging.';
       if (hasSoc) {
         var pg = val('sSg'), pd = val('sSd'), pc = val('sSc');
         if (pg === null || pd === null || pc === null) return 'Enter all battery % values.';
@@ -403,7 +411,7 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       var chargeKw = a * (bv || 54) / eff / 1000, houseKw = Math.max(l || 0, 0) / 1000;
       $('ampsHint').textContent = 'Grid charging at ' + a + ' A takes ≈ ' + chargeKw.toFixed(1) + ' kW; with the house now at ' +
         houseKw.toFixed(1) + ' kW that is ≈ ' + (chargeKw + houseKw).toFixed(1) + ' of ' + ((lr || 6000) / 1000).toFixed(0) + ' kW.' +
-        (invFull ? ' Charging from all sources stops at ' + val('sTotal') + ' A.' : '');
+        (invFull ? ($('sSolar').checked ? ' Charging from all sources stops at ' + val('sTotal') + ' A.' : ' Without solar panels total charging follows this limit.') : '');
       $('sCp').options[3].disabled = !$('sSolar').checked; // only solar charging needs panels
     };
     var initial = code(), save = $('sSave'), apply = $('sApply');
@@ -419,6 +427,7 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       }
       var c = code(); save.disabled = !c || c === initial;
       if (invFull) { var problem = invProblem(); $('invErr').textContent = problem; apply.disabled = !invCode() || !!problem; }
+      if (invFull) $('rowTotal').classList.toggle('hidden', !$('sSolar').checked); // no panels: total follows grid charging
       if (hasSoc) { // back to grid / back to battery only matter in Solar first or Battery first (SBU) mode
         var batteryFirst = $('sOp').value !== '0';
         ['rowSg', 'rowSd', 'hintSoc'].forEach(function (id) { $(id).classList.toggle('hidden', !batteryFirst); });

@@ -119,7 +119,9 @@ skips the SOLAR page. Setting key: `device.solarConnected`.
 
 ## Battery alerts
 
-The Dashboard's ⚙️ Settings has a "Battery low" switch for alerts at 30 / 25 / 20 / 15 / 10 % (default off, key `telegram.batteryAlerts`).
+The Dashboard's ⚙️ Settings has a "Battery low at, %" field: comma separated levels (key `telegram.batteryAlertLevels`, default
+30,25,20,15,10, up to 8 levels of 1-99 %); an empty field switches the alerts off (key `telegram.batteryAlerts`). The settings code
+carries the levels as an optional 8th field of `s3` (`30-20-10`, `0` = none).
 When the battery percentage falls through one of these levels the bot sends a new summary with sound and a
 "🪫 Battery below 25 %" headline; the previous summary is removed, so there are no separate alert messages. A level re-arms once the battery has climbed 3 points above it, and the
 tracking restarts whenever the inverter link drops, so reconnects never produce false alerts. Alerts are delivered
@@ -170,12 +172,14 @@ the PowMr VMII-6000 with a no-op write of its current value:
 | Output priority | `POP0n` | 0 Utility first, 1 Solar first, 2 Battery first (SBU) |
 | Charger priority | `PCP0n` | 0 Utility first, 1 Solar first, 2 Solar + utility, 3 Only solar (only offered with solar panels connected, since it stops charging from the grid) |
 | Grid charging, max | `MUCHGCn` | allowed values from `QMUCHGCR` (2, 10 … 100 A); no zero padding (`MUCHGC60` ACK, `MUCHGC060` NAK) |
-| Total charging, max | `MNCHGCnnn` | allowed values from `QMCHGCR` (10 … 120 A); three digits (`MNCHGC090` ACK, `MNCHGC0090` NAK); grid charging can not exceed it |
+| Total charging, max | `MNCHGCnnn` | allowed values from `QMCHGCR` (10 … 120 A); three digits (`MNCHGC090` ACK, `MNCHGC0090` NAK); grid charging can not exceed it; hidden while "Solar panels connected" is off, and then set to the grid charging limit (the next allowed value at or above it) whenever that one is changed |
 | Grid input range | `PGR0n` | 0 Appliance (wide window), 1 UPS (fast switch-over) |
 | Buzzer, overload bypass, restart after overload, restart after overheating | `PEa`/`PDa`, `b`, `u`, `v` | on / off (backlight `x`, grid-loss alarm `y` and power saving `j` never answer on this model) |
-| Battery % points (lithium with BMS): back to grid, back to battery, cut-off | `PBCC`, `PBDC`, `PSDC` + `nnn` (3 digits), read with `QDOP` (fields 9-11) | 5-95, 10-100, 0-90 %; cut-off <= back to grid < back to battery; back to grid / back to battery are shown only in Solar first or Battery first mode (the only modes that use them); `PSDC` answers only after a ~20 s pause |
+| Battery % points (lithium with BMS): back to grid, back to battery, cut-off | `PBCC`, `PBDC`, `PSDC` + `nnn` (3 digits), read with `QDOP` (fields 9-11) | 5-95, 10-100, 0-90 %, any whole % (tested on the VMII-6000: cut-off 5/7/12/15/20/30, back to grid 13/15/20/50, back to battery 83/85/100, each stored as sent); cut-off <= back to grid < back to battery; back to grid / back to battery are shown only in Solar first or Battery first mode (the only modes that use them); `PSDC` answers only after a ~20 s pause |
 
-The allowed currents are asked once a minute after start. Apply sends `/start i1_<key><value>_...` with only the
+The panel uses sliders that stop only at accepted values (the charging limits at the inverter's allowed currents, the %
+points at whole percent; also the power alert, full level, own use and efficiency). The allowed currents are asked once a
+minute after start. Apply sends `/start i1_<key><value>_...` with only the
 changed settings (Telegram allows 64 characters, too few next to the board's settings): o, c, u, t, g, z buzzer,
 y bypass, w restart after overload, q restart after overheating, and the battery % points b back to grid, e back to
 battery, s cut-off. The main loop checks the whole code against the inverter's current values (ranges, grid <= total,
