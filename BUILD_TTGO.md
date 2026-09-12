@@ -61,7 +61,8 @@ and its Dashboard replace it, and the board's own web page only configures Wi-Fi
 * Start page: Wi-Fi, bot and inverter status, firmware version, and two buttons: **Wi-Fi settings** (the setup page,
   also served by the setup access point "Solar2MQTT-AP") and **Telegram bot** (enable, token, chat IDs, status,
   "Send summary now"). The bot page saves only those three fields, so it never overwrites the Dashboard's ⚙️ Settings.
-* Everything else (alerts, automatic summary, battery values) is in the Dashboard's ⚙️ Settings in Telegram.
+* Everything else (alerts, battery values, the inverter's priorities and grid charging limit) is in the Dashboard's
+  ⚙️ Settings in Telegram.
 * No page, but kept for maintenance: `GET /api/status`, `/api/data`, `/api/settings`, `/api/telegram/status`,
   `/api/debug/report`, `/ota/status`; `POST /update_firmware` (LAN upload), `/ota/check`, `/ota/update`,
   `/api/settings/device` (pins, protocol, battery values), `/api/command`, `/api/reboot`; the Web Serial log socket
@@ -134,12 +135,41 @@ announced. During an outage the summary's grid line reads "off for 2h 13m". As w
 is removed, so the chat still holds only the summary. Test builds with `-DGRID_ALERT_TEST` accept `gridoff`, `gridon`
 and `gridreal` in the web serial console; `gridhigh` fakes a grid power of 5.5 kW.
 
-## Grid power alert
+## Power alert
 
-The Dashboard's ⚙️ Settings has "Grid power above 5 kW" (key `telegram.gridPowerAlert`, default on).
-The grid power is estimated as on the dashboard (appliances + battery charging from the grid / efficiency + the
-inverter's own consumption). Once it has stayed above 5 kW for 10 seconds the bot sends one new summary with sound and
-a "⚡ Grid power 5.3 kW, above 5 kW" headline; it re-arms after the power has stayed below 5 kW for 30 seconds.
+The Dashboard's ⚙️ Settings has "Power alert" (key `telegram.gridPowerAlert`, default on) with a threshold
+(`telegram.powerAlertW`, default 5000 W, 0.5-20 kW). While the grid is on it watches the grid power, estimated as on
+the dashboard (appliances + battery charging from the grid / efficiency + the inverter's own consumption); during an
+outage it watches the house load the inverter carries. Once the power has stayed above the threshold for 10 seconds
+the bot sends one new summary with sound and a "⚡ Grid power 5.3 kW, above 5 kW" (or "⚡ Load 5.3 kW on battery, above
+5 kW") headline; it re-arms after the power has stayed below the threshold for 30 seconds. Since 2.1.17 this replaces
+the separate high load alert.
+
+## Learned battery model
+
+With "Learn from outages" (key `device.learnBattery`, default on) the board learns the battery model itself while the
+inverter runs on battery without solar input, one sample per 2-second snapshot:
+
+* Battery power (volts × discharge amps) against the house load is a straight line: its slope is 1 / efficiency and
+  its offset the inverter's own use. It is used after 30 minutes on battery with the load varying by at least 100 W
+  (standard deviation), and only if the result is plausible (75-100 %, 0-200 W).
+* Capacity = energy drawn ÷ % of charge used, summed over outages in which the charge fell by 8 points or more.
+* The sums are kept in flash (NVS namespace `learn`), saved when an outage ends and every 30 minutes during one.
+  Once known, the learned values replace the typed ones in every estimate (time left, grid power, the dashboard);
+  the ⚙️ panel shows what has been learned, and "Forget" clears it (flag bit 128 of the settings code, once).
+  `/diag` has a "Battery model:" line.
+
+## Inverter settings from the Dashboard
+
+The ⚙️ panel's Inverter section changes the inverter's own settings: output priority (Utility first, Solar first,
+Battery first / SBU), charger priority (Utility first, Solar first, Solar + utility, Only solar - offered only with
+solar panels connected, since it stops charging from the grid) and the grid charging limit. The allowed currents come
+from the inverter (`QMUCHGCR`, asked once a minute after start: 2, 10 … 100 A on this PowMr), and the panel shows what
+the limit means for the grid draw against the 6 kW rating. The bot queues `POP0n`, `PCP0n` and `MUCHGCn` (this PowMr
+refuses zero padding: `MUCHGC60` ACK, `MUCHGC060` NAK) for the main loop, which sends them one at a time through
+SolarInverterService and reads the ACK / NAK; the driver re-reads QPIRI afterwards, so the Dashboard shows the new
+values. The summary then shows a silent "✅ Settings saved · inverter: grid charging 30 A ✓" headline until the next
+automatic edit.
 
 ## Memory notes
 
@@ -151,12 +181,12 @@ web page. Since 2.1.17 there is no MQTT client and no status websocket, which fr
 
 ## Automatic summary
 
-The Dashboard's ⚙️ Settings has "Update summary every 15 s" (key `telegram.autoSummary`, default off). Every 15 seconds the bot
+Always on since 2.1.17 (the Dashboard button's data comes with it; the `telegram.autoSummary` setting is gone). Every 15 seconds the bot
 edits the last summary in place (no new message, no notification); the fallback Refresh button, the first summary after a
 restart and the summary after an upgrade attempt do the same. If there is no summary yet or it can no longer be edited
 (for example the user deleted it), a new silent one is sent instead. A typed `/summary` or the keyboard Refresh still
-sends a fresh summary at the bottom and deletes the old one, and alerts (high load, inverter offline) arrive as new
-messages with sound. Any manual summary restarts the timer. The long poll is shortened as the next automatic summary comes
+sends a fresh summary at the bottom and deletes the old one, and alerts (power, battery, grid, inverter offline) arrive
+as a new summary with sound. Any manual summary restarts the timer. The long poll is shortened as the next automatic summary comes
 due, so the interval stays close to 15 seconds.
 
 ## Summary format
@@ -168,15 +198,14 @@ above), 🏠 Grid, 🌡 Temp, ⚠️ alerts,
 
 ## High-load summary
 
-Telegram Settings has "Summary with sound when load exceeds 80 %" (key `telegram.loadAlert`, default off). When the load
-percentage rises above 80 % the bot sends one immediate summary with the notification sound and a "🔔 High load"
-headline. It re-arms once the load drops below 70 %. Battery and Load show one moon-phase glyph for the level (🌑 🌘 🌗 🌖 🌕 for about 0, 25, 50, 75, 100 %, nearest quarter), no colour cue. The Grid line shows voltage only, and WiFi, uptime and Updated are separate lines.
+Removed in 2.1.17 (the `telegram.loadAlert` setting is gone): the power alert covers it, with the house load above the
+threshold while the inverter runs on battery. Battery and Load show one moon-phase glyph for the level (🌑 🌘 🌗 🌖 🌕 for about 0, 25, 50, 75, 100 %, nearest quarter), no colour cue. The Grid line shows voltage only, and WiFi, uptime and Updated are separate lines.
 
 ## Multiple chats
 
 `telegram.chatId` accepts a comma-separated list of chat ids (private chats or groups). Any listed chat can request a
 summary with /summary, the Refresh buttons or a plain "Summary"/"Refresh" message, and its previous summary is deleted
-in that chat only. Automatic summaries, battery alerts and the high-load summary are sent to every listed chat. The
+in that chat only. Automatic summaries and every alert (grid, power, battery) are sent to every listed chat. The
 last summary message id is stored per chat in NVS (`tg/lastMsgs` as JSON), so cleanup keeps working across reboots.
 
 ## Inverter offline notice
@@ -318,12 +347,16 @@ power flow panel (with the battery discharge time while the grid is off), warnin
 load % (bars coloured by grid state: on / partly off / off), today's usage and outages, inverter temperature and
 board health.
 
-* ⚙️ Settings panel (inside Telegram, private chat only): automatic summary, grid on/off, grid power above 5 kW,
-  battery and high load alerts, solar panels connected, battery capacity, battery full level, cut-off, inverter own
-  use and efficiency. The link carries the current values
-  (`cfg=s2_<flags hex>_<Wh>_<reserve %>_<full %>_<idle W>_<efficiency %>`, flag bits 1 summary, 2 grid, 4 grid power,
-  8 battery, 16 high load, 32 solar; `s1` without `<full>` and the solar bit is still accepted) and the bot's username
-  (`bu`). The battery ring, the summary's moon and the T-Display battery bar are complete at the "battery full" level
+* ⚙️ Settings panel (inside Telegram, private chat only): grid on/off, power alert with its threshold, battery alerts,
+  solar panels connected, battery capacity, battery full level, cut-off, learn from outages (with what has been
+  learned and "Forget"), inverter own use and efficiency, a live preview of the discharge time at the current load,
+  the inverter's output / charger priority and grid charging limit, and "Reset to defaults" (alerts and model values;
+  capacity, solar and the inverter's settings stay). The link carries the current values
+  (`cfg=s3_<flags hex>_<Wh>_<reserve %>_<full %>_<idle W>_<efficiency %>_<alert, 100 W>`, flag bits 2 grid, 4 power,
+  8 battery, 32 solar, 64 learn, 128 forget once), the learned values (`lh` hours, `lc` Wh, `le` %, `li` W), the
+  inverter's settings (`io`, `ic`, `iu`, allowed amps `il`) and the bot's username (`bu`). Save may append
+  `_<output>_<charger>_<amps>` (each a number or `x` for unchanged). `s1` and `s2` codes from older pages are still
+  accepted, and the page answers older firmware in its own format. The battery ring, the summary's moon and the T-Display battery bar are complete at the "battery full" level
   (`device.batteryFullPct`, default 100 %, link key `bf`), e.g. 90 % when the charger stops there. Save opens `t.me/<bot>?start=<code>`, so
   Telegram sends `/start <code>` from the user's chat; the board validates and applies it (only from a paired chat),
   deletes that message and edits the summary a few seconds later so the Dashboard link carries the new values.
@@ -340,7 +373,8 @@ board health.
   page shows times and "today" in the phone's timezone.
 * Time left on battery (dashboard panel, and at the end of the summary's Battery line while on battery, e.g.
   "🔋 Battery: 🌖 (69%) ≈ 10h 18m") =
-  capacity × (battery % − reserve) ÷ (load ÷ efficiency + own consumption), all from the ⚙️ Settings panel: Battery
+  capacity × (battery % − reserve) ÷ (load ÷ efficiency + own consumption), with the learned values once known (see
+  "Learned battery model"), otherwise from the ⚙️ Settings panel: Battery
   capacity [Wh] (hidden while 0), Battery reserve [%] (the inverter's low-battery cut-off, default 10), Inverter own
   consumption [W] (default 40) and Inverter efficiency [%] (default 95).
 * Mini App buttons only work in private chats; in a group the button opens the same page in the browser.
