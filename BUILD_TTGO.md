@@ -298,10 +298,18 @@ Summaries end with `💾 Version: <version>`, followed by the new-version line w
 
 ## Dashboard (Telegram Mini App)
 
-The summary has a 📊 Dashboard button next to Refresh. It opens `dashboard/index.html` (repository root), served by GitHub Pages
-(`custom_dashboard_url` in platformio.ini, build flag `DASHBOARD_URL`), inside Telegram: battery gauge, load, grid,
-output, temperature, time left on battery, 24 h charts of battery and load, a grid on/off strip, today's usage and
-outages, priorities and link health.
+The summary's 📊 Dashboard button opens `dashboard/index.html` (repository root), served by GitHub Pages
+(`custom_dashboard_url` in platformio.ini, build flag `DASHBOARD_URL`), inside Telegram: grid and battery tiles, the
+power flow panel (with the battery discharge time while the grid is off), warnings, a 24 h chart of battery % and
+load % (bars coloured by grid state: on / partly off / off), today's usage and outages, inverter temperature and
+board health.
+
+* ⚙️ Settings panel (inside Telegram, private chat only): automatic summary, grid on/off, grid power above 5 kW,
+  battery and high load alerts, battery capacity, cut-off, inverter own use and efficiency. The link carries the
+  current values (`cfg=s1_<flags hex>_<Wh>_<reserve %>_<idle W>_<efficiency %>`, flag bits 1 summary, 2 grid,
+  4 grid power, 8 battery, 16 high load) and the bot's username (`bu`). Save opens `t.me/<bot>?start=<code>`, so
+  Telegram sends `/start <code>` from the user's chat; the board validates and applies it (only from a paired chat),
+  deletes that message and edits the summary a few seconds later so the Dashboard link carries the new values.
 
 * Power flow panel: Grid → Home, Grid → Battery (charging) and Battery → Home (discharging) with moving dots, faster
   for more power. The grid circle's ring fills against the inverter's rated power (AC_Out_Rating_Active_Power, 6 kW
@@ -315,7 +323,7 @@ outages, priorities and link health.
   page shows times and "today" in the phone's timezone.
 * Time left on battery (dashboard panel, and at the end of the summary's Battery line while on battery, e.g.
   "🔋 Battery: 🌖 (69%) ≈ 10h 18m") =
-  capacity × (battery % − reserve) ÷ (load ÷ efficiency + own consumption), all from Device settings: Battery
+  capacity × (battery % − reserve) ÷ (load ÷ efficiency + own consumption), all from the ⚙️ Settings panel: Battery
   capacity [Wh] (hidden while 0), Battery reserve [%] (the inverter's low-battery cut-off, default 10), Inverter own
   consumption [W] (default 40) and Inverter efficiency [%] (default 95).
 * Mini App buttons only work in private chats; in a group the button opens the same page in the browser.
