@@ -29,6 +29,15 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
 .chart{position:relative;height:110px;margin-top:6px}
 .key{display:inline-block;width:9px;height:9px;border-radius:2px;margin:0 4px 0 10px}
 .hidden{display:none!important}
+.sw{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:7px 0;font-size:14px}
+.sw input[type=checkbox]{appearance:none;-webkit-appearance:none;width:42px;height:24px;border-radius:12px;background:rgba(128,166,201,.3);position:relative;flex:none;margin:0;transition:background .15s}
+.sw input[type=checkbox]::after{content:'';position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;transition:left .15s}
+.sw input[type=checkbox]:checked{background:var(--ok)}
+.sw input[type=checkbox]:checked::after{left:21px}
+.sw input[type=number]{width:86px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:5px 8px;font:inherit;text-align:right}
+.btn{display:block;width:100%;margin-top:12px;padding:11px;border:0;border-radius:10px;background:var(--blue);color:#04121f;font-weight:600;font-size:15px}
+.btn:disabled{opacity:.4}
+details summary{cursor:pointer;font-size:14px;list-style-position:inside}
 .empty{text-align:center;color:var(--muted);padding-top:35vh}
 </style>
 </head>
@@ -81,6 +90,22 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
     <div class="kv hidden" id="solarRow"><span>Solar</span><span id="solar"></span></div>
     <div class="kv"><span>Board</span><span id="board"></span></div>
   </div>
+  <details id="setPanel" class="pn hidden">
+    <summary>⚙️ Settings</summary>
+    <div class="lb" style="margin-top:10px">Summary and alerts</div>
+    <label class="sw"><span>Update summary every 15 s</span><input type="checkbox" id="sAuto"></label>
+    <label class="sw"><span>Grid off / back</span><input type="checkbox" id="sGrid"></label>
+    <label class="sw"><span>Grid power above 5 kW</span><input type="checkbox" id="sGridW"></label>
+    <label class="sw"><span>Battery low</span><input type="checkbox" id="sBatt"></label>
+    <label class="sw"><span>High load above 80 %</span><input type="checkbox" id="sLoad"></label>
+    <div class="lb" style="margin-top:10px">Battery and inverter</div>
+    <label class="sw"><span>Battery capacity, kWh</span><input type="number" id="sWh" min="0" max="200" step="0.1" inputmode="decimal"></label>
+    <label class="sw"><span>Inverter cut-off, %</span><input type="number" id="sRes" min="0" max="90" step="1" inputmode="numeric"></label>
+    <label class="sw"><span>Inverter own use, W</span><input type="number" id="sIdle" min="0" max="1000" step="1" inputmode="numeric"></label>
+    <label class="sw"><span>Inverter efficiency, %</span><input type="number" id="sEff" min="50" max="100" step="1" inputmode="numeric"></label>
+    <button id="sSave" class="btn" disabled>Save</button>
+    <div class="sm" style="margin-top:8px;text-align:center">Save sends a short command to the bot; it is removed from the chat right away.</div>
+  </details>
   <p class="sm" style="text-align:center;margin-top:14px">Data from the latest summary. Close and tap 📊 Dashboard again for newer values.</p>
 </main>
 <script>
@@ -170,6 +195,30 @@ body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,san
   else { $('grid').textContent = gv !== null ? Math.round(gv) + ' V' : '–'; $('gridSub').textContent = gf !== null ? gf.toFixed(1) + ' Hz' : ''; }
   $('temp').textContent = tc !== null ? tc + ' °C · ' + (tc < 60 ? 'normal' : tc < 75 ? 'warm' : 'hot') : '–';
   if (pv !== null) { $('solarRow').classList.remove('hidden'); $('solar').textContent = pv + ' W'; }
+  // ⚙️ Settings, only inside Telegram (a plain browser can't hand changes to the bot). Save opens the bot link
+  // t.me/<bot>?start=s1_<flags>_<Wh>_<reserve>_<idle>_<efficiency>; the board applies it and deletes that message.
+  var cfg = /^s1_([0-9a-f]{1,2})_(\d{1,6})_(\d{1,3})_(\d{1,4})_(\d{1,3})$/.exec(q.get('cfg') || ''), bot = q.get('bu');
+  if (cfg && bot && tg && tg.initData) {
+    var bits = [['sAuto', 1], ['sGrid', 2], ['sGridW', 4], ['sBatt', 8], ['sLoad', 16]], flags0 = parseInt(cfg[1], 16);
+    bits.forEach(function (x) { $(x[0]).checked = (flags0 & x[1]) !== 0; });
+    $('sWh').value = +(cfg[2] / 1000).toFixed(2); $('sRes').value = cfg[3]; $('sIdle').value = cfg[4]; $('sEff').value = cfg[5];
+    var field = function (id, lo, hi, k) { var s = $(id).value; if (s === '') return null; var v = Math.round(Number(s) * (k || 1)); return isFinite(v) ? Math.min(hi, Math.max(lo, v)) : null; };
+    var code = function () {
+      var f = 0; bits.forEach(function (x) { if ($(x[0]).checked) f |= x[1]; });
+      var vals = [field('sWh', 0, 200000, 1000), field('sRes', 0, 90), field('sIdle', 0, 1000), field('sEff', 50, 100)];
+      return vals.indexOf(null) >= 0 ? null : 's1_' + f.toString(16) + '_' + vals.join('_');
+    };
+    var initial = code(), save = $('sSave');
+    var changed = function () { var c = code(); save.disabled = !c || c === initial; };
+    $('setPanel').addEventListener('input', changed); $('setPanel').addEventListener('change', changed);
+    save.addEventListener('click', function () {
+      var c = code(); if (!c || c === initial) return;
+      save.disabled = true; save.textContent = 'Sending…';
+      tg.openTelegramLink('https://t.me/' + encodeURIComponent(bot) + '?start=' + c);
+      setTimeout(function () { try { tg.close(); } catch (e) {} }, 700);
+    });
+    $('setPanel').classList.remove('hidden');
+  }
   var w = q.get('w'); if (w) { $('warnPanel').classList.remove('hidden'); $('warnPanel').textContent = '⚠️ ' + w; }
 
   var n = num('n') || 0, s = num('s') || 900, he = num('he'), h = q.get('h');

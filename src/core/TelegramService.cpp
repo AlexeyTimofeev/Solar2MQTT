@@ -48,6 +48,7 @@ constexpr uint32_t kGridPowerAlertW = 5000;      // one alert when the grid powe
 constexpr uint32_t kGridPowerConfirmMs = 10000;  // ... and has stayed above it this long
 constexpr uint32_t kGridPowerRearmMs = 30000;    // re-armed once it has stayed below the threshold this long
 constexpr uint32_t kAutoSummaryIntervalMs = 15000; // also refreshes the Dashboard button's data
+constexpr uint32_t kSettingsRefreshDelayMs = 3000;  // dashboard Save: edit the summary once the link carries the new values
 constexpr uint32_t kBootSummaryDelayMs = 45000; // first summary after a restart, once the inverter values are in
 constexpr uint32_t kFirstUpdateCheckMs = 120000;                 // first look for new firmware after boot
 constexpr uint32_t kUpdateCheckIntervalMs = 12UL * 3600UL * 1000UL; // then twice a day
@@ -344,6 +345,7 @@ struct TelegramService::Impl
     String dashboardUrl;
     std::atomic<uint8_t> dashSlotsAllowed {static_cast<uint8_t>(kDashSlots)}; // halves when Telegram rejects the link
     std::atomic<bool> dashDisabled {false};
+    std::atomic<uint32_t> settingsSavedMs {0}; // settings arrived from the dashboard; the summary is edited shortly after
     uint32_t slotStartMs = 0;
     uint32_t slotLoadSum = 0;
     uint16_t slotSamples = 0;
@@ -1503,6 +1505,24 @@ struct TelegramService::Impl
 
         String command = text;
         command.trim();
+        if (command.startsWith("/start s"))
+        {
+            // Save in the dashboard's ⚙️ panel: the link made Telegram send "/start <code>". Keep the chat clean, apply it,
+            // and edit the summary once its Dashboard link carries the new values.
+            const String code = command.substring(7);
+            removeTriggerMessage(chat, messageId);
+            if (applySettingsCode(code))
+            {
+                loadSettings();
+                taskLog("[Telegram] Settings changed from the dashboard: " + code);
+                settingsSavedMs = millis() | 1u;
+            }
+            else
+            {
+                taskLog("[Telegram] Ignored an invalid settings code: " + code);
+            }
+            return;
+        }
         if (command.startsWith("/start") || command.startsWith("/help"))
         {
             sendWelcome(chat);
@@ -1663,6 +1683,17 @@ struct TelegramService::Impl
                 }
             }
 
+            // Settings saved from the dashboard: the main thread rebuilds the link every 2 s, then the summary is edited so
+            // its Dashboard button opens with the new values.
+            const uint32_t settingsSavedAt = settingsSavedMs.load();
+            if (settingsSavedAt != 0 && millis() - settingsSavedAt >= kSettingsRefreshDelayMs && upgradeStage.load() == 0)
+            {
+                settingsSavedMs = 0;
+                lastAutoSummaryMs = millis();
+                broadcastSummary(true, String(), true);
+                continue;
+            }
+
             if (loudSummaryRequested.load())
             {
                 const uint32_t sinceLast = millis() - lastSummaryMs;
@@ -1725,6 +1756,10 @@ struct TelegramService::Impl
                 }
             }
 
+            if (settingsSavedMs.load() != 0 && pollTimeout > kSettingsRefreshDelayMs / 1000)
+            {
+                pollTimeout = kSettingsRefreshDelayMs / 1000; // don't sit in a 20 s long poll while the refresh is due
+            }
             if (!pollUpdates(pollTimeout))
             {
                 vTaskDelay(pdMS_TO_TICKS(kErrorBackoffMs));
@@ -1946,6 +1981,67 @@ struct TelegramService::Impl
         slotBatt = -1;
     }
 
+    // The dashboard's ⚙️ panel sends changes back as the bot link parameter (/start <code>; Telegram allows 64 characters of
+    // A-Z a-z 0-9 _ -): s1_<flags hex>_<battery Wh>_<reserve %>_<inverter idle W>_<efficiency %>. Flag bits: 1 automatic
+    // summary, 2 grid on/off alerts, 4 grid power alert, 8 battery alerts, 16 high load alert.
+    String settingsCode()
+    {
+        const unsigned flags = (_settings.get.telegramAutoSummary() ? 1u : 0u) | (_settings.get.telegramGridAlerts() ? 2u : 0u) |
+                               (_settings.get.telegramGridPowerAlert() ? 4u : 0u) | (_settings.get.telegramBatteryAlerts() ? 8u : 0u) |
+                               (_settings.get.telegramLoadAlert() ? 16u : 0u);
+        return "s1_" + String(flags, HEX) + "_" + String(_settings.get.batteryCapacityWh()) + "_" +
+               String(_settings.get.batteryReservePct()) + "_" + String(_settings.get.inverterIdleW()) + "_" +
+               String(_settings.get.inverterEfficiencyPct());
+    }
+
+    // Bot task: validate the whole code before changing anything; false leaves the settings untouched.
+    bool applySettingsCode(const String &code)
+    {
+        if (!code.startsWith("s1_"))
+        {
+            return false;
+        }
+        long values[5];
+        int start = 3;
+        for (int i = 0; i < 5; ++i)
+        {
+            const int sep = code.indexOf('_', start);
+            if ((sep < 0) != (i == 4))
+            {
+                return false; // too few or too many fields
+            }
+            const String part = sep < 0 ? code.substring(start) : code.substring(start, sep);
+            if (part.length() == 0 || part.length() > 6)
+            {
+                return false;
+            }
+            char *end = nullptr;
+            values[i] = strtol(part.c_str(), &end, i == 0 ? 16 : 10);
+            if (end == nullptr || *end != '\0')
+            {
+                return false;
+            }
+            start = sep + 1;
+        }
+        const long flags = values[0], wh = values[1], reserve = values[2], idle = values[3], efficiency = values[4];
+        if (flags < 0 || flags > 31 || wh < 0 || wh > 200000 || reserve < 0 || reserve > 90 || idle < 0 || idle > 1000 ||
+            efficiency < 50 || efficiency > 100)
+        {
+            return false;
+        }
+        _settings.set.telegramAutoSummary((flags & 1) != 0);
+        _settings.set.telegramGridAlerts((flags & 2) != 0);
+        _settings.set.telegramGridPowerAlert((flags & 4) != 0);
+        _settings.set.telegramBatteryAlerts((flags & 8) != 0);
+        _settings.set.telegramLoadAlert((flags & 16) != 0);
+        _settings.set.batteryCapacityWh(static_cast<uint32_t>(wh));
+        _settings.set.batteryReservePct(static_cast<uint16_t>(reserve));
+        _settings.set.inverterIdleW(static_cast<uint16_t>(idle));
+        _settings.set.inverterEfficiencyPct(static_cast<uint16_t>(efficiency));
+        _settings.save();
+        return true;
+    }
+
     // Main thread: the Dashboard link. Everything after '#' stays on the phone (browsers never send the fragment), so
     // the static page on GitHub Pages never sees the data.
     String buildDashboardUrl(bool inverterConnected, const String &mode, const String &alerts, bool solarConnected)
@@ -2023,6 +2119,11 @@ struct TelegramService::Impl
         add("wr", String(_settings.get.batteryReservePct()));
         add("wi", String(_settings.get.inverterIdleW()));        // also used by the power flow panel
         add("we", String(_settings.get.inverterEfficiencyPct()));
+        add("cfg", settingsCode()); // the ⚙️ panel's current values, and the bot its Save link goes to
+        lockTake();
+        const String bot = botUsername;
+        lockGive();
+        if (bot.length()) add("bu", bot);
         JsonObjectConst esp = g_stateDoc["EspData"].as<JsonObjectConst>();
         add("ok", String(esp["PI_Ok"] | 0UL));
         add("na", String(esp["PI_NoAnswer"] | 0UL));
