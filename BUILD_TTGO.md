@@ -161,15 +161,34 @@ inverter runs on battery without solar input, one sample per 2-second snapshot:
 
 ## Inverter settings from the Dashboard
 
-The ⚙️ panel's Inverter section changes the inverter's own settings: output priority (Utility first, Solar first,
-Battery first / SBU), charger priority (Utility first, Solar first, Solar + utility, Only solar - offered only with
-solar panels connected, since it stops charging from the grid) and the grid charging limit. The allowed currents come
-from the inverter (`QMUCHGCR`, asked once a minute after start: 2, 10 … 100 A on this PowMr), and the panel shows what
-the limit means for the grid draw against the 6 kW rating. The bot queues `POP0n`, `PCP0n` and `MUCHGCn` (this PowMr
-refuses zero padding: `MUCHGC60` ACK, `MUCHGC060` NAK) for the main loop, which sends them one at a time through
-SolarInverterService and reads the ACK / NAK; the driver re-reads QPIRI afterwards, so the Dashboard shows the new
-values. The summary then shows a silent "✅ Settings saved · inverter: grid charging 30 A ✓" headline until the next
-automatic edit.
+The ⚙️ panel is grouped: 🔔 Alerts and 🔋 Battery & estimates (the board's own settings, sent with **Save**) and
+⚡ Inverter configuration (stored in the inverter, sent with **Apply to inverter**). Every setting below was tested on
+the PowMr VMII-6000 with a no-op write of its current value:
+
+| Setting | Command | Values |
+|---|---|---|
+| Output priority | `POP0n` | 0 Utility first, 1 Solar first, 2 Battery first (SBU) |
+| Charger priority | `PCP0n` | 0 Utility first, 1 Solar first, 2 Solar + utility, 3 Only solar (only offered with solar panels connected, since it stops charging from the grid) |
+| Grid charging, max | `MUCHGCn` | allowed values from `QMUCHGCR` (2, 10 … 100 A); no zero padding (`MUCHGC60` ACK, `MUCHGC060` NAK) |
+| Total charging, max | `MNCHGCnnn` | allowed values from `QMCHGCR` (10 … 120 A); three digits (`MNCHGC090` ACK, `MNCHGC0090` NAK); grid charging can not exceed it |
+| Grid input range | `PGR0n` | 0 Appliance (wide window), 1 UPS (fast switch-over) |
+| Buzzer, overload bypass, restart after overload, restart after overheating | `PEa`/`PDa`, `b`, `u`, `v` | on / off (backlight `x`, grid-loss alarm `y` and power saving `j` never answer on this model) |
+| Back to grid (recharge), back to battery (re-discharge), cut-off, bulk, float | `PBCV`, `PBDV`, `PSDV`, `PCVV`, `PBFT` + `nn.n` | 44.0-51.0, 0 (when full) or 48.0-58.0, 40.0-48.0, 48.0-58.4, 48.0-58.4 V; folded away with a warning (the battery has a BMS) and a confirmation |
+
+The allowed currents are asked once a minute after start. Apply sends `/start i1_<key><value>_...` with only the
+changed settings (Telegram allows 64 characters, too few next to the board's settings): o, c, u, t, g, z buzzer,
+y bypass, w restart after overload, q restart after overheating, and volts x10 r, d, x, k, f. The main loop checks the
+whole code against the inverter's current values (ranges, grid <= total, cut-off < back to grid < back to battery,
+float <= bulk) and sends nothing if any part is wrong ("⚠️ Inverter: nothing changed (...)"). Voltage changes are
+ordered so both chains stay valid on the way (lowered values from the bottom up, raised ones from the top down).
+Commands go one at a time, 8 s apart (flag commands that follow another command closely go unanswered), with one retry
+when there is no answer; the driver re-reads QPIRI and QFLAG after each, so the Dashboard shows the new values. The
+summary then shows a silent "✅ Inverter: total charging 100 A ✓, restart after overload on ✓" headline until the next
+automatic edit. The link carries `io ic iu il it itl ig ix vr vd vc vb vf`. Firmware 2.1.17 (no `it` key) still gets
+its priorities and grid charging as a tail on the Save code.
+
+Found but not offered: the inverter has hour-by-hour output and charger priority tables (`QOPPT`, `QCHPT`) and LED
+settings (`QLED`), but the commands to change them are unknown.
 
 ## Memory notes
 
