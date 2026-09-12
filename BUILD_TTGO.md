@@ -111,8 +111,8 @@ Notes: the bot token is stored in NVS and appears in the settings backup. Telegr
 While the inverter runs on battery (Mode: Battery) the summary leaves out the "Line fail" warning or fault; the mode line
 already shows that the grid is out.
 
-The device setting "Solar panels connected" (default on; no page, set with `POST /api/settings/device solarConnected=0`)
-matters while no PV is wired: with it off the Telegram
+The Dashboard's ⚙️ Settings has "Solar panels connected" (key `device.solarConnected`, default on). Switch it off
+while no PV is wired: the Telegram
 summary drops the Solar line and every PV related warning or fault (for example "PV loss warning"), and the display
 skips the SOLAR page. Setting key: `device.solarConnected`.
 
@@ -319,9 +319,12 @@ load % (bars coloured by grid state: on / partly off / off), today's usage and o
 board health.
 
 * ⚙️ Settings panel (inside Telegram, private chat only): automatic summary, grid on/off, grid power above 5 kW,
-  battery and high load alerts, battery capacity, cut-off, inverter own use and efficiency. The link carries the
-  current values (`cfg=s1_<flags hex>_<Wh>_<reserve %>_<idle W>_<efficiency %>`, flag bits 1 summary, 2 grid,
-  4 grid power, 8 battery, 16 high load) and the bot's username (`bu`). Save opens `t.me/<bot>?start=<code>`, so
+  battery and high load alerts, solar panels connected, battery capacity, battery full level, cut-off, inverter own
+  use and efficiency. The link carries the current values
+  (`cfg=s2_<flags hex>_<Wh>_<reserve %>_<full %>_<idle W>_<efficiency %>`, flag bits 1 summary, 2 grid, 4 grid power,
+  8 battery, 16 high load, 32 solar; `s1` without `<full>` and the solar bit is still accepted) and the bot's username
+  (`bu`). The battery ring, the summary's moon and the T-Display battery bar are complete at the "battery full" level
+  (`device.batteryFullPct`, default 100 %, link key `bf`), e.g. 90 % when the charger stops there. Save opens `t.me/<bot>?start=<code>`, so
   Telegram sends `/start <code>` from the user's chat; the board validates and applies it (only from a paired chat),
   deletes that message and edits the summary a few seconds later so the Dashboard link carries the new values.
 

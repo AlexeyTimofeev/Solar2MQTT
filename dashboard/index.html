@@ -99,7 +99,9 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
     <label class="sw"><span>Battery low</span><input type="checkbox" id="sBatt"></label>
     <label class="sw"><span>High load above 80 %</span><input type="checkbox" id="sLoad"></label>
     <div class="lb" style="margin-top:10px">Battery and inverter</div>
+    <label class="sw" id="rowSolar"><span>Solar panels connected</span><input type="checkbox" id="sSolar"></label>
     <label class="sw"><span>Battery capacity, kWh</span><input type="number" id="sWh" min="0" max="200" step="0.1" inputmode="decimal"></label>
+    <label class="sw" id="rowFull"><span>Battery full at, %</span><input type="number" id="sFull" min="50" max="100" step="1" inputmode="numeric"></label>
     <label class="sw"><span>Inverter cut-off, %</span><input type="number" id="sRes" min="0" max="90" step="1" inputmode="numeric"></label>
     <label class="sw"><span>Inverter own use, W</span><input type="number" id="sIdle" min="0" max="1000" step="1" inputmode="numeric"></label>
     <label class="sw"><span>Inverter efficiency, %</span><input type="number" id="sEff" min="50" max="100" step="1" inputmode="numeric"></label>
@@ -161,7 +163,9 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
     $('gridArc').setAttribute('stroke', gridColor);
     $('gridArc').setAttribute('stroke-dashoffset', (276.5 * (1 - Math.min(1, gridW / limitW))).toFixed(1));
     $('battArc').setAttribute('stroke', battColor);
-    $('battArc').setAttribute('stroke-dashoffset', (263.9 * (1 - Math.min(100, b || 0) / 100)).toFixed(1));
+    // The ring is complete at the "battery full" level (bf, e.g. 90 % when the charger stops there).
+    var fullPct = num('bf') || 100;
+    $('battArc').setAttribute('stroke-dashoffset', (263.9 * (1 - Math.min(1, (b || 0) / fullPct))).toFixed(1));
     $('homeVal').textContent = kw(loadW);
     // The home ring shows the load against the rating only while the inverter itself carries it (grid off); on grid the
     // grid ring already covers the limit, so home stays a plain blue ring.
@@ -196,17 +200,25 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
   $('temp').textContent = tc !== null ? tc + ' °C · ' + (tc < 60 ? 'normal' : tc < 75 ? 'warm' : 'hot') : '–';
   if (pv !== null) { $('solarRow').classList.remove('hidden'); $('solar').textContent = pv + ' W'; }
   // ⚙️ Settings, only inside Telegram (a plain browser can't hand changes to the bot). Save opens the bot link
-  // t.me/<bot>?start=s1_<flags>_<Wh>_<reserve>_<idle>_<efficiency>; the board applies it and deletes that message.
-  var cfg = /^s1_([0-9a-f]{1,2})_(\d{1,6})_(\d{1,3})_(\d{1,4})_(\d{1,3})$/.exec(q.get('cfg') || ''), bot = q.get('bu');
+  // t.me/<bot>?start=s2_<flags>_<Wh>_<reserve>_<full>_<idle>_<efficiency>; the board applies it and deletes that message.
+  // Firmware 2.1.16 sends s1 (no <full>, no solar flag): the page then answers in s1 and hides those two controls.
+  var cfgText = q.get('cfg') || '', bot = q.get('bu');
+  var v2 = /^s2_([0-9a-f]{1,2})_(\d{1,6})_(\d{1,3})_(\d{1,3})_(\d{1,4})_(\d{1,3})$/.exec(cfgText);
+  var v1 = v2 ? null : /^s1_([0-9a-f]{1,2})_(\d{1,6})_(\d{1,3})_(\d{1,4})_(\d{1,3})$/.exec(cfgText);
+  var cfg = v2 ? [v2[1], v2[2], v2[3], v2[5], v2[6], v2[4]] : v1 ? [v1[1], v1[2], v1[3], v1[4], v1[5], null] : null; // flags, Wh, reserve, idle, efficiency, full
   if (cfg && bot && tg && tg.initData) {
-    var bits = [['sAuto', 1], ['sGrid', 2], ['sGridW', 4], ['sBatt', 8], ['sLoad', 16]], flags0 = parseInt(cfg[1], 16);
+    var bits = [['sAuto', 1], ['sGrid', 2], ['sGridW', 4], ['sBatt', 8], ['sLoad', 16]];
+    if (v2) { bits.push(['sSolar', 32]); } else { $('rowSolar').classList.add('hidden'); $('rowFull').classList.add('hidden'); }
+    var flags0 = parseInt(cfg[0], 16);
     bits.forEach(function (x) { $(x[0]).checked = (flags0 & x[1]) !== 0; });
-    $('sWh').value = +(cfg[2] / 1000).toFixed(2); $('sRes').value = cfg[3]; $('sIdle').value = cfg[4]; $('sEff').value = cfg[5];
+    $('sWh').value = +(cfg[1] / 1000).toFixed(2); $('sRes').value = cfg[2]; $('sIdle').value = cfg[3]; $('sEff').value = cfg[4];
+    if (v2) $('sFull').value = cfg[5];
     var field = function (id, lo, hi, k) { var s = $(id).value; if (s === '') return null; var v = Math.round(Number(s) * (k || 1)); return isFinite(v) ? Math.min(hi, Math.max(lo, v)) : null; };
     var code = function () {
       var f = 0; bits.forEach(function (x) { if ($(x[0]).checked) f |= x[1]; });
-      var vals = [field('sWh', 0, 200000, 1000), field('sRes', 0, 90), field('sIdle', 0, 1000), field('sEff', 50, 100)];
-      return vals.indexOf(null) >= 0 ? null : 's1_' + f.toString(16) + '_' + vals.join('_');
+      var vals = v2 ? [field('sWh', 0, 200000, 1000), field('sRes', 0, 90), field('sFull', 50, 100), field('sIdle', 0, 1000), field('sEff', 50, 100)]
+                    : [field('sWh', 0, 200000, 1000), field('sRes', 0, 90), field('sIdle', 0, 1000), field('sEff', 50, 100)];
+      return vals.indexOf(null) >= 0 ? null : (v2 ? 's2_' : 's1_') + f.toString(16) + '_' + vals.join('_');
     };
     var initial = code(), save = $('sSave');
     var changed = function () { var c = code(); save.disabled = !c || c === initial; };

@@ -46,4 +46,5 @@
   X(UINT16, "device", "batteryReserve", batteryReservePct, 10, 0, 100) \
   X(UINT16, "device", "inverterIdleW", inverterIdleW, 40, 0, 1000) \
   X(UINT16, "device", "inverterEfficiency", inverterEfficiencyPct, 95, 50, 100) \
+  X(UINT16, "device", "batteryFullPct", batteryFullPct, 100, 50, 100) \
   SETTINGS_ITEMS_TELEGRAM(X)

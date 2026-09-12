@@ -828,7 +828,8 @@ void DisplayService::render(bool wifiConnected, bool apMode, bool inverterConnec
         const int inset = static_cast<int>(2 * I.fs);
         g.drawRoundRect(barX, barY, barW, barH, static_cast<int>(3 * I.fs), TFT_WHITE);
         const int inner = barW - 2 * inset;
-        const int fill = percent >= 0 ? (inner * percent) / 100 : 0;
+        const int fullPct = _settings.get.batteryFullPct() > 0 ? _settings.get.batteryFullPct() : 100; // bar full at this level
+        const int fill = percent >= 0 ? (inner * constrain(percent, 0, fullPct)) / fullPct : 0;
         if (fill > 0)
         {
             g.fillRect(barX + inset, barY + inset, fill, barH - 2 * inset, color);

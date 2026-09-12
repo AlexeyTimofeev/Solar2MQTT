@@ -336,6 +336,7 @@ void WebServerHandler::registerRoutes()
         device["batteryReserve"] = _settings.get.batteryReservePct();
         device["inverterIdleW"] = _settings.get.inverterIdleW();
         device["inverterEfficiency"] = _settings.get.inverterEfficiencyPct();
+        device["batteryFullPct"] = _settings.get.batteryFullPct();
 #if HAS_TELEGRAM
         JsonObject telegram = doc["telegram"].to<JsonObject>();
         telegram["enabled"] = _settings.get.telegramEnabled();
@@ -608,6 +609,7 @@ void WebServerHandler::registerRoutes()
             else if (name == "batteryReserve") _settings.set.batteryReservePct(static_cast<uint16_t>(value.toInt()));
             else if (name == "inverterIdleW") _settings.set.inverterIdleW(static_cast<uint16_t>(value.toInt()));
             else if (name == "inverterEfficiency") _settings.set.inverterEfficiencyPct(static_cast<uint16_t>(value.toInt()));
+            else if (name == "batteryFullPct") _settings.set.batteryFullPct(static_cast<uint16_t>(value.toInt()));
         }
 
         _settings.save();

@@ -1980,31 +1980,34 @@ struct TelegramService::Impl
     }
 
     // The dashboard's ⚙️ panel sends changes back as the bot link parameter (/start <code>; Telegram allows 64 characters of
-    // A-Z a-z 0-9 _ -): s1_<flags hex>_<battery Wh>_<reserve %>_<inverter idle W>_<efficiency %>. Flag bits: 1 automatic
-    // summary, 2 grid on/off alerts, 4 grid power alert, 8 battery alerts, 16 high load alert.
+    // A-Z a-z 0-9 _ -): s2_<flags hex>_<battery Wh>_<reserve %>_<full %>_<inverter idle W>_<efficiency %>. Flag bits:
+    // 1 automatic summary, 2 grid on/off alerts, 4 grid power alert, 8 battery alerts, 16 high load alert, 32 solar
+    // panels connected. s1 (the 2.1.16 format: no <full>, no solar bit) is still accepted.
     String settingsCode()
     {
         const unsigned flags = (_settings.get.telegramAutoSummary() ? 1u : 0u) | (_settings.get.telegramGridAlerts() ? 2u : 0u) |
                                (_settings.get.telegramGridPowerAlert() ? 4u : 0u) | (_settings.get.telegramBatteryAlerts() ? 8u : 0u) |
-                               (_settings.get.telegramLoadAlert() ? 16u : 0u);
-        return "s1_" + String(flags, HEX) + "_" + String(_settings.get.batteryCapacityWh()) + "_" +
-               String(_settings.get.batteryReservePct()) + "_" + String(_settings.get.inverterIdleW()) + "_" +
-               String(_settings.get.inverterEfficiencyPct());
+                               (_settings.get.telegramLoadAlert() ? 16u : 0u) | (_settings.get.solarConnected() ? 32u : 0u);
+        return "s2_" + String(flags, HEX) + "_" + String(_settings.get.batteryCapacityWh()) + "_" +
+               String(_settings.get.batteryReservePct()) + "_" + String(_settings.get.batteryFullPct()) + "_" +
+               String(_settings.get.inverterIdleW()) + "_" + String(_settings.get.inverterEfficiencyPct());
     }
 
     // Bot task: validate the whole code before changing anything; false leaves the settings untouched.
     bool applySettingsCode(const String &code)
     {
-        if (!code.startsWith("s1_"))
+        const bool v2 = code.startsWith("s2_");
+        if (!v2 && !code.startsWith("s1_"))
         {
             return false;
         }
-        long values[5];
+        const int fieldCount = v2 ? 6 : 5;
+        long values[6];
         int start = 3;
-        for (int i = 0; i < 5; ++i)
+        for (int i = 0; i < fieldCount; ++i)
         {
             const int sep = code.indexOf('_', start);
-            if ((sep < 0) != (i == 4))
+            if ((sep < 0) != (i == fieldCount - 1))
             {
                 return false; // too few or too many fields
             }
@@ -2021,9 +2024,11 @@ struct TelegramService::Impl
             }
             start = sep + 1;
         }
-        const long flags = values[0], wh = values[1], reserve = values[2], idle = values[3], efficiency = values[4];
-        if (flags < 0 || flags > 31 || wh < 0 || wh > 200000 || reserve < 0 || reserve > 90 || idle < 0 || idle > 1000 ||
-            efficiency < 50 || efficiency > 100)
+        const long flags = values[0], wh = values[1], reserve = values[2];
+        const long full = v2 ? values[3] : static_cast<long>(_settings.get.batteryFullPct());
+        const long idle = values[v2 ? 4 : 3], efficiency = values[v2 ? 5 : 4];
+        if (flags < 0 || flags > (v2 ? 63 : 31) || wh < 0 || wh > 200000 || reserve < 0 || reserve > 90 || full < 50 ||
+            full > 100 || reserve >= full || idle < 0 || idle > 1000 || efficiency < 50 || efficiency > 100)
         {
             return false;
         }
@@ -2032,6 +2037,11 @@ struct TelegramService::Impl
         _settings.set.telegramGridPowerAlert((flags & 4) != 0);
         _settings.set.telegramBatteryAlerts((flags & 8) != 0);
         _settings.set.telegramLoadAlert((flags & 16) != 0);
+        if (v2)
+        {
+            _settings.set.solarConnected((flags & 32) != 0);
+            _settings.set.batteryFullPct(static_cast<uint16_t>(full));
+        }
         _settings.set.batteryCapacityWh(static_cast<uint32_t>(wh));
         _settings.set.batteryReservePct(static_cast<uint16_t>(reserve));
         _settings.set.inverterIdleW(static_cast<uint16_t>(idle));
@@ -2115,6 +2125,7 @@ struct TelegramService::Impl
             add("wh", String(batteryWh));
         }
         add("wr", String(_settings.get.batteryReservePct()));
+        add("bf", String(_settings.get.batteryFullPct())); // the battery ring is complete at this level
         add("wi", String(_settings.get.inverterIdleW()));        // also used by the power flow panel
         add("we", String(_settings.get.inverterEfficiencyPct()));
         add("cfg", settingsCode()); // the ⚙️ panel's current values, and the bot its Save link goes to
@@ -2177,7 +2188,7 @@ struct TelegramService::Impl
             batteryPct = okPercent ? static_cast<int>(percentValue + 0.5f) : -1;
             modeRaw = readText(DESCR_Inverter_Operation_Mode);
             const String percent = num(DESCR_Battery_Percent, 0, "%");
-            text += "\xF0\x9F\x94\x8B Battery: " + bar10(okPercent ? static_cast<int>(percentValue + 0.5f) : -1, false) +
+            text += "\xF0\x9F\x94\x8B Battery: " + bar10(okPercent ? static_cast<int>(percentValue * 100.0f / _settings.get.batteryFullPct() + 0.5f) : -1, false) +
                     " (" + percent + ")\n"; // 🔋
 
             const String left = timeLeftText(modeRaw, okPercent ? percentValue : -1.0f);
