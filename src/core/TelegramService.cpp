@@ -52,6 +52,7 @@ constexpr uint32_t kBootSummaryDelayMs = 45000; // first summary after a restart
 constexpr uint32_t kFirstUpdateCheckMs = 120000;                 // first look for new firmware after boot
 constexpr uint32_t kUpdateCheckIntervalMs = 12UL * 3600UL * 1000UL; // then twice a day
 constexpr uint32_t kInverterCmdTimeoutMs = 10000;              // a queued inverter command without an answer is given up
+constexpr uint32_t kInverterCmdGapMs = 8000;                   // pause between inverter commands (flags right after another command go unanswered)
 constexpr double kLearnMinSamples = 900;                        // 30 min on battery (one sample per snapshot) before the fit counts
 constexpr double kLearnMinLoadSpreadW = 100.0;                  // ... with the load varying at least this much (standard deviation)
 constexpr int kLearnMinSocDrop = 8;                             // an outage counts for the capacity once the charge fell this far
@@ -361,7 +362,12 @@ struct TelegramService::Impl
     uint32_t inverterCmdSentMs = 0;
     String inverterCmdResults;
     String allowedUtilityAmps; // "2.10.20...", from QMUCHGCR
-    bool allowedAmpsRequested = false;
+    String allowedTotalAmps;   // "10.20...", from QMCHGCR
+    uint8_t bootQueryStep = 0; // QMUCHGCR, then QMCHGCR, once after start
+    String pendingInverterCode; // under lock: "Apply to inverter" code from the bot task, checked by the main thread
+    uint32_t inverterLastAnswerMs = 0;
+    bool inverterCmdRetried = false;
+    bool inverterCmdFailed = false;
 
     // Learned battery model (main thread): sums for the load -> battery power line fit, and energy per % of charge.
     struct Learn
@@ -1521,6 +1527,18 @@ struct TelegramService::Impl
 
         String command = text;
         command.trim();
+        if (command.startsWith("/start i"))
+        {
+            // "Apply to inverter" in the dashboard's ⚙️ panel: the main thread checks the code against the inverter's
+            // current values and sends the commands one at a time.
+            const String code = command.substring(7);
+            removeTriggerMessage(chat, messageId);
+            lockTake();
+            pendingInverterCode = code;
+            lockGive();
+            taskLog("[Telegram] Inverter settings from the dashboard: " + code);
+            return;
+        }
         if (command.startsWith("/start s"))
         {
             // Save in the dashboard's ⚙️ panel: the link made Telegram send "/start <code>". Keep the chat clean, apply it,
@@ -2163,9 +2181,298 @@ struct TelegramService::Impl
         return -1;
     }
 
-    // Main thread, every snapshot: hand the ⚙️ panel's inverter commands to the inverter one at a time and collect the
-    // answers; when the last one is in, edit the summary with a silent "Settings saved" headline listing the result.
-    // Also asks the inverter once which grid charging currents it allows (QMUCHGCR), for the panel's list.
+    static String ampsList(const String &answer)
+    {
+        String list; // "002 010 ... 100" -> "2.10....100"; empty when the answer is not such a list
+        int value = 0;
+        bool inNumber = false;
+        for (size_t i = 0; i <= answer.length(); ++i)
+        {
+            const char c = i < answer.length() ? answer[i] : ' ';
+            if (c >= '0' && c <= '9')
+            {
+                value = value * 10 + (c - '0');
+                inNumber = true;
+            }
+            else if (c == ' ')
+            {
+                if (inNumber)
+                {
+                    list += (list.length() ? "." : "") + String(value);
+                }
+                value = 0;
+                inNumber = false;
+            }
+            else
+            {
+                return String();
+            }
+        }
+        return list;
+    }
+
+    static bool inList(const String &list, long value)
+    {
+        const String wanted = String(value);
+        for (int start = 0; start <= static_cast<int>(list.length());)
+        {
+            int sep = list.indexOf('.', start);
+            if (sep < 0)
+            {
+                sep = list.length();
+            }
+            if (list.substring(start, sep) == wanted)
+            {
+                return true;
+            }
+            start = sep + 1;
+        }
+        return false;
+    }
+
+    // Main thread: "Apply to inverter" from the ⚙️ panel. i1 followed by _<key><value> for each changed setting (the
+    // board's own settings go separately: Telegram's 64 characters are too few for both). Keys: o output priority 0-2,
+    // c charger priority 0-3, u grid charging A, t total charging A, g input range (0 appliance, 1 UPS), z buzzer,
+    // y overload bypass, w restart after overload, q restart after overheating (0/1), and battery volts x10: r back to
+    // grid (recharge), d back to battery (re-discharge, 0 = when full), x cut-off, k bulk, f float. The whole code is
+    // checked against the inverter's current values first; nothing is sent when any part of it is wrong.
+    void queueInverterCode(const String &code)
+    {
+        auto fail = [this](const String &why) {
+            lockTake();
+            settingsHeadline = "\xE2\x9A\xA0\xEF\xB8\x8F <b>Inverter</b>: nothing changed (" + why + ")"; // ⚠️
+            lockGive();
+            settingsSavedMs = millis() | 1u;
+            LogSerial.println("[Telegram] Inverter code refused: " + why);
+        };
+        if (!code.startsWith("i1_") || code.length() <= 3)
+        {
+            fail("invalid code");
+            return;
+        }
+        // The inverter's current values, as it reported them (-1 = unknown on this inverter).
+        JsonObjectConst device = g_stateDoc["DeviceData"].as<JsonObjectConst>();
+        auto number = [&device](const char *key, float scale) -> long {
+            return device[key].is<float>() ? lroundf(device[key].as<float>() * scale) : -1;
+        };
+        auto flag = [&device](const char *key) -> long {
+            return device[key].is<bool>() ? (device[key].as<bool>() ? 1 : 0) : -1;
+        };
+        long current['z' + 1];
+        for (long &value : current)
+        {
+            value = -1;
+        }
+        current['o'] = priorityIndex(readStaticText(DESCR_Output_Source_Priority), true);
+        current['c'] = priorityIndex(readStaticText(DESCR_Charger_Source_Priority), false);
+        current['u'] = number(DESCR_Current_Max_AC_Charging_Current, 1.0f);
+        current['t'] = number(DESCR_Current_Max_Charging_Current, 1.0f);
+        const String range = device[DESCR_Input_Voltage_Range] | "";
+        current['g'] = range.indexOf("UPS") >= 0 ? 1 : (range.length() ? 0 : -1);
+        current['z'] = flag(DESCR_Buzzer_Enabled);
+        current['y'] = flag(DESCR_Overload_Bypass_Enabled);
+        current['w'] = flag(DESCR_Overload_Restart_Enabled);
+        current['q'] = flag(DESCR_Over_Temperature_Restart_Enabled);
+        current['r'] = number(DESCR_Battery_Recharge_Voltage, 10.0f);
+        current['d'] = number(DESCR_Battery_Redischarge_Voltage, 10.0f);
+        current['x'] = number(DESCR_Battery_Under_Voltage, 10.0f);
+        current['k'] = number(DESCR_Battery_Bulk_Voltage, 10.0f);
+        current['f'] = number(DESCR_Battery_Float_Voltage, 10.0f);
+        long wanted['z' + 1];
+        bool given['z' + 1] = {};
+        for (int i = 0; i <= 'z'; ++i)
+        {
+            wanted[i] = current[i];
+        }
+        for (int start = 3; start < static_cast<int>(code.length());)
+        {
+            int sep = code.indexOf('_', start);
+            if (sep < 0)
+            {
+                sep = code.length();
+            }
+            const String token = code.substring(start, sep);
+            start = sep + 1;
+            const char key = token.length() ? token[0] : 0;
+            long value = 0;
+            if (key < 'a' || key > 'z' || current[static_cast<int>(key)] < 0 || given[static_cast<int>(key)] ||
+                !parseField(token.substring(1), 10, value))
+            {
+                fail("unknown or repeated setting");
+                return;
+            }
+            given[static_cast<int>(key)] = true;
+            wanted[static_cast<int>(key)] = value;
+        }
+        auto outside = [&](char key, long low, long high) { return given[static_cast<int>(key)] && (wanted[static_cast<int>(key)] < low || wanted[static_cast<int>(key)] > high); };
+        if (outside('o', 0, 2) || outside('c', 0, 3) || outside('g', 0, 1) || outside('z', 0, 1) || outside('y', 0, 1) ||
+            outside('w', 0, 1) || outside('q', 0, 1))
+        {
+            fail("value out of range");
+            return;
+        }
+        if (given['c'] && wanted['c'] == 3 && !_settings.get.solarConnected())
+        {
+            fail("only solar charging needs panels");
+            return;
+        }
+        if (given['u'] && (allowedUtilityAmps.length() ? !inList(allowedUtilityAmps, wanted['u']) : outside('u', 2, 100)))
+        {
+            fail("grid charging current not allowed");
+            return;
+        }
+        if (given['t'] && (allowedTotalAmps.length() ? !inList(allowedTotalAmps, wanted['t']) : outside('t', 10, 120)))
+        {
+            fail("total charging current not allowed");
+            return;
+        }
+        if ((given['u'] || given['t']) && wanted['u'] > wanted['t'])
+        {
+            fail("grid charging above total charging");
+            return;
+        }
+        const bool anyVolts = given['r'] || given['d'] || given['x'] || given['k'] || given['f'];
+        if (anyVolts)
+        {
+            if (outside('x', 400, 480) || outside('r', 440, 510) || outside('k', 480, 584) || outside('f', 480, 584) ||
+                (given['d'] && wanted['d'] != 0 && (wanted['d'] < 480 || wanted['d'] > 580)))
+            {
+                fail("voltage out of range");
+                return;
+            }
+            if (wanted['f'] > wanted['k'])
+            {
+                fail("float above bulk");
+                return;
+            }
+            if (wanted['x'] >= wanted['r'])
+            {
+                fail("cut-off not below back to grid");
+                return;
+            }
+            if (wanted['d'] != 0 && wanted['r'] >= wanted['d'])
+            {
+                fail("back to grid not below back to battery");
+                return;
+            }
+        }
+
+        std::vector<std::pair<String, String>> commands;
+        auto changed = [&](char key) { return given[static_cast<int>(key)] && wanted[static_cast<int>(key)] != current[static_cast<int>(key)]; };
+        auto onOff = [](long value) { return String(value ? "on" : "off"); };
+        auto volts = [](long tenths) {
+            char text[8];
+            snprintf(text, sizeof(text), "%02ld.%ld", tenths / 10, tenths % 10);
+            return String(text);
+        };
+        if (changed('o'))
+        {
+            commands.push_back({"POP0" + String(wanted['o']), String("output ") + kOutputPriorityNames[wanted['o']]});
+        }
+        if (changed('c'))
+        {
+            commands.push_back({"PCP0" + String(wanted['c']), String("charger ") + kChargerPriorityNames[wanted['c']]});
+        }
+        // Keep grid charging <= total charging on the way: lower grid first, or raise total first.
+        auto pushGrid = [&]() {
+            if (changed('u'))
+            {
+                // This PowMr takes the amps without zero padding (MUCHGC60 ACK, MUCHGC060 NAK).
+                commands.push_back({"MUCHGC" + String(wanted['u']), "grid charging " + String(wanted['u']) + " A"});
+            }
+        };
+        auto pushTotal = [&]() {
+            if (changed('t'))
+            {
+                char command[16];
+                snprintf(command, sizeof(command), "MNCHGC%03ld", wanted['t']); // three digits (MNCHGC090 ACK, MNCHGC0090 NAK)
+                commands.push_back({command, "total charging " + String(wanted['t']) + " A"});
+            }
+        };
+        if (wanted['u'] < current['u'])
+        {
+            pushGrid();
+            pushTotal();
+        }
+        else
+        {
+            pushTotal();
+            pushGrid();
+        }
+        if (changed('g'))
+        {
+            commands.push_back({"PGR0" + String(wanted['g']), String("input range ") + (wanted['g'] ? "UPS" : "Appliance")});
+        }
+        struct FlagCommand
+        {
+            char key;
+            char letter;
+            const char *label;
+        };
+        const FlagCommand flagCommands[] = {{'z', 'a', "buzzer"}, {'y', 'b', "overload bypass"}, {'w', 'u', "restart after overload"},
+                                            {'q', 'v', "restart after overheating"}};
+        for (const FlagCommand &f : flagCommands)
+        {
+            if (changed(f.key))
+            {
+                commands.push_back({String(wanted[static_cast<int>(f.key)] ? "PE" : "PD") + f.letter, String(f.label) + " " + onOff(wanted[static_cast<int>(f.key)])});
+            }
+        }
+        // Battery voltages, two chains that must stay in order: cut-off < back to grid < back to battery, and
+        // float <= bulk. Lower values go first from the bottom up, raised ones from the top down.
+        struct VoltCommand
+        {
+            char key;
+            int rank;
+            const char *command;
+            const char *label;
+        };
+        const VoltCommand chains[2][3] = {{{'x', 0, "PSDV", "cut-off"}, {'r', 1, "PBCV", "back to grid"}, {'d', 2, "PBDV", "back to battery"}},
+                                          {{'f', 0, "PBFT", "float"}, {'k', 1, "PCVV", "bulk"}, {0, 0, nullptr, nullptr}}};
+        auto level = [](char key, long value) { return key == 'd' && value == 0 ? 10000L : value; }; // 0 = "when full"
+        for (const auto &chain : chains)
+        {
+            for (int pass = 0; pass < 2; ++pass)
+            {
+                for (int n = 0; n < 3; ++n)
+                {
+                    const VoltCommand &v = chain[pass == 0 ? n : 2 - n];
+                    if (v.key == 0 || !changed(v.key))
+                    {
+                        continue;
+                    }
+                    const long now = level(v.key, current[static_cast<int>(v.key)]);
+                    const long next = level(v.key, wanted[static_cast<int>(v.key)]);
+                    if ((pass == 0) != (next < now))
+                    {
+                        continue;
+                    }
+                    const long tenths = wanted[static_cast<int>(v.key)];
+                    commands.push_back({String(v.command) + volts(tenths),
+                                        String(v.label) + (v.key == 'd' && tenths == 0 ? String(" when full") : " " + volts(tenths) + " V")});
+                }
+            }
+        }
+        if (commands.empty())
+        {
+            lockTake();
+            settingsHeadline = "\xE2\x9C\x85 <b>Inverter</b>: already set that way"; // ✅
+            lockGive();
+            settingsSavedMs = millis() | 1u;
+            return;
+        }
+        lockTake();
+        for (const auto &command : commands)
+        {
+            pendingInverterCmds.push_back(command);
+        }
+        lockGive();
+        LogSerial.println("[Telegram] Inverter: " + String(commands.size()) + " command(s) queued");
+    }
+
+    // Main thread, every snapshot: hand the ⚙️ panel's inverter commands to the inverter one at a time (kInverterCmdGapMs
+    // apart, one retry when unanswered) and collect the answers; when the last one is in, edit the summary with a silent
+    // "Inverter: ..." headline listing the result. Also asks once which charging currents the inverter allows.
     void pumpInverterCommands(bool inverterConnected)
     {
         if (!inverterCommandHook)
@@ -2173,6 +2480,15 @@ struct TelegramService::Impl
             return;
         }
         const uint32_t now = millis();
+        String code;
+        lockTake();
+        code = pendingInverterCode;
+        pendingInverterCode = "";
+        lockGive();
+        if (code.length())
+        {
+            queueInverterCode(code);
+        }
         if (inverterCmdInFlight.length())
         {
             const String answer = g_stateDoc["RawData"]["CommandAnswer"] | "";
@@ -2181,64 +2497,51 @@ struct TelegramService::Impl
             {
                 return;
             }
-            if (inverterCmdInFlight == "QMUCHGCR")
+            inverterLastAnswerMs = now;
+            const String command = inverterCmdInFlight;
+            inverterCmdInFlight = "";
+            if (command == "QMUCHGCR" || command == "QMCHGCR")
             {
-                String list; // "002 010 ... 100" -> "2.10....100"
-                int value = 0;
-                bool inNumber = false, valid = answer.length() > 0;
-                for (size_t i = 0; valid && i <= answer.length(); ++i)
+                const String list = ampsList(answer);
+                if (list.length())
                 {
-                    const char c = i < answer.length() ? answer[i] : ' ';
-                    if (c >= '0' && c <= '9')
-                    {
-                        value = value * 10 + (c - '0');
-                        inNumber = true;
-                    }
-                    else if (c == ' ')
-                    {
-                        if (inNumber)
-                        {
-                            list += (list.length() ? "." : "") + String(value);
-                        }
-                        value = 0;
-                        inNumber = false;
-                    }
-                    else
-                    {
-                        valid = false;
-                    }
+                    (command == "QMUCHGCR" ? allowedUtilityAmps : allowedTotalAmps) = list;
                 }
-                if (valid && list.length())
-                {
-                    allowedUtilityAmps = list;
-                }
+            }
+            else if ((answer == "NOA" || !answer.length()) && !inverterCmdRetried)
+            {
+                inverterCmdRetried = true; // unanswered: send it once more after the pause
+                lockTake();
+                pendingInverterCmds.insert(pendingInverterCmds.begin(), {command, inverterCmdLabel});
+                lockGive();
             }
             else
             {
                 const bool accepted = answer == "ACK";
+                inverterCmdRetried = false;
+                inverterCmdFailed = inverterCmdFailed || !accepted;
                 if (inverterCmdResults.length())
                 {
                     inverterCmdResults += ", ";
                 }
-                inverterCmdResults += inverterCmdLabel + (accepted ? String(" \xE2\x9C\x93") : timedOut ? String(" (no answer)") : String(" refused"));
-                LogSerial.println("[Telegram] Inverter " + inverterCmdInFlight + ": " + (answer.length() ? answer : String("no answer")));
-            }
-            inverterCmdInFlight = "";
-            lockTake();
-            const bool more = !pendingInverterCmds.empty();
-            const bool finished = !more && inverterCmdResults.length();
-            if (finished)
-            {
-                settingsHeadline = "\xE2\x9C\x85 <b>Settings saved</b> \xC2\xB7 inverter: " + inverterCmdResults; // ✅ ·
-            }
-            lockGive();
-            if (finished)
-            {
-                inverterCmdResults = "";
-                settingsSavedMs = millis() | 1u;
+                inverterCmdResults += inverterCmdLabel + (accepted ? String(" \xE2\x9C\x93") : answer == "NAK" ? String(" refused") : String(" (no answer)"));
+                LogSerial.println("[Telegram] Inverter " + command + ": " + (answer.length() ? answer : String("no answer")));
+                lockTake();
+                const bool more = !pendingInverterCmds.empty();
+                if (!more)
+                {
+                    settingsHeadline = String(inverterCmdFailed ? "\xE2\x9A\xA0\xEF\xB8\x8F" : "\xE2\x9C\x85") + " <b>Inverter</b>: " + inverterCmdResults; // ⚠️ / ✅
+                }
+                lockGive();
+                if (!more)
+                {
+                    inverterCmdResults = "";
+                    inverterCmdFailed = false;
+                    settingsSavedMs = millis() | 1u;
+                }
             }
         }
-        if (!inverterConnected || inverterCmdInFlight.length())
+        if (!inverterConnected || inverterCmdInFlight.length() || now - inverterLastAnswerMs < kInverterCmdGapMs)
         {
             return;
         }
@@ -2253,10 +2556,10 @@ struct TelegramService::Impl
         lockGive();
         if (!have)
         {
-            if (!allowedAmpsRequested && now > 60000UL)
+            static const char *const kBootQueries[] = {"QMUCHGCR", "QMCHGCR"};
+            if (bootQueryStep < 2 && now > 60000UL)
             {
-                allowedAmpsRequested = true;
-                next = {"QMUCHGCR", ""};
+                next = {kBootQueries[bootQueryStep++], ""};
             }
             else
             {
@@ -2554,6 +2857,35 @@ struct TelegramService::Impl
         if (chargerIndex >= 0) add("ic", String(chargerIndex));
         if (utilityAmps.toInt() > 0) add("iu", String(utilityAmps.toInt()));
         if (allowedUtilityAmps.length()) add("il", allowedUtilityAmps);
+        // More of the inverter's settings: total charging (it, allowed itl), input range (ig 0 appliance / 1 UPS), flags
+        // (ix: 1 buzzer, 2 overload bypass, 4 restart after overload, 8 restart after overheating) and battery volts x10
+        // (vr back to grid, vd back to battery, vc cut-off, vb bulk, vf float).
+        JsonObjectConst device = g_stateDoc["DeviceData"].as<JsonObjectConst>();
+        if (device[DESCR_Current_Max_Charging_Current].is<float>())
+        {
+            add("it", String(lroundf(device[DESCR_Current_Max_Charging_Current].as<float>())));
+        }
+        if (allowedTotalAmps.length()) add("itl", allowedTotalAmps);
+        const String inputRange = device[DESCR_Input_Voltage_Range] | "";
+        if (inputRange.length()) add("ig", inputRange.indexOf("UPS") >= 0 ? "1" : "0");
+        if (device[DESCR_Buzzer_Enabled].is<bool>())
+        {
+            const unsigned inverterFlags = (device[DESCR_Buzzer_Enabled].as<bool>() ? 1u : 0u) |
+                                           (device[DESCR_Overload_Bypass_Enabled].as<bool>() ? 2u : 0u) |
+                                           (device[DESCR_Overload_Restart_Enabled].as<bool>() ? 4u : 0u) |
+                                           (device[DESCR_Over_Temperature_Restart_Enabled].as<bool>() ? 8u : 0u);
+            add("ix", String(inverterFlags));
+        }
+        const char *const voltKeys[][2] = {{"vr", DESCR_Battery_Recharge_Voltage}, {"vd", DESCR_Battery_Redischarge_Voltage},
+                                           {"vc", DESCR_Battery_Under_Voltage}, {"vb", DESCR_Battery_Bulk_Voltage},
+                                           {"vf", DESCR_Battery_Float_Voltage}};
+        for (const auto &v : voltKeys)
+        {
+            if (device[v[1]].is<float>())
+            {
+                add(v[0], String(lroundf(device[v[1]].as<float>() * 10.0f)));
+            }
+        }
         add("cfg", settingsCode()); // the ⚙️ panel's current values, and the bot its Save link goes to
         lockTake();
         const String bot = botUsername;
