@@ -110,7 +110,7 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
     <details class="fold">
       <summary>🔌 Board</summary>
       <label class="sw" id="rowSolar"><span>Solar panels connected</span><input type="checkbox" id="sSolar"></label>
-      <label class="sw"><span>Capacity, kWh</span><input type="number" id="sWh" min="0" max="200" step="0.1" inputmode="decimal"></label>
+      <label class="sw"><span>Battery capacity, kWh</span><input type="number" id="sWh" min="0" max="200" step="0.1" inputmode="decimal"></label>
       <label class="sw" id="rowRes"><span>Cut-off level</span><select id="sRes" data-unit="%"></select></label>
       <label class="sw" id="rowLearn"><span>Learn from outages</span><input type="checkbox" id="sLearn"></label>
       <div class="hint" id="learnInfo"></div>
@@ -448,6 +448,13 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       setStop('sRes', 10); idleSet = 40; effSet = 95;
       if (ver === 3) showLearn();
       refresh();
+    });
+    // One section open at a time: opening a fold closes the others (closing one fires toggle too, and does nothing).
+    var folds = [].slice.call($('setPanel').querySelectorAll('details.fold'));
+    folds.forEach(function (f) {
+      f.addEventListener('toggle', function () {
+        if (f.open) folds.forEach(function (o) { if (o !== f) o.open = false; });
+      });
     });
     $('setPanel').addEventListener('input', refresh); $('setPanel').addEventListener('change', refresh);
     if (ver === 3) showLearn();
