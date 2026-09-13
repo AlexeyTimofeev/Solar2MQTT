@@ -109,8 +109,8 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
 
     <div class="grp first">🔔 Alerts <span class="sm">· a summary with sound</span></div>
     <label class="sw"><span>Grid off / back</span><input type="checkbox" id="sGrid"></label>
-    <label class="sw"><span>Power alert</span><input type="checkbox" id="sGridW"></label>
-    <div class="sl" id="rowAlertKw"><span>… above</span><input type="range" id="sAlertKw" min="0.5" max="6" step="0.1" data-unit="kW"><b id="sAlertKwVal"></b></div>
+    <label class="sw" id="rowGridW"><span>Power alert</span><input type="checkbox" id="sGridW"></label>
+    <div class="sl" id="rowAlertKw"><span>Power alert above</span><input type="range" id="sAlertKw" min="0.5" max="6" step="0.1" data-unit="kW"><b id="sAlertKwVal"></b></div>
     <div class="hint" id="hintAlert">Grid draw while the grid is on, the house load during an outage.</div>
     <label class="sw" id="rowBattSw"><span>Battery low (30 · 25 · 20 · 15 · 10 %)</span><input type="checkbox" id="sBatt"></label>
     <label class="sw" id="rowLevels"><span>Battery low at, %</span><input type="text" id="sLevels" inputmode="numeric" placeholder="e.g. 30, 20, 10"></label>
@@ -289,15 +289,16 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
                 eff: +m[ver > 1 ? 6 : 5], alert: ver === 3 ? +m[7] : null, levels: ver === 3 && m[8] ? m[8] : null };
     // Firmware that sends the battery alert levels (8th field) gets a levels field instead of the on/off switch.
     var hasLevels = cur.levels !== null;
-    var bits = ver === 3 ? [['sGrid', 2], ['sGridW', 4], ['sSolar', 32], ['sLearn', 64]].concat(hasLevels ? [] : [['sBatt', 8]])
+    // With a threshold (s3) the power alert has no switch: it is always on and 6 kW keeps it quiet.
+    var bits = ver === 3 ? [['sGrid', 2], ['sSolar', 32], ['sLearn', 64]].concat(hasLevels ? [] : [['sBatt', 8]])
                          : [['sAuto', 1], ['sGrid', 2], ['sGridW', 4], ['sBatt', 8], ['sLoad', 16]].concat(ver === 2 ? [['sSolar', 32]] : []);
-    if (ver === 3) { hide('rowAuto'); hide('rowLoad'); } else { hide('rowAlertKw'); hide('hintAlert'); hide('rowLearn'); hide('learnInfo'); }
+    if (ver === 3) { hide('rowAuto'); hide('rowLoad'); hide('rowGridW'); } else { hide('rowAlertKw'); hide('hintAlert'); hide('rowLearn'); hide('learnInfo'); }
     if (ver === 1) { hide('rowSolar'); hide('rowFull'); }
     bits.forEach(function (x) { $(x[0]).checked = (cur.f & x[1]) !== 0; });
     $('sWh').value = +(cur.wh / 1000).toFixed(2);
     steps('sRes', [0, 5, 10, 20, 30, 40, 50], cur.res); steps('sIdle', [20, 30, 40, 50, 60], cur.idle); steps('sEff', [80, 85, 90, 95, 100], cur.eff);
     if (cur.full !== null) steps('sFull', [80, 85, 90, 95, 100], cur.full);
-    if (cur.alert !== null) steps('sAlertKw', [1, 2, 3, 4, 5, 6], cur.alert / 10); // kW
+    if (cur.alert !== null) steps('sAlertKw', [1, 2, 3, 4, 5, 6], (cur.f & 4) ? cur.alert / 10 : 6); // kW; switched off earlier -> 6
     if (hasLevels) { hide('rowBattSw'); $('sLevels').value = cur.levels === '0' || !(cur.f & 8) ? '' : cur.levels.split('-').join(', '); }
     else { hide('rowLevels'); hide('hintLevels'); }
     // "30, 20, 10" -> [30, 20, 10]: whole numbers 1-99, highest first, at most 8; null when the text is not such a list.
@@ -368,6 +369,7 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
     var field = function (id, lo, hi, k) { var s = $(id).value; if (s === '') return null; var v = Math.round(Number(s) * (k || 1)); return isFinite(v) ? Math.min(hi, Math.max(lo, v)) : null; };
     var code = function () {
       var f = resetLearn ? 128 : 0; bits.forEach(function (x) { if ($(x[0]).checked) f |= x[1]; });
+      if (ver === 3) f |= 4; // power alert always on, only its threshold is set
       var vals = [field('sWh', 0, 200000, 1000), val('sRes')];
       if (ver > 1) vals.push(val('sFull'));
       vals.push(val('sIdle'), val('sEff'));

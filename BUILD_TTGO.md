@@ -139,8 +139,9 @@ and `gridreal` in the web serial console; `gridhigh` fakes a grid power of 5.5 k
 
 ## Power alert
 
-The Dashboard's ⚙️ Settings has "Power alert" (key `telegram.gridPowerAlert`, default on) with a threshold
-(`telegram.powerAlertW`, default 5000 W, 0.5-20 kW). While the grid is on it watches the grid power, estimated as on
+The Dashboard's ⚙️ Settings has a "Power alert above" slider (`telegram.powerAlertW`, default 5000 W; 1-6 kW on the
+page, 0.5-20 kW in the firmware). It has no on/off switch: the page always keeps `telegram.gridPowerAlert` on, 6 kW keeps
+it practically quiet, and an alert switched off earlier shows as 6 kW. While the grid is on it watches the grid power, estimated as on
 the dashboard (appliances + battery charging from the grid / efficiency + the inverter's own consumption); during an
 outage it watches the house load the inverter carries. Once the power has stayed above the threshold for 10 seconds
 the bot sends one new summary with sound and a "⚡ Grid power 5.3 kW, above 5 kW" (or "⚡ Load 5.3 kW on battery, above
