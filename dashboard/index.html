@@ -153,6 +153,11 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
         <div class="sl" id="rowSc"><span>Battery cut-off</span><input type="range" id="sSc" min="0" max="0" step="1" data-unit="%"><b id="sScVal"></b></div>
         <div class="hint">The inverter stops discharging here; the discharge estimate uses it too.</div>
       </div>
+      <div id="voltRows">
+        <div class="sl" id="rowVf"><span>Float voltage</span><input type="range" id="sVf" min="0" max="0" step="1" data-unit="V"><b id="sVfVal"></b></div>
+        <div class="sl" id="rowVb"><span>Bulk voltage</span><input type="range" id="sVb" min="0" max="0" step="1" data-unit="V"><b id="sVbVal"></b></div>
+        <div class="hint">The inverter charges up to Bulk and then holds Float; with this battery Float decides how full it stays (54.0 V ≈ 88 %, 55.2 V ≈ 94 %).</div>
+      </div>
       <div class="hint warn" id="invErr"></div>
       <button id="sApply" class="btn" disabled>Apply to inverter</button>
       <div class="sm" id="applyNote" style="margin-top:6px;text-align:center">The board sends the changes one by one, about 8 s apart; the summary then lists what the inverter accepted.</div>
@@ -327,6 +332,8 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
     // Battery % switch points of the lithium battery (sg back to grid, sd back to battery, sc cut-off, from QDOP).
     var sg = num('sg'), sd = num('sd'), sc = num('sc');
     var hasSoc = invFull && sg !== null && sd !== null && sc !== null, hasFlags = invFull && ix !== null;
+    // Charging voltages x10 (vb bulk, vf float).
+    var vb = num('vb'), vf = num('vf'), hasVolts = invFull && vb !== null && vf !== null;
     var amps = function (id, list, now, fallback) { steps(id, (list || fallback).split('.').map(Number).filter(function (v) { return v > 0; }), now); };
     // Without solar panels the total charging limit means nothing on its own: it is hidden and follows the grid charging
     // limit (the next allowed value at or above it) whenever that one is moved.
@@ -347,6 +354,10 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       if (invFull && ig !== null) $('sRange').value = String(ig); else hide('rowRange');
       if (hasFlags) flags.forEach(function (f) { $(f[1]).checked = (ix & f[2]) !== 0; }); else hide('flagRows');
       if (hasSoc) { steps('sSg', SOC_STEPS.b, sg); steps('sSd', SOC_STEPS.e, sd); steps('sSc', SOC_STEPS.s, sc); } else hide('socBox');
+      // 0.2 V steps; float 53.6-56.0 V, bulk 55.2 V up to the BMS charge voltage limit (QBMS field 6, 57.6 V here).
+      var bmsCv = (function () { var p = (q.get('bms') || '').trim().split(/\s+/); return p.length >= 10 && +p[5] > 0 ? +p[5] : 576; })();
+      var voltSteps = function (from, to) { var a = []; for (var t = from; t <= to; t += 2) a.push(t / 10); return a; };
+      if (hasVolts) { steps('sVf', voltSteps(536, 560), vf / 10); steps('sVb', voltSteps(552, Math.min(584, bmsCv)), vb / 10); } else hide('voltRows');
       if (!invFull) { hide('sApply'); hide('applyNote'); }
     }
     if (hasSoc) { // the estimate follows the inverter's own cut-off
@@ -383,6 +394,7 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       if (ig !== null) add('g', Number($('sRange').value), ig);
       if (hasFlags) flags.forEach(function (f) { add(f[0], $(f[1]).checked ? 1 : 0, (ix & f[2]) ? 1 : 0); });
       if (hasSoc) { add('b', val('sSg'), sg); add('e', val('sSd'), sd); add('s', val('sSc'), sc); }
+      if (hasVolts) { add('k', Math.round(val('sVb') * 10), vb); add('f', Math.round(val('sVf') * 10), vf); }
       return parts.length ? 'i1_' + parts.join('_') : '';
     };
     var invProblem = function () {
@@ -396,6 +408,7 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
         if (pc > pg) return 'Cut-off can not be above back to grid.';
         if (pg >= pd) return 'Back to grid must be below back to battery.';
       }
+      if (hasVolts && val('sVf') > val('sVb')) return 'Float can not be above bulk.';
       return '';
     };
     // Live preview: discharge time at the house load now with these values (learned ones when learning is on and known).
@@ -422,7 +435,7 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
     refresh = function () {
       document.querySelectorAll('#setPanel input[type=range]').forEach(function (el) {
         var out = $(el.id + 'Val'), v = val(el.id);
-        if (out) out.textContent = v + ' ' + el.dataset.unit;
+        if (out) out.textContent = (el.dataset.unit === 'V' ? v.toFixed(1) : v) + ' ' + el.dataset.unit;
       });
       if (hasLevels) {
         var badLevels = levelList() === null;
