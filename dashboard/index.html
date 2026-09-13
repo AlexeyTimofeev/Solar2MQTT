@@ -47,9 +47,10 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
 .hint{font-size:12px;color:var(--muted);margin:0 0 6px}
 .hint a{color:var(--blue)}
 .btn2{display:block;width:100%;margin-top:8px;padding:9px;border:1px solid var(--border);border-radius:10px;background:transparent;color:var(--muted);font-size:14px}
-.fold{border-top:1px solid var(--border);margin-top:10px;padding-top:9px}
-.fold summary{font-size:14px;font-weight:600;list-style-position:inside}
-.fold[open] summary{margin-bottom:2px}
+.tabs{display:flex;gap:4px;background:rgba(128,166,201,.12);border-radius:10px;padding:4px;margin:10px 0 2px}
+.tabs button{flex:1;background:none;border:0;color:var(--muted);font:inherit;font-size:13px;font-weight:600;padding:7px 2px;border-radius:7px;cursor:pointer}
+.tabs button[aria-selected="true"]{background:var(--panel);color:var(--text);box-shadow:0 1px 3px rgba(0,0,0,.45)}
+.tabs button:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
 .hint.warn{color:var(--warn)}
 .sw input[type=text]{width:150px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:5px 8px;font:inherit;text-align:right}
 .empty{text-align:center;color:var(--muted);padding-top:35vh}
@@ -107,8 +108,13 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
   <details id="setPanel" class="pn hidden">
     <summary>⚙️ Settings</summary>
 
-    <details class="fold">
-      <summary>🔌 Board</summary>
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" aria-selected="true" data-tab="tabBoard">🔌 Board</button>
+      <button type="button" role="tab" aria-selected="false" data-tab="tabAlerts">🔔 Alerts</button>
+      <button type="button" role="tab" aria-selected="false" data-tab="invSection" id="invTabBtn" class="hidden">⚡ Inverter</button>
+    </div>
+
+    <div role="tabpanel" id="tabBoard">
       <label class="sw" id="rowSolar"><span>Solar panels connected</span><input type="checkbox" id="sSolar"></label>
       <label class="sw"><span>Battery capacity, kWh</span><input type="number" id="sWh" min="0" max="200" step="0.1" inputmode="decimal"></label>
       <label class="sw" id="rowRes"><span>Cut-off level</span><select id="sRes" data-unit="%"></select></label>
@@ -116,10 +122,9 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       <div class="hint" id="learnInfo"></div>
       <div class="hint" id="preview"></div>
       <button id="sSave" class="btn" disabled>Save</button>
-    </details>
+    </div>
 
-    <details class="fold">
-      <summary>🔔 Alerts</summary>
+    <div role="tabpanel" id="tabAlerts" hidden>
       <label class="sw"><span>Grid on/off</span><input type="checkbox" id="sGrid"></label>
       <label class="sw" id="rowGridW"><span>Power alert</span><input type="checkbox" id="sGridW"></label>
       <label class="sw" id="rowAlertKw"><span>Load above</span><select id="sAlertKw" data-unit="kW"></select></label>
@@ -129,10 +134,9 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       <label class="sw" id="rowAuto"><span>Update summary every 15 s</span><input type="checkbox" id="sAuto"></label>
       <label class="sw" id="rowLoad"><span>High load above 80 %</span><input type="checkbox" id="sLoad"></label>
       <button id="sSaveA" class="btn" disabled>Save</button>
-    </details>
+    </div>
 
-    <details class="fold hidden" id="invSection">
-      <summary>⚡ Inverter</summary>
+    <div role="tabpanel" id="invSection" hidden>
       <label class="sw"><span>Output priority</span><select id="sOp"><option value="0">Utility first</option><option value="1">Solar first</option><option value="2">Battery first (SBU)</option></select></label>
       <!-- "Utility first" (value 0) is left out: this VMII-6000 refuses PCP00 (tested 2026-09-13). -->
       <label class="sw"><span>Charger priority</span><select id="sCp"><option value="1">Solar first</option><option value="2">Solar + utility</option><option value="3">Only solar</option></select></label>
@@ -156,7 +160,7 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       <div class="hint warn" id="invErr"></div>
       <button id="sApply" class="btn" disabled>Save</button>
       <div class="sm" id="applyNote" style="margin-top:6px;text-align:center">The board sends the changes one by one, about 8 s apart; the summary then lists what the inverter accepted.</div>
-    </details>
+    </div>
 
     <button id="sReset" class="btn2" type="button">Reset to defaults</button>
     <div class="sm" style="margin-top:10px;text-align:center">Each button sends a short command to the bot (removed from the chat right away); the summary then confirms it.</div>
@@ -334,7 +338,7 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
     // in these ranges (tested on the VMII-6000: cut-off 5/7/12/15/20/30, back to grid 13/15/20/50, back to battery 83/85/100).
     var SOC_STEPS = { b: range(5, 95, 1), e: range(10, 100, 1), s: [0, 5, 10, 20, 30, 40, 50] };
     if (inv) {
-      $('invSection').classList.remove('hidden');
+      $('invTabBtn').classList.remove('hidden');
       $('sOp').value = String(io); $('sCp').value = String(ic);
       if (invFull && ig !== null) $('sRange').value = String(ig); else hide('rowRange');
       if (hasFlags) flags.forEach(function (f) { $(f[1]).checked = (ix & f[2]) !== 0; }); else hide('flagRows');
@@ -449,11 +453,15 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       if (ver === 3) showLearn();
       refresh();
     });
-    // One section open at a time: opening a fold closes the others (closing one fires toggle too, and does nothing).
-    var folds = [].slice.call($('setPanel').querySelectorAll('details.fold'));
-    folds.forEach(function (f) {
-      f.addEventListener('toggle', function () {
-        if (f.open) folds.forEach(function (o) { if (o !== f) o.open = false; });
+    // Segmented tabs: exactly one section is shown at a time.
+    var tabs = [].slice.call($('setPanel').querySelectorAll('[role=tab]'));
+    tabs.forEach(function (t) {
+      t.addEventListener('click', function () {
+        tabs.forEach(function (o) {
+          var on = o === t;
+          o.setAttribute('aria-selected', on ? 'true' : 'false');
+          $(o.getAttribute('data-tab')).hidden = !on;
+        });
       });
     });
     $('setPanel').addEventListener('input', refresh); $('setPanel').addEventListener('change', refresh);
