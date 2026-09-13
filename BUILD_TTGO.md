@@ -158,7 +158,7 @@ inverter runs on battery without solar input, one sample per 2-second snapshot:
   (standard deviation), and only if the result is plausible (75-100 %, 0-200 W).
 * Capacity = energy drawn ÷ % of charge used, summed over outages in which the charge fell by 8 points or more.
 * The sums are kept in flash (NVS namespace `learn`), saved when an outage ends and every 30 minutes during one.
-  Once known, the learned values replace the typed ones in every estimate (time left, grid power, the dashboard);
+  Once known, the learned values replace the stored ones in every estimate (time left, grid power, the dashboard);
   the ⚙️ panel shows what has been learned, and "Forget" clears it (flag bit 128 of the settings code, once).
   `/diag` has a "Battery model:" line.
 
@@ -172,14 +172,14 @@ the PowMr VMII-6000 with a no-op write of its current value:
 |---|---|---|
 | Output priority | `POP0n` | 0 Utility first, 1 Solar first, 2 Battery first (SBU) |
 | Charger priority | `PCP0n` | 0 Utility first, 1 Solar first, 2 Solar + utility, 3 Only solar (only offered with solar panels connected, since it stops charging from the grid) |
-| Grid charging, max | `MUCHGCn` | allowed values from `QMUCHGCR` (2, 10 … 100 A); no zero padding (`MUCHGC60` ACK, `MUCHGC060` NAK) |
+| Grid charging, max | `MUCHGCn` | allowed values from `QMUCHGCR` (2, 10 … 100 A); no zero padding (`MUCHGC60` ACK, `MUCHGC060` NAK); the panel offers it as grid power, 0.5-5 kW in 0.5 kW steps, each sent as the nearest 10 A step at 54 V and 95 % (2 kW is left out: it lands on 40 A like the closer 2.5 kW) |
 | Total charging, max | `MNCHGCnnn` | allowed values from `QMCHGCR` (10 … 120 A); three digits (`MNCHGC090` ACK, `MNCHGC0090` NAK); grid charging can not exceed it; hidden while "Solar panels connected" is off, and then set to the grid charging limit (the next allowed value at or above it) whenever that one is changed |
 | Grid input range | `PGR0n` | 0 Appliance (wide window), 1 UPS (fast switch-over) |
 | Buzzer, overload bypass, restart after overload, restart after overheating | `PEa`/`PDa`, `b`, `u`, `v` | on / off (backlight `x`, grid-loss alarm `y` and power saving `j` never answer on this model) |
 | Battery % points (lithium with BMS): back to grid, back to battery, cut-off | `PBCC`, `PBDC`, `PSDC` + `nnn` (3 digits), read with `QDOP` (fields 9-11) | 5-95, 10-100, 0-90 %, any whole % (tested on the VMII-6000: cut-off 5/7/12/15/20/30, back to grid 13/15/20/50, back to battery 83/85/100, each stored as sent); cut-off <= back to grid < back to battery; back to grid / back to battery are shown only in Solar first or Battery first mode (the only modes that use them); `PSDC` answers only after a ~20 s pause |
 
-The panel uses dropdowns that list only accepted values (the charging limits at the inverter's allowed currents, the %
-points at whole percent; also the power alert, full level, own use and efficiency). The allowed currents are asked once a
+The panel uses dropdowns that list only accepted values (grid charging in kW mapped to the allowed currents, total charging at its allowed currents,
+the % points at whole percent, the voltages in 0.1 V steps; also the power alert and cut-off). The allowed currents are asked once a
 minute after start. Apply sends `/start i1_<key><value>_...` with only the
 changed settings (Telegram allows 64 characters, too few next to the board's settings): o, c, u, t, g, z buzzer,
 y bypass, w restart after overload, q restart after overheating, and the battery % points b back to grid, e back to
@@ -196,7 +196,7 @@ Only lithium batteries with BMS communication are supported. The switch-over and
 `PSDV`) are not offered: with a BMS the inverter uses the % points. The charging voltages are: contrary to the manuals,
 this VMII-6000 in LIb mode floats the battery at its own float voltage (`PBFT`). With float 54.0 V the battery stayed at
 88 % (0 A, "Float"); after `PBFT55.2` it took current again and reached 94 % within 10 minutes (2026-09-13). The panel
-offers Float (53.6-56.0 V) and Bulk (55.2 V up to the BMS charge voltage limit from QBMS, 57.6 V here) in 0.2 V steps,
+offers Float (53.6-56.0 V) and Bulk (55.2 V up to the BMS charge voltage limit from QBMS, 57.6 V here) in 0.1 V steps (float 56.0 V took it to 100 %),
 float <= bulk; Apply keys `k` (bulk, `PCVV`) and `f` (float, `PBFT`), volts x10; link keys `vb` / `vf`.
 
 The board asks `QDOP` (battery % points) and `QBMS` (what the BMS reports: connected, SOC, force-charge / stop-discharge
@@ -387,8 +387,8 @@ load % (bars coloured by grid state: on / partly off / off), today's usage and o
 board health.
 
 * ⚙️ Settings panel (inside Telegram, private chat only): grid on/off, power alert with its threshold, battery alerts,
-  solar panels connected, battery capacity, battery full level, cut-off, learn from outages (with what has been
-  learned and "Forget"), inverter own use and efficiency, a live preview of the discharge time at the current load,
+  solar panels connected, battery capacity, cut-off, learn from outages (with what has been
+  learned and "Forget"; own use and efficiency have no rows, the stored 40 W / 95 % stand in until learned), a live preview of the discharge time at the current load,
   the inverter's output / charger priority and grid charging limit, and "Reset to defaults" (alerts and model values;
   capacity, solar and the inverter's settings stay). The link carries the current values
   (`cfg=s3_<flags hex>_<Wh>_<reserve %>_<full %>_<idle W>_<efficiency %>_<alert, 100 W>`, flag bits 2 grid, 4 power,
@@ -396,7 +396,7 @@ board health.
   inverter's settings (`io`, `ic`, `iu`, allowed amps `il`) and the bot's username (`bu`). Save may append
   `_<output>_<charger>_<amps>` (each a number or `x` for unchanged). `s1` and `s2` codes from older pages are still
   accepted, and the page answers older firmware in its own format. The battery ring, the summary's moon and the T-Display battery bar are complete at the "battery full" level
-  (`device.batteryFullPct`, default 100 %, link key `bf`), e.g. 90 % when the charger stops there. Save opens `t.me/<bot>?start=<code>`, so
+  (`device.batteryFullPct`, default 100 %, link key `bf`), the page always saves 100 % (the float voltage decides how full the battery gets). Save opens `t.me/<bot>?start=<code>`, so
   Telegram sends `/start <code>` from the user's chat; the board validates and applies it (only from a paired chat),
   deletes that message and edits the summary a few seconds later so the Dashboard link carries the new values.
 
@@ -415,7 +415,7 @@ board health.
   capacity × (battery % − reserve) ÷ (load ÷ efficiency + own consumption), with the learned values once known (see
   "Learned battery model"), otherwise from the ⚙️ Settings panel: Battery
   capacity [Wh] (hidden while 0), Battery reserve [%] (the inverter's low-battery cut-off, default 10), Inverter own
-  consumption [W] (default 40) and Inverter efficiency [%] (default 95).
+  consumption [W] (default 40) and Inverter efficiency [%] (default 95); the last two are no longer in the ⚙️ panel.
 * Mini App buttons only work in private chats; in a group the button opens the same page in the browser.
 * If Telegram rejects the link (too long), the board halves the history in the next link, and drops the button if
   even a link without history is refused ("[Telegram] Dashboard link rejected" in the log).
