@@ -304,6 +304,7 @@ private:
      * @details calculates the checksum and sends the command over the specified serial connection
      */
     String requestData(String command);
+    String modbusRawProbe(const String &hex); // test build: raw Modbus RTU frame, answer as hex
 
     /**
      * @brief accept a achar and get back the operation mode as string

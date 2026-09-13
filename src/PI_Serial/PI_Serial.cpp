@@ -1298,6 +1298,15 @@ bool PI_Serial::sendCustomCommand()
     if (customCommandBuffer == "")
         return false;
 
+    if (customCommandBuffer.startsWith("MB:"))
+    {
+        // Test build: a raw Modbus RTU frame (PowMr HVM protocol, slave 5) on the inverter port; function 03 reads.
+        customCommandIsQuery = customCommandBuffer.substring(5, 7) == "03";
+        get.raw.commandAnswer = modbusRawProbe(customCommandBuffer.substring(3));
+        customCommandBuffer = "";
+        return true;
+    }
+
     customCommandIsQuery = customCommandBuffer.startsWith("Q");
     if (isModbus())
     {
@@ -1309,6 +1318,69 @@ bool PI_Serial::sendCustomCommand()
     }
     customCommandBuffer = "";
     return true;
+}
+
+// Test build: sends the hex frame with its Modbus CRC appended, at the port's current settings (2400 8N1), and answers
+// "MB:" + the reply bytes as hex, or "MB:NONE" when nothing came back within 1.5 s.
+String PI_Serial::modbusRawProbe(const String &hex)
+{
+    uint8_t frame[64];
+    size_t len = 0;
+    for (size_t i = 0; i + 1 < hex.length() && len < sizeof(frame) - 2; i += 2)
+    {
+        const char pair[3] = {hex[i], hex[i + 1], 0};
+        frame[len++] = static_cast<uint8_t>(strtoul(pair, nullptr, 16));
+    }
+    if (len < 2)
+    {
+        return "MB:BAD";
+    }
+    uint16_t crc = 0xFFFF;
+    for (size_t i = 0; i < len; ++i)
+    {
+        crc ^= frame[i];
+        for (int bit = 0; bit < 8; ++bit)
+        {
+            crc = (crc & 1) ? static_cast<uint16_t>((crc >> 1) ^ 0xA001) : static_cast<uint16_t>(crc >> 1);
+        }
+    }
+    frame[len++] = static_cast<uint8_t>(crc & 0xFF);
+    frame[len++] = static_cast<uint8_t>(crc >> 8);
+    while (this->my_serialIntf->available() > 0)
+    {
+        this->my_serialIntf->read();
+    }
+    this->my_serialIntf->write(frame, len);
+    this->my_serialIntf->flush();
+    String out = "MB:";
+    size_t got = 0;
+    const unsigned long start = millis();
+    unsigned long lastByte = start;
+    while (millis() - start < 1500 && got < 200)
+    {
+        if (this->my_serialIntf->available() > 0)
+        {
+            char byteHex[3];
+            snprintf(byteHex, sizeof(byteHex), "%02X", this->my_serialIntf->read());
+            out += byteHex;
+            got++;
+            lastByte = millis();
+        }
+        else
+        {
+            if (got && millis() - lastByte > 100)
+            {
+                break; // the reply frame is complete
+            }
+            delay(2);
+        }
+    }
+    if (!got)
+    {
+        out += "NONE";
+    }
+    writeLog("[PI][MB] sent %u bytes, got %u: %s", static_cast<unsigned>(len), static_cast<unsigned>(got), out.c_str());
+    return out;
 }
 
 String PI_Serial::requestData(String command)
