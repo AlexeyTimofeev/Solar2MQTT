@@ -43,6 +43,7 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
 .sw select{-webkit-appearance:none;appearance:none;background:rgba(88,184,255,.1) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%2358b8ff' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 10px center;color:var(--text);border:1px solid rgba(88,184,255,.45);border-radius:8px;padding:6px 28px 6px 10px;font:inherit;font-weight:600;max-width:58%;cursor:pointer}
 .sw select:active{background-color:rgba(88,184,255,.22)}
 .sw select option{background:var(--panel);color:var(--text)}
+.sw .ro{font-weight:600;text-align:right}
 .hint{font-size:12px;color:var(--muted);margin:0 0 6px}
 .hint a{color:var(--blue)}
 .btn2{display:block;width:100%;margin-top:8px;padding:9px;border:1px solid var(--border);border-radius:10px;background:transparent;color:var(--muted);font-size:14px}
@@ -133,8 +134,8 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       <div class="grp">⚡ Inverter configuration <span class="sm">· stored in the inverter</span></div>
       <label class="sw"><span>Output priority</span><select id="sOp"><option value="0">Utility first</option><option value="1">Solar first</option><option value="2">Battery first (SBU)</option></select></label>
       <label class="sw"><span>Charger priority</span><select id="sCp"><option value="0">Utility first</option><option value="1">Solar first</option><option value="2">Solar + utility</option><option value="3">Only solar</option></select></label>
-      <label class="sw" id="rowAmps"><span>Grid charging, max</span><select id="sAmps" data-unit="kW"></select></label>
-      <label class="sw" id="rowTotal"><span>Total charging, max</span><select id="sTotal" data-unit="A"></select></label>
+      <label class="sw" id="rowAmps"><span>Grid charging, max</span><span class="ro" id="ampsText"></span></label>
+      <div class="hint">Set it on the inverter’s own panel (max utility charging current): this model refuses the change over the serial link.</div>
       <label class="sw" id="rowRange"><span>Grid input range</span><select id="sRange"><option value="0">Appliance (wide)</option><option value="1">UPS (fast)</option></select></label>
       <div id="flagRows">
         <label class="sw"><span>Buzzer</span><input type="checkbox" id="sBuzz"></label>
@@ -335,30 +336,16 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
     var hasSoc = invFull && sg !== null && sd !== null && sc !== null, hasFlags = invFull && ix !== null;
     // Charging voltages x10 (vb bulk, vf float).
     var vb = num('vb'), vf = num('vf'), hasVolts = invFull && vb !== null && vf !== null;
-    var amps = function (id, list, now, fallback) { steps(id, (list || fallback).split('.').map(Number).filter(function (v) { return v > 0; }), now); };
-    // Without solar panels the total charging limit means nothing on its own: it is hidden and follows the grid charging
-    // limit (the next allowed value at or above it) whenever that one is moved.
-    var totalWanted = function () {
-      var u = val('sAmps'), list = $('sTotal').stops || [];
-      if ($('sSolar').checked || u === iu) return val('sTotal');
-      for (var i = 0; i < list.length; i++) if (list[i] >= u) return list[i];
-      return list.length ? list[list.length - 1] : u;
-    };
     // The battery % points this inverter accepts (PBCC back to grid, PBDC back to battery, PSDC cut-off): any whole %
     // in these ranges (tested on the VMII-6000: cut-off 5/7/12/15/20/30, back to grid 13/15/20/50, back to battery 83/85/100).
     var SOC_STEPS = { b: range(5, 95, 1), e: range(10, 100, 1), s: [0, 5, 10, 20, 30, 40, 50] };
     if (inv) {
       $('invSection').classList.remove('hidden');
       $('sOp').value = String(io); $('sCp').value = String(ic);
-      // Grid charging is chosen as the power drawn from the grid, 0.5-5 kW, and sent as the nearest allowed current (10 A
-      // steps) at 54 V and 95 % efficiency; a kW step landing on the same current as a closer one is left out.
-      var ampsKw = {}, kwOf = function (a) { return a * 54 / 0.95 / 1000; };
-      range(1, 10, 1).forEach(function (h) {
-        var kw = h / 2, a = Math.min(100, Math.max(10, Math.round(kw * 1000 * 0.95 / 54 / 10) * 10)), d = Math.abs(kwOf(a) - kw);
-        if (!(a in ampsKw) || d < ampsKw[a].d) ampsKw[a] = { kw: kw, d: d };
-      });
-      steps('sAmps', Object.keys(ampsKw).map(Number), iu, function (a) { return (a in ampsKw ? ampsKw[a].kw : +kwOf(a).toFixed(1)) + ' kW'; });
-      if (invFull) amps('sTotal', q.get('itl'), it, '10.20.30.40.50.60.70.80.90.100.110.120'); else hide('rowTotal');
+      // Grid charging is shown only: this VMII-6000 answers NAK to every change of it over the serial link (only the value
+      // already set gets an ACK) and does not speak Modbus, while its own menu changes it freely. The total charging limit
+      // follows the battery's BMS and has no row.
+      $('ampsText').textContent = '≈ ' + (iu * 54 / 0.95 / 1000).toFixed(1) + ' kW (' + iu + ' A)';
       if (invFull && ig !== null) $('sRange').value = String(ig); else hide('rowRange');
       if (hasFlags) flags.forEach(function (f) { $(f[1]).checked = (ix & f[2]) !== 0; }); else hide('flagRows');
       if (hasSoc) { steps('sSg', SOC_STEPS.b, sg); steps('sSd', SOC_STEPS.e, sd); steps('sSc', SOC_STEPS.s, sc); } else hide('socBox');
@@ -391,7 +378,7 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       var c = 's' + ver + '_' + f.toString(16) + '_' + vals.join('_');
       if (inv && !invFull) { // 2.1.17: priorities and grid charging ride on the s3 code
         var pick = function (id, now) { var v = String(val(id)); return v === String(now) ? 'x' : v; };
-        var tail = [pick('sOp', io), pick('sCp', ic), pick('sAmps', iu)];
+        var tail = [pick('sOp', io), pick('sCp', ic), 'x']; // grid charging is never sent
         if (tail.join('') !== 'xxx') c += '_' + tail.join('_');
       }
       return c;
@@ -399,7 +386,6 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
     var invCode = function () {
       var parts = [], add = function (key, value, now) { if (value !== null && value !== now) parts.push(key + value); };
       add('o', Number($('sOp').value), io); add('c', Number($('sCp').value), ic);
-      add('u', val('sAmps'), iu); add('t', totalWanted(), it);
       if (ig !== null) add('g', Number($('sRange').value), ig);
       if (hasFlags) flags.forEach(function (f) { add(f[0], $(f[1]).checked ? 1 : 0, (ix & f[2]) ? 1 : 0); });
       if (hasSoc) { add('b', val('sSg'), sg); add('e', val('sSd'), sd); add('s', val('sSc'), sc); }
@@ -407,9 +393,6 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       return parts.length ? 'i1_' + parts.join('_') : '';
     };
     var invProblem = function () {
-      // With a BMS battery the inverter reports the total charging limit the BMS allows right now (it drops to 20 A
-      // near full), so only a total the user moves below grid charging is an error.
-      if ($('sSolar').checked && val('sTotal') !== it && val('sAmps') > val('sTotal')) return 'Grid charging can not be above total charging.';
       if (hasSoc) {
         var pg = val('sSg'), pd = val('sSd'), pc = val('sSc');
         if (pg === null || pd === null || pc === null) return 'Enter all battery % values.';
@@ -442,7 +425,6 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       }
       var c = code(); save.disabled = !c || c === initial;
       if (invFull) { var problem = invProblem(); $('invErr').textContent = problem; apply.disabled = !invCode() || !!problem; }
-      if (invFull) $('rowTotal').classList.toggle('hidden', !$('sSolar').checked); // no panels: total follows grid charging
       if (hasSoc) { // back to grid / back to battery only matter in Solar first or Battery first (SBU) mode
         var batteryFirst = $('sOp').value !== '0';
         ['rowSg', 'rowSd', 'hintSoc'].forEach(function (id) { $(id).classList.toggle('hidden', !batteryFirst); });
