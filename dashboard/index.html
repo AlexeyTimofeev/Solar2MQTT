@@ -99,12 +99,6 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       <div class="sm" style="margin-top:6px;text-align:center">Load bars: <span style="color:#6ee7a6">grid on</span> · <span style="color:var(--warn)">partly off</span> · <span style="color:#ff8a78">grid off</span></div>
     </div>
   </div>
-  <div class="pn">
-    <div class="kv" id="todayRow"><span>Today</span><span id="today"></span></div>
-    <div class="kv"><span>Inverter</span><span id="temp"></span></div>
-    <div class="kv hidden" id="solarRow"><span>Solar</span><span id="solar"></span></div>
-    <div class="kv"><span>Board</span><span id="board"></span></div>
-  </div>
   <details id="setPanel" class="pn hidden">
     <summary>⚙️ Settings</summary>
 
@@ -165,6 +159,14 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
     <button id="sReset" class="btn2" type="button">Reset to defaults</button>
     <div class="sm" style="margin-top:10px;text-align:center">Each button sends a short command to the bot (removed from the chat right away); the summary then confirms it.</div>
   </details>
+
+  <div class="pn">
+    <div class="kv" id="todayRow"><span>Today</span><span id="today"></span></div>
+    <div class="kv"><span>Inverter</span><span id="temp"></span></div>
+    <div class="kv hidden" id="solarRow"><span>Solar</span><span id="solar"></span></div>
+    <div class="kv"><span>Board</span><span id="board"></span></div>
+  </div>
+
   <p class="sm" style="text-align:center;margin-top:14px">Data from the latest summary. Close and tap 📊 Dashboard again for newer values.</p>
 </main>
 <script>
