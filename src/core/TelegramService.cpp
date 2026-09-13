@@ -2972,6 +2972,11 @@ struct TelegramService::Impl
             addNumber("bv", DESCR_Battery_Voltage, 10);
             addNumber("bc", DESCR_Battery_Charge_Current, 1);
             addNumber("bd", DESCR_Battery_Discharge_Current, 1);
+            // Charging stage for the battery card: 1 bulk, 2 absorb, 3 float; left out while nothing is charging.
+            const String chargeState = readText(DESCR_Inverter_Charge_State);
+            if (chargeState == DESCR_Bulk_Stage) add("cs", "1");
+            else if (chargeState == DESCR_Absorb) add("cs", "2");
+            else if (chargeState == DESCR_Float) add("cs", "3");
             addNumber("l", DESCR_AC_Out_Watt, 1);
             addNumber("lp", DESCR_AC_Out_Percent, 1);
             addNumber("va", DESCR_AC_Out_VA, 1);
