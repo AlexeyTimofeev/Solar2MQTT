@@ -172,16 +172,17 @@ the PowMr VMII-6000 with a no-op write of its current value:
 |---|---|---|
 | Output priority | `POP0n` | 0 Utility first, 1 Solar first, 2 Battery first (SBU) |
 | Charger priority | `PCP0n` | 0 Utility first, 1 Solar first, 2 Solar + utility, 3 Only solar (only offered with solar panels connected, since it stops charging from the grid) |
-| Grid charging, max | `MUCHGCn` | allowed values from `QMUCHGCR` (2, 10 … 100 A); no zero padding (`MUCHGC60` ACK, `MUCHGC060` NAK); the panel offers it as grid power, 0.5-5 kW in 0.5 kW steps, each sent as the nearest 10 A step at 54 V and 95 % (2 kW is left out: it lands on 40 A like the closer 2.5 kW) |
-| Total charging, max | `MNCHGCnnn` | allowed values from `QMCHGCR` (10 … 120 A); three digits (`MNCHGC090` ACK, `MNCHGC0090` NAK); grid charging can not exceed it; hidden while "Solar panels connected" is off, and then set to the grid charging limit (the next allowed value at or above it) whenever that one is changed |
+| Grid charging, max | `MUCHGCn` | **not settable over the serial link on this VMII-6000**: every real change answers NAK (`MUCHGC50` and `MUCHGC10` from the panel, `MUCHGC0050` directly), only the value already set is ACKed (`MUCHGC60`; `MUCHGC060` / `MUCHGC0060` NAK), while the inverter's own menu changes it freely. The panel shows it read-only (≈ kW at 54 V / 95 % and the amps). The PowMr HVM Modbus protocol of the WIFI-VM dongle (slave 5, 2400 baud, holding registers 4501+, utility charge current 5024) gets no answer on this port either: three read-only probes with test build 2.1.19-mb1 (branch `modbus-probe`, custom command `MB:<hex>`) came back empty and left the PI30 link untouched |
+| Total charging, max | `MNCHGCnnn` | no row: with the BMS battery the inverter reports the BMS's current limit here (10 A near full, 90 A otherwise) and refused the one real change tried (`MNCHGC050`); the no-op `MNCHGC090` was ACK (three digits, `MNCHGC0090` NAK) |
 | Grid input range | `PGR0n` | 0 Appliance (wide window), 1 UPS (fast switch-over) |
 | Buzzer, overload bypass, restart after overload, restart after overheating | `PEa`/`PDa`, `b`, `u`, `v` | on / off (backlight `x`, grid-loss alarm `y` and power saving `j` never answer on this model) |
 | Battery % points (lithium with BMS): back to grid, back to battery, cut-off | `PBCC`, `PBDC`, `PSDC` + `nnn` (3 digits), read with `QDOP` (fields 9-11) | 5-95, 10-100, 0-90 %, any whole % (tested on the VMII-6000: cut-off 5/7/12/15/20/30, back to grid 13/15/20/50, back to battery 83/85/100, each stored as sent); cut-off <= back to grid < back to battery; back to grid / back to battery are shown only in Solar first or Battery first mode (the only modes that use them); `PSDC` answers only after a ~20 s pause |
 
-The panel uses dropdowns that list only accepted values (grid charging in kW mapped to the allowed currents, total charging at its allowed currents,
-the % points at whole percent, the voltages in 0.1 V steps; also the power alert and cut-off). The allowed currents are asked once a
+The panel uses dropdowns that list only accepted values (the % points at whole percent, the voltages in 0.1 V steps; also the power alert and cut-off). Verified with a real change: float
+(`PBFT`), the % points, the buzzer flag (`PEa`). The priorities, input range, bulk voltage and the other flags were only
+confirmed with their current value, and a no-op ACK proves nothing (`MUCHGC60` gave one too). The allowed currents are asked once a
 minute after start. Apply sends `/start i1_<key><value>_...` with only the
-changed settings (Telegram allows 64 characters, too few next to the board's settings): o, c, u, t, g, z buzzer,
+changed settings (Telegram allows 64 characters, too few next to the board's settings): o, c, g, z buzzer (u and t are still accepted, the page no longer sends them),
 y bypass, w restart after overload, q restart after overheating, and the battery % points b back to grid, e back to
 battery, s cut-off. The main loop checks the whole code against the inverter's current values (ranges, grid <= total,
 cut-off % <= back to grid % < back to battery %) and sends nothing if any part is wrong ("⚠️ Inverter: nothing changed
@@ -389,7 +390,7 @@ board health.
 * ⚙️ Settings panel (inside Telegram, private chat only): grid on/off, power alert with its threshold, battery alerts,
   solar panels connected, battery capacity, cut-off, learn from outages (with what has been
   learned and "Forget"; own use and efficiency have no rows, the stored 40 W / 95 % stand in until learned), a live preview of the discharge time at the current load,
-  the inverter's output / charger priority and grid charging limit, and "Reset to defaults" (alerts and model values;
+  the inverter's output / charger priority (grid charging is read-only, see "Inverter settings from the Dashboard"), and "Reset to defaults" (alerts and model values;
   capacity, solar and the inverter's settings stay). The link carries the current values
   (`cfg=s3_<flags hex>_<Wh>_<reserve %>_<full %>_<idle W>_<efficiency %>_<alert, 100 W>`, flag bits 2 grid, 4 power,
   8 battery, 32 solar, 64 learn, 128 forget once), the learned values (`lh` hours, `lc` Wh, `le` %, `li` W), the
