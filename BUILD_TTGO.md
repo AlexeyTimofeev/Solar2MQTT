@@ -139,7 +139,7 @@ and `gridreal` in the web serial console; `gridhigh` fakes a grid power of 5.5 k
 
 ## Power alert
 
-The Dashboard's ⚙️ Settings has a "Power alert above" slider (`telegram.powerAlertW`, default 5000 W; 1-6 kW on the
+The Dashboard's ⚙️ Settings has a "Power alert above" dropdown (`telegram.powerAlertW`, default 5000 W; 1-6 kW on the
 page, 0.5-20 kW in the firmware). It has no on/off switch: the page always keeps `telegram.gridPowerAlert` on, 6 kW keeps
 it practically quiet, and an alert switched off earlier shows as 6 kW. While the grid is on it watches the grid power, estimated as on
 the dashboard (appliances + battery charging from the grid / efficiency + the inverter's own consumption); during an
@@ -178,7 +178,7 @@ the PowMr VMII-6000 with a no-op write of its current value:
 | Buzzer, overload bypass, restart after overload, restart after overheating | `PEa`/`PDa`, `b`, `u`, `v` | on / off (backlight `x`, grid-loss alarm `y` and power saving `j` never answer on this model) |
 | Battery % points (lithium with BMS): back to grid, back to battery, cut-off | `PBCC`, `PBDC`, `PSDC` + `nnn` (3 digits), read with `QDOP` (fields 9-11) | 5-95, 10-100, 0-90 %, any whole % (tested on the VMII-6000: cut-off 5/7/12/15/20/30, back to grid 13/15/20/50, back to battery 83/85/100, each stored as sent); cut-off <= back to grid < back to battery; back to grid / back to battery are shown only in Solar first or Battery first mode (the only modes that use them); `PSDC` answers only after a ~20 s pause |
 
-The panel uses sliders that stop only at accepted values (the charging limits at the inverter's allowed currents, the %
+The panel uses dropdowns that list only accepted values (the charging limits at the inverter's allowed currents, the %
 points at whole percent; also the power alert, full level, own use and efficiency). The allowed currents are asked once a
 minute after start. Apply sends `/start i1_<key><value>_...` with only the
 changed settings (Telegram allows 64 characters, too few next to the board's settings): o, c, u, t, g, z buzzer,

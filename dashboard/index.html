@@ -46,10 +46,6 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
 .grp.first{border-top:0;padding-top:0;margin-top:12px}
 .grp .sm{font-weight:400}
 .hint.warn{color:var(--warn)}
-.sl{display:flex;align-items:center;gap:10px;padding:7px 0;font-size:14px}
-.sl span{flex:1}
-.sl input[type=range]{flex:0 0 36%;width:36%;margin:0;accent-color:var(--blue)}
-.sl b{min-width:56px;text-align:right;font-weight:600}
 .sw input[type=text]{width:150px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:5px 8px;font:inherit;text-align:right}
 .empty{text-align:center;color:var(--muted);padding-top:35vh}
 </style>
@@ -110,7 +106,7 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
     <div class="grp first">🔔 Alerts <span class="sm">· a summary with sound</span></div>
     <label class="sw"><span>Grid off / back</span><input type="checkbox" id="sGrid"></label>
     <label class="sw" id="rowGridW"><span>Power alert</span><input type="checkbox" id="sGridW"></label>
-    <div class="sl" id="rowAlertKw"><span>Power alert above</span><input type="range" id="sAlertKw" min="0.5" max="6" step="0.1" data-unit="kW"><b id="sAlertKwVal"></b></div>
+    <label class="sw" id="rowAlertKw"><span>Power alert above</span><select id="sAlertKw" data-unit="kW"></select></label>
     <div class="hint" id="hintAlert">Grid draw while the grid is on, the house load during an outage.</div>
     <label class="sw" id="rowBattSw"><span>Battery low (30 · 25 · 20 · 15 · 10 %)</span><input type="checkbox" id="sBatt"></label>
     <label class="sw" id="rowLevels"><span>Battery low at, %</span><input type="text" id="sLevels" inputmode="numeric" placeholder="e.g. 30, 20, 10"></label>
@@ -121,13 +117,13 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
     <div class="grp">🔋 Battery &amp; estimates <span class="sm">· used by the board</span></div>
     <label class="sw" id="rowSolar"><span>Solar panels connected</span><input type="checkbox" id="sSolar"></label>
     <label class="sw"><span>Capacity, kWh</span><input type="number" id="sWh" min="0" max="200" step="0.1" inputmode="decimal"></label>
-    <div class="sl" id="rowFull"><span>Full at</span><input type="range" id="sFull" min="50" max="100" step="1" data-unit="%"><b id="sFullVal"></b></div>
-    <div class="sl" id="rowRes"><span>Cut-off level</span><input type="range" id="sRes" min="0" max="90" step="1" data-unit="%"><b id="sResVal"></b></div>
+    <label class="sw" id="rowFull"><span>Full at</span><select id="sFull" data-unit="%"></select></label>
+    <label class="sw" id="rowRes"><span>Cut-off level</span><select id="sRes" data-unit="%"></select></label>
     <div class="hint hidden" id="resFromInv"></div>
     <label class="sw" id="rowLearn"><span>Learn from outages</span><input type="checkbox" id="sLearn"></label>
     <div class="hint" id="learnInfo"></div>
-    <div class="sl" id="rowIdle"><span>Inverter own use</span><input type="range" id="sIdle" min="0" max="300" step="5" data-unit="W"><b id="sIdleVal"></b></div>
-    <div class="sl" id="rowEff"><span>Inverter efficiency</span><input type="range" id="sEff" min="70" max="100" step="1" data-unit="%"><b id="sEffVal"></b></div>
+    <label class="sw" id="rowIdle"><span>Inverter own use</span><select id="sIdle" data-unit="W"></select></label>
+    <label class="sw" id="rowEff"><span>Inverter efficiency</span><select id="sEff" data-unit="%"></select></label>
     <div class="hint" id="preview"></div>
     <button id="sSave" class="btn" disabled>Save</button>
     <button id="sReset" class="btn2" type="button">Reset to defaults</button>
@@ -136,8 +132,8 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       <div class="grp">⚡ Inverter configuration <span class="sm">· stored in the inverter</span></div>
       <label class="sw"><span>Output priority</span><select id="sOp"><option value="0">Utility first</option><option value="1">Solar first</option><option value="2">Battery first (SBU)</option></select></label>
       <label class="sw"><span>Charger priority</span><select id="sCp"><option value="0">Utility first</option><option value="1">Solar first</option><option value="2">Solar + utility</option><option value="3">Only solar</option></select></label>
-      <div class="sl" id="rowAmps"><span>Grid charging, max</span><input type="range" id="sAmps" min="0" max="0" step="1" data-unit="A"><b id="sAmpsVal"></b></div>
-      <div class="sl" id="rowTotal"><span>Total charging, max</span><input type="range" id="sTotal" min="0" max="0" step="1" data-unit="A"><b id="sTotalVal"></b></div>
+      <label class="sw" id="rowAmps"><span>Grid charging, max</span><select id="sAmps" data-unit="A"></select></label>
+      <label class="sw" id="rowTotal"><span>Total charging, max</span><select id="sTotal" data-unit="A"></select></label>
       <div class="hint" id="ampsHint"></div>
       <label class="sw" id="rowRange"><span>Grid input range</span><select id="sRange"><option value="0">Appliance (wide)</option><option value="1">UPS (fast)</option></select></label>
       <div id="flagRows">
@@ -147,15 +143,15 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
         <label class="sw"><span>Restart after overheating</span><input type="checkbox" id="sRestT"></label>
       </div>
       <div id="socBox">
-        <div class="sl" id="rowSg"><span>Back to grid below</span><input type="range" id="sSg" min="0" max="0" step="1" data-unit="%"><b id="sSgVal"></b></div>
-        <div class="sl" id="rowSd"><span>Back to battery above</span><input type="range" id="sSd" min="0" max="0" step="1" data-unit="%"><b id="sSdVal"></b></div>
+        <label class="sw" id="rowSg"><span>Back to grid below</span><select id="sSg" data-unit="%"></select></label>
+        <label class="sw" id="rowSd"><span>Back to battery above</span><select id="sSd" data-unit="%"></select></label>
         <div class="hint" id="hintSoc">In Solar first / Battery first mode the house runs from the battery down to “back to grid” and returns to it above “back to battery”.</div>
-        <div class="sl" id="rowSc"><span>Battery cut-off</span><input type="range" id="sSc" min="0" max="0" step="1" data-unit="%"><b id="sScVal"></b></div>
+        <label class="sw" id="rowSc"><span>Battery cut-off</span><select id="sSc" data-unit="%"></select></label>
         <div class="hint">The inverter stops discharging here; the discharge estimate uses it too.</div>
       </div>
       <div id="voltRows">
-        <div class="sl" id="rowVf"><span>Float voltage</span><input type="range" id="sVf" min="0" max="0" step="1" data-unit="V"><b id="sVfVal"></b></div>
-        <div class="sl" id="rowVb"><span>Bulk voltage</span><input type="range" id="sVb" min="0" max="0" step="1" data-unit="V"><b id="sVbVal"></b></div>
+        <label class="sw" id="rowVf"><span>Float voltage</span><select id="sVf" data-unit="V"></select></label>
+        <label class="sw" id="rowVb"><span>Bulk voltage</span><select id="sVb" data-unit="V"></select></label>
         <div class="hint">The inverter charges up to Bulk and then holds Float; with this battery Float decides how full it stays (54.0 V ≈ 88 %, 55.2 V ≈ 94 %).</div>
       </div>
       <div class="hint warn" id="invErr"></div>
@@ -276,11 +272,12 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
   var ver = m3 ? 3 : m2 ? 2 : m1 ? 1 : 0;
   if (ver && bot && tg && tg.initData) {
     var m = m3 || m2 || m1, hide = function (id) { $(id).classList.add('hidden'); };
-    // Sliders stop only at listed values: the position is an index into el.stops (not el.list, which is built in).
+    // Dropdowns list only the allowed values: an option's value is its index into el.stops.
     var steps = function (id, list, now) {
       var el = $(id), a = list.slice();
       if (now !== null && now !== undefined && a.indexOf(now) < 0) { a.push(now); a.sort(function (p, r) { return p - r; }); }
-      el.min = 0; el.max = a.length - 1; el.step = 1; el.value = Math.max(0, a.indexOf(now)); el.stops = a;
+      el.innerHTML = a.map(function (v, i) { return '<option value="' + i + '">' + (el.dataset.unit === 'V' ? v.toFixed(1) : v) + ' ' + el.dataset.unit + '</option>'; }).join('');
+      el.value = String(Math.max(0, a.indexOf(now))); el.stops = a;
     };
     var val = function (id) { var el = $(id); return el.stops ? el.stops[Number(el.value)] : Number(el.value); };
     var setStop = function (id, v) { var el = $(id), i = el.stops ? el.stops.indexOf(v) : -1; if (i >= 0) el.value = i; };
@@ -437,10 +434,6 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
     };
     var initial = code(), save = $('sSave'), apply = $('sApply');
     refresh = function () {
-      document.querySelectorAll('#setPanel input[type=range]').forEach(function (el) {
-        var out = $(el.id + 'Val'), v = val(el.id);
-        if (out) out.textContent = (el.dataset.unit === 'V' ? v.toFixed(1) : v) + ' ' + el.dataset.unit;
-      });
       if (hasLevels) {
         var badLevels = levelList() === null;
         $('hintLevels').textContent = badLevels ? 'Use whole numbers 1–99, separated by commas (up to 8).' : 'Comma separated, e.g. 30, 20, 10; empty = no battery alerts.';
