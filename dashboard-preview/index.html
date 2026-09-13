@@ -133,7 +133,8 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
     <div id="invSection" class="hidden">
       <div class="grp">⚡ Inverter configuration <span class="sm">· stored in the inverter</span></div>
       <label class="sw"><span>Output priority</span><select id="sOp"><option value="0">Utility first</option><option value="1">Solar first</option><option value="2">Battery first (SBU)</option></select></label>
-      <label class="sw"><span>Charger priority</span><select id="sCp"><option value="0">Utility first</option><option value="1">Solar first</option><option value="2">Solar + utility</option><option value="3">Only solar</option></select></label>
+      <!-- "Utility first" (value 0) is left out: this VMII-6000 refuses PCP00 (tested 2026-09-13). -->
+      <label class="sw"><span>Charger priority</span><select id="sCp"><option value="1">Solar first</option><option value="2">Solar + utility</option><option value="3">Only solar</option></select></label>
       <label class="sw" id="rowAmps"><span>Grid charging, max</span><span class="ro" id="ampsText"></span></label>
       <div class="hint">Set it on the inverter’s own panel (max utility charging current): this model refuses the change over the serial link.</div>
       <label class="sw" id="rowRange"><span>Grid input range</span><select id="sRange"><option value="0">Appliance (wide)</option><option value="1">UPS (fast)</option></select></label>
@@ -415,7 +416,7 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       $('preview').textContent = 'At the house load now (' + Math.round(l) + ' W): ≈ ' + dur(cap * Math.max(b - res, 0) / 100 / drawW * 3600) +
         ' from ' + Math.round(b) + ' % down to the ' + res + ' % cut-off' + (learnOn && (lc || le) ? ' (learned values)' : '') + '.';
     };
-    var solarOnly = function () { if (inv) $('sCp').options[3].disabled = !$('sSolar').checked; }; // only solar charging needs panels
+    var solarOnly = function () { if (inv) { var o = $('sCp').querySelector('option[value="3"]'); if (o) o.disabled = !$('sSolar').checked; } }; // only solar charging needs panels
     var initial = code(), save = $('sSave'), apply = $('sApply');
     refresh = function () {
       if (hasLevels) {
