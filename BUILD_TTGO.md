@@ -384,7 +384,9 @@ Summaries end with `💾 Version: <version>`, followed by the new-version line w
 ## Dashboard (Telegram Mini App)
 
 The summary's 📊 Dashboard button opens `dashboard/index.html` (repository root), served by GitHub Pages
-(`custom_dashboard_url` in platformio.ini, build flag `DASHBOARD_URL`), inside Telegram: grid and battery tiles, the
+(`custom_dashboard_url` in platformio.ini, build flag `DASHBOARD_URL`), inside Telegram: grid and battery tiles (the
+battery tile reads "53.5 V · Float · ⬆ 7 A": voltage, then the charging stage from link key `cs` — 1 bulk, 2 absorb,
+3 float, left out while nothing is charging, from `Inverter_Charge_State` — then the charge or discharge current), the
 power flow panel (with the battery discharge time while the grid is off), warnings, a 24 h chart of battery % and
 load % (bars coloured by grid state: on / partly off / off), today's usage and outages, inverter temperature and
 board health.

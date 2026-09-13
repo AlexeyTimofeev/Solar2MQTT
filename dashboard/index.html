@@ -195,6 +195,9 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
 
   $('battPct').textContent = b !== null ? Math.round(b) + '%' : '–';
   var battLine = (bv !== null ? bv.toFixed(1) + ' V' : '–');
+  // Charging stage next to the voltage (cs: 1 bulk, 2 absorb, 3 float; absent = not charging).
+  var chargeStage = { 1: 'Bulk', 2: 'Absorb', 3: 'Float' }[num('cs')];
+  if (chargeStage) battLine += ' · ' + chargeStage;
   if (bc > 0) battLine += ' · <span style="color:#6ee7a6">⬆ ' + Math.round(bc) + ' A</span>';
   else if (bd > 0) battLine += ' · <span style="color:#f6c549">⬇ ' + Math.round(bd) + ' A</span>';
   $('battLine').innerHTML = battLine;
