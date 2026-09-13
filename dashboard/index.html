@@ -398,7 +398,9 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       return parts.length ? 'i1_' + parts.join('_') : '';
     };
     var invProblem = function () {
-      if (val('sAmps') > totalWanted()) return 'Grid charging can not be above total charging.';
+      // With a BMS battery the inverter reports the total charging limit the BMS allows right now (it drops to 20 A
+      // near full), so only a total the user moves below grid charging is an error.
+      if ($('sSolar').checked && val('sTotal') !== it && val('sAmps') > val('sTotal')) return 'Grid charging can not be above total charging.';
       if (hasSoc) {
         var pg = val('sSg'), pd = val('sSd'), pc = val('sSc');
         if (pg === null || pd === null || pc === null) return 'Enter all battery % values.';

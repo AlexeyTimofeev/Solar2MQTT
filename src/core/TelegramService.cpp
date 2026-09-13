@@ -2426,7 +2426,8 @@ struct TelegramService::Impl
             fail("total charging current not allowed");
             return;
         }
-        if ((given['u'] || given['t']) && wanted['u'] > wanted['t'])
+        // With a BMS battery the reported total follows the BMS limit (20 A near full), so only check a total that is set.
+        if (given['t'] && wanted['u'] > wanted['t'])
         {
             fail("grid charging above total charging");
             return;
