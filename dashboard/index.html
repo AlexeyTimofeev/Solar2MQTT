@@ -101,29 +101,27 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
   <div class="pn">
     <div class="kv" id="todayRow"><span>Today</span><span id="today"></span></div>
     <div class="kv"><span>Inverter</span><span id="temp"></span></div>
-    <div class="kv hidden" id="bmsRow"><span>Battery BMS</span><span id="bmsText"></span></div>
     <div class="kv hidden" id="solarRow"><span>Solar</span><span id="solar"></span></div>
     <div class="kv"><span>Board</span><span id="board"></span></div>
   </div>
   <details id="setPanel" class="pn hidden">
     <summary>⚙️ Settings</summary>
 
-    <div class="grp first">🔔 Alerts <span class="sm">· a summary with sound</span></div>
-    <label class="sw"><span>Grid off / back</span><input type="checkbox" id="sGrid"></label>
+    <label class="sw" id="rowSolar"><span>Solar panels connected</span><input type="checkbox" id="sSolar"></label>
+
+    <div class="grp">🔔 Alerts <span class="sm">· a summary with sound</span></div>
+    <label class="sw"><span>Grid on/off</span><input type="checkbox" id="sGrid"></label>
     <label class="sw" id="rowGridW"><span>Power alert</span><input type="checkbox" id="sGridW"></label>
-    <label class="sw" id="rowAlertKw"><span>Power alert above</span><select id="sAlertKw" data-unit="kW"></select></label>
-    <div class="hint" id="hintAlert">Grid draw while the grid is on, the house load during an outage.</div>
+    <label class="sw" id="rowAlertKw"><span>Load above</span><select id="sAlertKw" data-unit="kW"></select></label>
     <label class="sw" id="rowBattSw"><span>Battery low (30 · 25 · 20 · 15 · 10 %)</span><input type="checkbox" id="sBatt"></label>
     <label class="sw" id="rowLevels"><span>Battery low at, %</span><input type="text" id="sLevels" inputmode="numeric" placeholder="e.g. 30, 20, 10"></label>
-    <div class="hint" id="hintLevels"></div>
+    <div class="hint hidden" id="hintLevels"></div>
     <label class="sw" id="rowAuto"><span>Update summary every 15 s</span><input type="checkbox" id="sAuto"></label>
     <label class="sw" id="rowLoad"><span>High load above 80 %</span><input type="checkbox" id="sLoad"></label>
 
     <div class="grp">🔋 Battery &amp; estimates <span class="sm">· used by the board</span></div>
-    <label class="sw" id="rowSolar"><span>Solar panels connected</span><input type="checkbox" id="sSolar"></label>
     <label class="sw"><span>Capacity, kWh</span><input type="number" id="sWh" min="0" max="200" step="0.1" inputmode="decimal"></label>
     <label class="sw" id="rowRes"><span>Cut-off level</span><select id="sRes" data-unit="%"></select></label>
-    <div class="hint hidden" id="resFromInv"></div>
     <label class="sw" id="rowLearn"><span>Learn from outages</span><input type="checkbox" id="sLearn"></label>
     <div class="hint" id="learnInfo"></div>
     <div class="hint" id="preview"></div>
@@ -135,8 +133,6 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       <label class="sw"><span>Output priority</span><select id="sOp"><option value="0">Utility first</option><option value="1">Solar first</option><option value="2">Battery first (SBU)</option></select></label>
       <!-- "Utility first" (value 0) is left out: this VMII-6000 refuses PCP00 (tested 2026-09-13). -->
       <label class="sw"><span>Charger priority</span><select id="sCp"><option value="1">Solar first</option><option value="2">Solar + utility</option><option value="3">Only solar</option></select></label>
-      <label class="sw" id="rowAmps"><span>Grid charging, max</span><span class="ro" id="ampsText"></span></label>
-      <div class="hint">Set it on the inverter’s own panel (max utility charging current): this model refuses the change over the serial link.</div>
       <label class="sw" id="rowRange"><span>Grid input range</span><select id="sRange"><option value="0">Appliance (wide)</option><option value="1">UPS (fast)</option></select></label>
       <div id="flagRows">
         <label class="sw"><span>Buzzer</span><input type="checkbox" id="sBuzz"></label>
@@ -255,14 +251,6 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
   if (gridOff) { $('grid').textContent = 'Off'; $('grid').style.color = '#ff8a78'; $('gridSub').textContent = os ? 'since ' + hhmm(os) : (outFor !== null ? 'for ' + dur(outFor) : ''); }
   else { $('grid').textContent = gv !== null ? Math.round(gv) + ' V' : '–'; $('gridSub').textContent = gf !== null ? gf.toFixed(1) + ' Hz' : ''; }
   $('temp').textContent = tc !== null ? tc + ' °C · ' + (tc < 60 ? 'normal' : tc < 75 ? 'warm' : 'hot') : '–';
-  // What the battery's BMS tells the inverter (QBMS): connected, SOC, force charge, stop discharge, stop charge, C.V. and
-  // float volts x10, cut-off volts x10, max charge and discharge amps.
-  var bms = (q.get('bms') || '').trim().split(/\s+/);
-  if (bms.length >= 10) {
-    $('bmsRow').classList.remove('hidden');
-    $('bmsText').textContent = (bms[0] === '0' ? '' : 'not connected · ') + 'charge ≤ ' + (bms[5] / 10).toFixed(1) + ' V, ' + (+bms[8]) + ' A · discharge ≤ ' +
-      (+bms[9]) + ' A' + (bms[3] === '1' ? ' · stop discharge' : '') + (bms[4] === '1' ? ' · stop charge' : '') + (bms[2] === '1' ? ' · force charging' : '');
-  }
   if (pv !== null) { $('solarRow').classList.remove('hidden'); $('solar').textContent = pv + ' W'; }
   // ⚙️ Settings, only inside Telegram (a plain browser can't hand changes to the bot). The buttons open the bot link
   // t.me/<bot>?start=<code>; the board applies it and deletes that message.
@@ -294,7 +282,7 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
     // With a threshold (s3) the power alert has no switch: it is always on and 6 kW keeps it quiet.
     var bits = ver === 3 ? [['sGrid', 2], ['sSolar', 32], ['sLearn', 64]].concat(hasLevels ? [] : [['sBatt', 8]])
                          : [['sAuto', 1], ['sGrid', 2], ['sGridW', 4], ['sBatt', 8], ['sLoad', 16]].concat(ver === 2 ? [['sSolar', 32]] : []);
-    if (ver === 3) { hide('rowAuto'); hide('rowLoad'); hide('rowGridW'); } else { hide('rowAlertKw'); hide('hintAlert'); hide('rowLearn'); hide('learnInfo'); }
+    if (ver === 3) { hide('rowAuto'); hide('rowLoad'); hide('rowGridW'); } else { hide('rowAlertKw'); hide('rowLearn'); hide('learnInfo'); }
     if (ver === 1) hide('rowSolar');
     bits.forEach(function (x) { $(x[0]).checked = (cur.f & x[1]) !== 0; });
     $('sWh').value = +(cur.wh / 1000).toFixed(2);
@@ -321,12 +309,11 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
     var showLearn = function () {
       var box = $('learnInfo');
       if (resetLearn) { box.textContent = 'The learned values will be forgotten when you save.'; return; }
-      var assumed = effSet + ' % efficiency and ' + idleSet + ' W own use';
-      if (!lh) { box.textContent = 'Nothing learned yet: the board learns while the inverter runs on battery. Until then the estimates assume ' + assumed + '.'; return; }
-      var parts = [lc ? (lc / 1000).toFixed(1) + ' kWh' : 'capacity after an outage that uses 8 % or more',
-                   le ? 'efficiency ' + le + ' %, own use ' + li + ' W' : 'efficiency and own use after 30 min at varied loads (until then ' + assumed + ')'];
-      box.innerHTML = 'Learned from ' + (lh < 1 ? Math.round(lh * 60) + ' min' : lh.toFixed(1) + ' h') + ' on battery: ' + parts.join(' · ') +
-        '. <a href="#" id="sForget">Forget</a>';
+      var parts = [];
+      if (lc) parts.push((lc / 1000).toFixed(1) + ' kWh');
+      if (le) parts.push('efficiency ' + le + ' %, own use ' + li + ' W');
+      if (!parts.length) { box.textContent = ''; return; } // nothing learned yet: no line at all
+      box.innerHTML = 'Learned: ' + parts.join(' · ') + '. <a href="#" id="sForget">Forget</a>';
       $('sForget').addEventListener('click', function (e) { e.preventDefault(); resetLearn = true; showLearn(); refresh(); });
     };
     // Inverter configuration: io / ic output and charger priority, iu / il grid charging A and allowed values, it / itl
@@ -346,10 +333,6 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
     if (inv) {
       $('invSection').classList.remove('hidden');
       $('sOp').value = String(io); $('sCp').value = String(ic);
-      // Grid charging is shown only: this VMII-6000 answers NAK to every change of it over the serial link (only the value
-      // already set gets an ACK) and does not speak Modbus, while its own menu changes it freely. The total charging limit
-      // follows the battery's BMS and has no row.
-      $('ampsText').textContent = '≈ ' + (iu * 54 / 0.95 / 1000).toFixed(1) + ' kW (' + iu + ' A)';
       if (invFull && ig !== null) $('sRange').value = String(ig); else hide('rowRange');
       if (hasFlags) flags.forEach(function (f) { $(f[1]).checked = (ix & f[2]) !== 0; }); else hide('flagRows');
       if (hasSoc) { steps('sSg', SOC_STEPS.b, sg); steps('sSd', SOC_STEPS.e, sd); steps('sSc', SOC_STEPS.s, sc); } else hide('socBox');
@@ -359,11 +342,7 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       if (hasVolts) { steps('sVf', voltSteps(536, 560), vf / 10); steps('sVb', voltSteps(552, Math.min(584, bmsCv)), vb / 10); } else hide('voltRows');
       if (!invFull) { hide('sApply'); hide('applyNote'); }
     }
-    if (hasSoc) { // the estimate follows the inverter's own cut-off
-      hide('rowRes');
-      $('resFromInv').textContent = 'The discharge estimate stops at the inverter’s cut-off (' + sc + ' %, set under Inverter configuration).';
-      $('resFromInv').classList.remove('hidden');
-    }
+    if (hasSoc) hide('rowRes'); // the estimate follows the inverter's own cut-off
     var field = function (id, lo, hi, k) { var s = $(id).value; if (s === '') return null; var v = Math.round(Number(s) * (k || 1)); return isFinite(v) ? Math.min(hi, Math.max(lo, v)) : null; };
     var code = function () {
       var f = resetLearn ? 128 : 0; bits.forEach(function (x) { if ($(x[0]).checked) f |= x[1]; });
@@ -424,8 +403,9 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
     refresh = function () {
       if (hasLevels) {
         var badLevels = levelList() === null;
-        $('hintLevels').textContent = badLevels ? 'Use whole numbers 1–99, separated by commas (up to 8).' : 'Comma separated, e.g. 30, 20, 10; empty = no battery alerts.';
+        $('hintLevels').textContent = badLevels ? 'Use whole numbers 1–99, separated by commas (up to 8).' : '';
         $('hintLevels').classList.toggle('warn', badLevels);
+        $('hintLevels').classList.toggle('hidden', !badLevels);
       }
       var c = code(); save.disabled = !c || c === initial;
       if (invFull) { var problem = invProblem(); $('invErr').textContent = problem; apply.disabled = !invCode() || !!problem; }
