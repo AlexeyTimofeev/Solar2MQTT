@@ -103,6 +103,7 @@ constexpr uint32_t kInverterCmdTimeoutMs = 10000;              // a queued inver
 constexpr uint32_t kInverterCmdGapMs = 8000;                   // pause between inverter commands (flags right after another command go unanswered)
 constexpr uint32_t kInverterSlowCmdGapMs = 20000;              // ... and before the cut-off % (PSDC), which needs a longer one
 constexpr uint32_t kInverterQueryIntervalMs = 6UL * 3600UL * 1000UL; // QDOP / QBMS again this often
+constexpr uint32_t kInverterVerifyDelayMs = 8000;              // after the last command, before the settings are read back
 constexpr double kLearnMinSamples = 900;                        // 30 min on battery (one sample per snapshot) before the fit counts
 constexpr double kLearnMinLoadSpreadW = 100.0;                  // ... with the load varying at least this much (standard deviation)
 constexpr int kLearnMinSocDrop = 8;                             // an outage counts for the capacity once the charge fell this far
@@ -410,14 +411,20 @@ struct TelegramService::Impl
     String inverterCmdInFlight;                                 // main thread from here on
     String inverterCmdLabel;
     uint32_t inverterCmdSentMs = 0;
-    String inverterCmdResults;
+    struct SentCommand
+    {
+        String command;
+        String label;
+        String answer;
+    };
+    std::vector<SentCommand> inverterCmdSent; // this batch; checked against the inverter's own values when it ends
+    uint32_t inverterVerifyAtMs = 0;          // when to read the settings back (0 = nothing waiting)
     String allowedUtilityAmps; // "2.10.20...", from QMUCHGCR
     String allowedTotalAmps;   // "10.20...", from QMCHGCR
     uint8_t bootQueryStep = 0; // QMUCHGCR, then QMCHGCR, once after start
     String pendingInverterCode; // under lock: "Apply to inverter" code from the bot task, checked by the main thread
     uint32_t inverterLastAnswerMs = 0;
     bool inverterCmdRetried = false;
-    bool inverterCmdFailed = false;
     int socBackToGrid = -1; // QDOP: battery % back to utility, back to battery and cut-off (lithium with BMS)
     int socBackToBattery = -1;
     int socCutoff = -1;
@@ -2609,7 +2616,7 @@ struct TelegramService::Impl
     }
 
     // Main thread, every snapshot: hand the ⚙️ panel's inverter commands to the inverter one at a time (kInverterCmdGapMs
-    // apart, kInverterSlowCmdGapMs before PSDC, one retry when unanswered) and collect the answers; when the last one is
+    // apart, kInverterSlowCmdGapMs before PSDC, one retry when unanswered) and check what the inverter reports afterwards; when the last one is
     // in, edit the summary with a silent "Inverter: ..." headline listing the result. Also asks, a minute after start and
     // then every 6 hours, which charging currents the inverter allows (QMUCHGCR, QMCHGCR), its battery % points (QDOP)
     // and what the BMS reports (QBMS).
@@ -2669,35 +2676,32 @@ struct TelegramService::Impl
             }
             else
             {
-                const bool accepted = answer == "ACK";
                 inverterCmdRetried = false;
-                inverterCmdFailed = inverterCmdFailed || !accepted;
-                if (accepted && (command.startsWith("PBCC") || command.startsWith("PBDC") || command.startsWith("PSDC")))
+                inverterCmdSent.push_back({command, inverterCmdLabel, answer.length() ? answer : String("no answer")});
+                if (command.startsWith("PBCC") || command.startsWith("PBDC") || command.startsWith("PSDC"))
                 {
-                    // Show the new % at once; QDOP reads it back afterwards.
-                    int &point = command.startsWith("PBCC") ? socBackToGrid : command.startsWith("PBDC") ? socBackToBattery : socCutoff;
-                    point = command.substring(4).toInt();
-                    socQueryWanted = true;
+                    socQueryWanted = true; // QDOP reads the % points back; nothing is taken from the answer
                 }
-                if (inverterCmdResults.length())
-                {
-                    inverterCmdResults += ", ";
-                }
-                inverterCmdResults += inverterCmdLabel + (accepted ? String(" \xE2\x9C\x93") : answer == "NAK" ? String(" refused") : String(" (no answer)"));
                 LogSerial.println("[Telegram] Inverter " + command + ": " + (answer.length() ? answer : String("no answer")));
                 lockTake();
                 const bool more = !pendingInverterCmds.empty();
-                if (!more)
-                {
-                    settingsHeadline = String(inverterCmdFailed ? "\xE2\x9A\xA0\xEF\xB8\x8F" : "\xE2\x9C\x85") + " <b>Inverter</b>: " + inverterCmdResults; // ⚠️ / ✅
-                }
                 lockGive();
                 if (!more)
                 {
-                    inverterCmdResults = "";
-                    inverterCmdFailed = false;
-                    settingsSavedMs = millis() | 1u;
+                    inverterVerifyAtMs = (now + kInverterVerifyDelayMs) | 1u; // then say what the inverter itself reports
                 }
+            }
+        }
+        // Nothing in flight, nothing queued and the re-read is due: report what actually changed.
+        if (inverterVerifyAtMs && !inverterCmdInFlight.length() && !socQueryWanted &&
+            static_cast<long>(now - inverterVerifyAtMs) >= 0)
+        {
+            lockTake();
+            const bool queueEmpty = pendingInverterCmds.empty();
+            lockGive();
+            if (queueEmpty)
+            {
+                finishInverterBatch();
             }
         }
         if (!inverterConnected || inverterCmdInFlight.length() || now - inverterLastAnswerMs < kInverterCmdGapMs)
@@ -2747,6 +2751,119 @@ struct TelegramService::Impl
         inverterCmdSentMs = now;
         inverterCommandHook(next.first);
     }
+
+    enum class VerifyResult
+    {
+        Match,
+        Differ,
+        Unknown
+    };
+
+    // Does the inverter now report what the command asked for? DeviceData holds QPIRI / QFLAG, the % points come from
+    // QDOP. Unknown = the command cannot be read back, or its value has not arrived yet.
+    VerifyResult verifyCommand(const String &command) const
+    {
+        JsonObjectConst device = g_stateDoc["DeviceData"].as<JsonObjectConst>();
+        auto number = [&device](const char *key, float scale) -> long {
+            return device[key].is<float>() ? lroundf(device[key].as<float>() * scale) : -1;
+        };
+        auto flag = [&device](const char *key) -> long {
+            return device[key].is<bool>() ? (device[key].as<bool>() ? 1 : 0) : -1;
+        };
+        auto compare = [](long reported, long wanted) {
+            return reported < 0 ? VerifyResult::Unknown : (reported == wanted ? VerifyResult::Match : VerifyResult::Differ);
+        };
+        if (command.startsWith("POP0"))
+        {
+            return compare(priorityIndex(readStaticText(DESCR_Output_Source_Priority), true), command.substring(4).toInt());
+        }
+        if (command.startsWith("PCP0"))
+        {
+            return compare(priorityIndex(readStaticText(DESCR_Charger_Source_Priority), false), command.substring(4).toInt());
+        }
+        if (command.startsWith("PGR0"))
+        {
+            const String range = device[DESCR_Input_Voltage_Range] | "";
+            return compare(range.length() ? (range.indexOf("UPS") >= 0 ? 1 : 0) : -1, command.substring(4).toInt());
+        }
+        if (command.startsWith("PBFT"))
+        {
+            return compare(number(DESCR_Battery_Float_Voltage, 10.0f), lroundf(command.substring(4).toFloat() * 10.0f));
+        }
+        if (command.startsWith("PCVV"))
+        {
+            return compare(number(DESCR_Battery_Bulk_Voltage, 10.0f), lroundf(command.substring(4).toFloat() * 10.0f));
+        }
+        if (command.startsWith("MUCHGC"))
+        {
+            return compare(number(DESCR_Current_Max_AC_Charging_Current, 1.0f), command.substring(6).toInt());
+        }
+        if (command.startsWith("MNCHGC"))
+        {
+            return compare(number(DESCR_Current_Max_Charging_Current, 1.0f), command.substring(6).toInt());
+        }
+        if (command.startsWith("PBCC") || command.startsWith("PBDC") || command.startsWith("PSDC"))
+        {
+            const int point = command.startsWith("PBCC") ? socBackToGrid : command.startsWith("PBDC") ? socBackToBattery : socCutoff;
+            return compare(point, command.substring(4).toInt());
+        }
+        if (command.length() == 3 && (command.startsWith("PE") || command.startsWith("PD")))
+        {
+            const char letter = command[2];
+            const char *key = letter == 'a'   ? DESCR_Buzzer_Enabled
+                              : letter == 'b' ? DESCR_Overload_Bypass_Enabled
+                              : letter == 'u' ? DESCR_Overload_Restart_Enabled
+                              : letter == 'v' ? DESCR_Over_Temperature_Restart_Enabled
+                                              : nullptr;
+            return key ? compare(flag(key), command[1] == 'E' ? 1 : 0) : VerifyResult::Unknown;
+        }
+        return VerifyResult::Unknown;
+    }
+
+    // The summary says what the inverter's own values show, not what it answered: this VMII-6000 sends NAK or nothing
+    // for changes it did carry out (float, bulk, the % points, the flags) and refuses grid charging for real. Only
+    // commands that cannot be read back keep the answer wording.
+    void finishInverterBatch()
+    {
+        String results;
+        bool failed = false;
+        for (const SentCommand &sent : inverterCmdSent)
+        {
+            String state;
+            const VerifyResult verdict = verifyCommand(sent.command);
+            if (verdict == VerifyResult::Match)
+            {
+                state = " \xE2\x9C\x93"; // check mark
+            }
+            else if (verdict == VerifyResult::Differ)
+            {
+                state = " not applied";
+                failed = true;
+            }
+            else
+            {
+                state = sent.answer == "ACK" ? String(" \xE2\x9C\x93") : sent.answer == "NAK" ? String(" refused") : String(" (no answer)");
+                failed = failed || sent.answer != "ACK";
+            }
+            if (results.length())
+            {
+                results += ", ";
+            }
+            results += sent.label + state;
+            LogSerial.println("[Telegram] Inverter " + sent.command + " answered " + sent.answer + ", read back:" + state);
+        }
+        inverterCmdSent.clear();
+        inverterVerifyAtMs = 0;
+        if (!results.length())
+        {
+            return;
+        }
+        lockTake();
+        settingsHeadline = String(failed ? "\xE2\x9A\xA0\xEF\xB8\x8F" : "\xE2\x9C\x85") + " <b>Inverter</b>: " + results;
+        lockGive();
+        settingsSavedMs = millis() | 1u;
+    }
+
 
     // Learned battery model (main thread). While the inverter runs on battery without solar input, battery power
     // (volts x discharge amps) against the house load is a straight line: slope = 1 / efficiency, offset = own use.
@@ -3233,6 +3350,27 @@ void TelegramService::loop(bool inverterConnected, int wifiRssi)
             else if (msg.find("gridon") != std::string::npos) g_gridTest = 2;
             else if (msg.find("gridreal") != std::string::npos) g_gridTest = 0;
             else if (msg.find("gridhigh") != std::string::npos) g_gridTest = 3; // grid on, 5.5 kW drawn
+        });
+    }
+#endif
+#ifdef INVERTER_APPLY_TEST
+    // Test builds only: "apply i1_f560" in the web serial console takes exactly the path of the panel's Apply button.
+    static bool applyTestHooked = false;
+    if (!applyTestHooked)
+    {
+        applyTestHooked = true;
+        auto *impl = _impl;
+        LogSerial.onMessage([impl](const std::string &msg) {
+            const size_t at = msg.find("apply i1_");
+            if (at == std::string::npos)
+            {
+                return;
+            }
+            String code(msg.substr(at + 6).c_str());
+            code.trim();
+            impl->lockTake();
+            impl->pendingInverterCode = code;
+            impl->lockGive();
         });
     }
 #endif
