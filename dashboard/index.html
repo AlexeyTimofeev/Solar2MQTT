@@ -47,9 +47,9 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
 .hint{font-size:12px;color:var(--muted);margin:0 0 6px}
 .hint a{color:var(--blue)}
 .btn2{display:block;width:100%;margin-top:8px;padding:9px;border:1px solid var(--border);border-radius:10px;background:transparent;color:var(--muted);font-size:14px}
-.grp{margin:18px 0 6px;padding-top:12px;border-top:1px solid var(--border);font-size:14px;font-weight:600}
-.grp.first{border-top:0;padding-top:0;margin-top:12px}
-.grp .sm{font-weight:400}
+.fold{border-top:1px solid var(--border);margin-top:10px;padding-top:9px}
+.fold summary{font-size:14px;font-weight:600;list-style-position:inside}
+.fold[open] summary{margin-bottom:2px}
 .hint.warn{color:var(--warn)}
 .sw input[type=text]{width:150px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:5px 8px;font:inherit;text-align:right}
 .empty{text-align:center;color:var(--muted);padding-top:35vh}
@@ -107,29 +107,32 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
   <details id="setPanel" class="pn hidden">
     <summary>⚙️ Settings</summary>
 
-    <label class="sw" id="rowSolar"><span>Solar panels connected</span><input type="checkbox" id="sSolar"></label>
+    <details class="fold">
+      <summary>🔌 Board</summary>
+      <label class="sw" id="rowSolar"><span>Solar panels connected</span><input type="checkbox" id="sSolar"></label>
+      <label class="sw"><span>Capacity, kWh</span><input type="number" id="sWh" min="0" max="200" step="0.1" inputmode="decimal"></label>
+      <label class="sw" id="rowRes"><span>Cut-off level</span><select id="sRes" data-unit="%"></select></label>
+      <label class="sw" id="rowLearn"><span>Learn from outages</span><input type="checkbox" id="sLearn"></label>
+      <div class="hint" id="learnInfo"></div>
+      <div class="hint" id="preview"></div>
+      <button id="sSave" class="btn" disabled>Save</button>
+    </details>
 
-    <div class="grp">🔔 Alerts <span class="sm">· a summary with sound</span></div>
-    <label class="sw"><span>Grid on/off</span><input type="checkbox" id="sGrid"></label>
-    <label class="sw" id="rowGridW"><span>Power alert</span><input type="checkbox" id="sGridW"></label>
-    <label class="sw" id="rowAlertKw"><span>Load above</span><select id="sAlertKw" data-unit="kW"></select></label>
-    <label class="sw" id="rowBattSw"><span>Battery low (30 · 25 · 20 · 15 · 10 %)</span><input type="checkbox" id="sBatt"></label>
-    <label class="sw" id="rowLevels"><span>Battery low at, %</span><input type="text" id="sLevels" inputmode="numeric" placeholder="e.g. 30, 20, 10"></label>
-    <div class="hint hidden" id="hintLevels"></div>
-    <label class="sw" id="rowAuto"><span>Update summary every 15 s</span><input type="checkbox" id="sAuto"></label>
-    <label class="sw" id="rowLoad"><span>High load above 80 %</span><input type="checkbox" id="sLoad"></label>
+    <details class="fold">
+      <summary>🔔 Alerts</summary>
+      <label class="sw"><span>Grid on/off</span><input type="checkbox" id="sGrid"></label>
+      <label class="sw" id="rowGridW"><span>Power alert</span><input type="checkbox" id="sGridW"></label>
+      <label class="sw" id="rowAlertKw"><span>Load above</span><select id="sAlertKw" data-unit="kW"></select></label>
+      <label class="sw" id="rowBattSw"><span>Battery low (30 · 25 · 20 · 15 · 10 %)</span><input type="checkbox" id="sBatt"></label>
+      <label class="sw" id="rowLevels"><span>Battery low at, %</span><input type="text" id="sLevels" inputmode="numeric" placeholder="e.g. 30, 20, 10"></label>
+      <div class="hint hidden" id="hintLevels"></div>
+      <label class="sw" id="rowAuto"><span>Update summary every 15 s</span><input type="checkbox" id="sAuto"></label>
+      <label class="sw" id="rowLoad"><span>High load above 80 %</span><input type="checkbox" id="sLoad"></label>
+      <button id="sSaveA" class="btn" disabled>Save</button>
+    </details>
 
-    <div class="grp">🔋 Battery &amp; estimates <span class="sm">· used by the board</span></div>
-    <label class="sw"><span>Capacity, kWh</span><input type="number" id="sWh" min="0" max="200" step="0.1" inputmode="decimal"></label>
-    <label class="sw" id="rowRes"><span>Cut-off level</span><select id="sRes" data-unit="%"></select></label>
-    <label class="sw" id="rowLearn"><span>Learn from outages</span><input type="checkbox" id="sLearn"></label>
-    <div class="hint" id="learnInfo"></div>
-    <div class="hint" id="preview"></div>
-    <button id="sSave" class="btn" disabled>Save</button>
-    <button id="sReset" class="btn2" type="button">Reset to defaults</button>
-
-    <div id="invSection" class="hidden">
-      <div class="grp">⚡ Inverter configuration <span class="sm">· stored in the inverter</span></div>
+    <details class="fold hidden" id="invSection">
+      <summary>⚡ Inverter</summary>
       <label class="sw"><span>Output priority</span><select id="sOp"><option value="0">Utility first</option><option value="1">Solar first</option><option value="2">Battery first (SBU)</option></select></label>
       <!-- "Utility first" (value 0) is left out: this VMII-6000 refuses PCP00 (tested 2026-09-13). -->
       <label class="sw"><span>Charger priority</span><select id="sCp"><option value="1">Solar first</option><option value="2">Solar + utility</option><option value="3">Only solar</option></select></label>
@@ -145,17 +148,17 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
         <label class="sw" id="rowSd"><span>Back to battery above</span><select id="sSd" data-unit="%"></select></label>
         <div class="hint" id="hintSoc">In Solar first / Battery first mode the house runs from the battery down to “back to grid” and returns to it above “back to battery”.</div>
         <label class="sw" id="rowSc"><span>Battery cut-off</span><select id="sSc" data-unit="%"></select></label>
-        <div class="hint">The inverter stops discharging here; the discharge estimate uses it too.</div>
       </div>
       <div id="voltRows">
-        <label class="sw" id="rowVf"><span>Float voltage</span><select id="sVf" data-unit="V"></select></label>
-        <label class="sw" id="rowVb"><span>Bulk voltage</span><select id="sVb" data-unit="V"></select></label>
-        <div class="hint">The inverter charges up to Bulk and then holds Float; with this battery Float decides how full it stays (54.0 V ≈ 88 %, 55.2 V ≈ 94 %, 56.0 V ≈ 100 %).</div>
+        <label class="sw" id="rowVb"><span>Charge up to</span><select id="sVb" data-unit="V"></select></label>
+        <label class="sw" id="rowVf"><span>Then hold at</span><select id="sVf" data-unit="V"></select></label>
       </div>
       <div class="hint warn" id="invErr"></div>
-      <button id="sApply" class="btn" disabled>Apply to inverter</button>
+      <button id="sApply" class="btn" disabled>Save</button>
       <div class="sm" id="applyNote" style="margin-top:6px;text-align:center">The board sends the changes one by one, about 8 s apart; the summary then lists what the inverter accepted.</div>
-    </div>
+    </details>
+
+    <button id="sReset" class="btn2" type="button">Reset to defaults</button>
     <div class="sm" style="margin-top:10px;text-align:center">Each button sends a short command to the bot (removed from the chat right away); the summary then confirms it.</div>
   </details>
   <p class="sm" style="text-align:center;margin-top:14px">Data from the latest summary. Close and tap 📊 Dashboard again for newer values.</p>
@@ -192,7 +195,7 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
   $('battPct').textContent = b !== null ? Math.round(b) + '%' : '–';
   var battLine = (bv !== null ? bv.toFixed(1) + ' V' : '–');
   // Charging stage next to the voltage (cs: 1 bulk, 2 absorb, 3 float; absent = not charging).
-  var chargeStage = { 1: 'Bulk', 2: 'Absorb', 3: 'Float' }[num('cs')];
+  var chargeStage = { 1: 'Charging' }[num('cs')]; // only while bulk charging; absorb and float show nothing
   if (chargeStage) battLine += ' · ' + chargeStage;
   if (bc > 0) battLine += ' · <span style="color:#6ee7a6">⬆ ' + Math.round(bc) + ' A</span>';
   else if (bd > 0) battLine += ' · <span style="color:#f6c549">⬇ ' + Math.round(bd) + ' A</span>';
@@ -255,7 +258,7 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
   // ⚙️ Settings, only inside Telegram (a plain browser can't hand changes to the bot). The buttons open the bot link
   // t.me/<bot>?start=<code>; the board applies it and deletes that message.
   // Save (alerts, battery & estimates): s3_flags_Wh_reserve_full_idle_efficiency_alert; older firmware sends s2 / s1 in
-  // cfg and gets the same format back. Apply to inverter: i1_<key><value>_... for each changed inverter setting (firmware
+  // cfg and gets the same format back. the Inverter Save: i1_<key><value>_... for each changed inverter setting (firmware
   // that sends "it"); 2.1.17 without it takes priorities and grid charging as a tail on the s3 code instead.
   var cfgText = q.get('cfg') || '', bot = q.get('bu');
   // Fields a newer firmware may append are ignored, so an older copy of this page keeps working.
@@ -385,7 +388,7 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
         if (pc > pg) return 'Cut-off can not be above back to grid.';
         if (pg >= pd) return 'Back to grid must be below back to battery.';
       }
-      if (hasVolts && val('sVf') > val('sVb')) return 'Float can not be above bulk.';
+      if (hasVolts && val('sVf') > val('sVb')) return '“Then hold at” can not be above “Charge up to”.';
       return '';
     };
     // Live preview: discharge time at the house load now with these values (learned ones when learning is on and known).
@@ -399,7 +402,7 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
         ' from ' + Math.round(b) + ' % down to the ' + res + ' % cut-off' + (learnOn && (lc || le) ? ' (learned values)' : '') + '.';
     };
     var solarOnly = function () { if (inv) { var o = $('sCp').querySelector('option[value="3"]'); if (o) o.disabled = !$('sSolar').checked; } }; // only solar charging needs panels
-    var initial = code(), save = $('sSave'), apply = $('sApply');
+    var initial = code(), save = $('sSave'), saveA = $('sSaveA'), apply = $('sApply');
     refresh = function () {
       if (hasLevels) {
         var badLevels = levelList() === null;
@@ -407,7 +410,7 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
         $('hintLevels').classList.toggle('warn', badLevels);
         $('hintLevels').classList.toggle('hidden', !badLevels);
       }
-      var c = code(); save.disabled = !c || c === initial;
+      var c = code(); save.disabled = saveA.disabled = !c || c === initial;
       if (invFull) { var problem = invProblem(); $('invErr').textContent = problem; apply.disabled = !invCode() || !!problem; }
       if (hasSoc) { // back to grid / back to battery only matter in Solar first or Battery first (SBU) mode
         var batteryFirst = $('sOp').value !== '0';
@@ -424,15 +427,19 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       tg.openTelegramLink('https://t.me/' + encodeURIComponent(bot) + '?start=' + c);
       setTimeout(function () { try { tg.close(); } catch (e) {} }, 700);
     };
-    save.addEventListener('click', function () {
-      var c = code(); if (!c || c === initial) return;
-      if (invFull && invCode()) { ask('The inverter changes are not applied yet and will be lost. Save the other settings anyway?', function () { send(save, c); }); return; }
-      send(save, c);
-    });
+    // Board and Alerts travel in the same code, so either Save sends both sections.
+    var onSave = function (ev) {
+      var btn = ev.currentTarget, c = code();
+      if (!c || c === initial) return;
+      if (invFull && invCode()) { ask('The inverter changes are not saved yet and will be lost. Save the other settings anyway?', function () { send(btn, c); }); return; }
+      send(btn, c);
+    };
+    save.addEventListener('click', onSave);
+    saveA.addEventListener('click', onSave);
     apply.addEventListener('click', function () {
       var c = invCode(); if (!c || invProblem()) return;
       var go = function () { send(apply, c); };
-      if (code() !== initial) ask('Your other changes are not saved yet and will be lost. Apply the inverter settings anyway?', go); else go();
+      if (code() !== initial) ask('Your other changes are not saved yet and will be lost. Save the inverter settings anyway?', go); else go();
     });
     $('sReset').addEventListener('click', function () {
       // Alerts and model values back to their defaults; capacity, solar and the inverter's settings describe the hardware and stay.
