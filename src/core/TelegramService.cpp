@@ -2332,8 +2332,9 @@ struct TelegramService::Impl
     // Main thread: "Apply to inverter" from the ⚙️ panel. i1 followed by _<key><value> for each changed setting (the
     // board's own settings go separately: Telegram's 64 characters are too few for both). Keys: o output priority 0-2,
     // c charger priority 0-3, u grid charging A, t total charging A, g input range (0 appliance, 1 UPS), z buzzer,
-    // y overload bypass, w restart after overload, q restart after overheating (0/1), and the battery % points (lithium
-    // battery with BMS): b back to grid, e back to battery, s cut-off. The whole code is
+    // y overload bypass, w restart after overload, q restart after overheating (0/1), the battery % points (lithium
+    // battery with BMS): b back to grid, e back to battery, s cut-off, and the charging voltages x10: k bulk (C.V.),
+    // f float. The whole code is
     // checked against the inverter's current values first; nothing is sent when any part of it is wrong.
     void queueInverterCode(const String &code)
     {
@@ -2375,6 +2376,8 @@ struct TelegramService::Impl
         current['b'] = socBackToGrid;
         current['e'] = socBackToBattery;
         current['s'] = socCutoff;
+        current['k'] = number(DESCR_Battery_Bulk_Voltage, 10.0f);
+        current['f'] = number(DESCR_Battery_Float_Voltage, 10.0f);
         long wanted['z' + 1];
         bool given['z' + 1] = {};
         for (int i = 0; i <= 'z'; ++i)
@@ -2443,6 +2446,19 @@ struct TelegramService::Impl
             if (wanted['b'] >= wanted['e'])
             {
                 fail("back to grid % not below back to battery %");
+                return;
+            }
+        }
+        if (given['k'] || given['f'])
+        {
+            if (outside('k', 480, 584) || outside('f', 480, 584))
+            {
+                fail("voltage out of range");
+                return;
+            }
+            if (wanted['f'] > wanted['k'])
+            {
+                fail("float above bulk");
                 return;
             }
         }
@@ -2525,6 +2541,26 @@ struct TelegramService::Impl
                 char command[12];
                 snprintf(command, sizeof(command), "%s%03ld", v.command, wanted[key]); // three digits (PSDC010)
                 commands.push_back({command, String(v.label) + " " + String(wanted[key]) + " %"});
+            }
+        }
+        // Charging voltages. Contrary to the manuals this inverter floats a BMS battery at its own float voltage (54.0 V
+        // kept it at 88 %, 55.2 V let it reach 94 %). float <= bulk on the way: lowered values first bottom up, raised
+        // ones top down.
+        const char voltKeys[2] = {'f', 'k'};
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            for (int n = 0; n < 2; ++n)
+            {
+                const char k = voltKeys[pass == 0 ? n : 1 - n];
+                const int key = static_cast<int>(k);
+                if (!changed(k) || (pass == 0) != (wanted[key] < current[key]))
+                {
+                    continue;
+                }
+                char command[16];
+                snprintf(command, sizeof(command), "%s%02ld.%ld", k == 'f' ? "PBFT" : "PCVV", wanted[key] / 10, wanted[key] % 10);
+                commands.push_back({command, String(k == 'f' ? "float " : "bulk ") + String(wanted[key] / 10) + "." +
+                                                 String(wanted[key] % 10) + " V"});
             }
         }
         if (commands.empty())
@@ -3013,6 +3049,15 @@ struct TelegramService::Impl
         if (allowedTotalAmps.length()) add("itl", allowedTotalAmps);
         const String inputRange = device[DESCR_Input_Voltage_Range] | "";
         if (inputRange.length()) add("ig", inputRange.indexOf("UPS") >= 0 ? "1" : "0");
+        // Charging voltages x10 (vb bulk / C.V., vf float): with this battery the float voltage decides how full it stays.
+        if (device[DESCR_Battery_Bulk_Voltage].is<float>())
+        {
+            add("vb", String(lroundf(device[DESCR_Battery_Bulk_Voltage].as<float>() * 10.0f)));
+        }
+        if (device[DESCR_Battery_Float_Voltage].is<float>())
+        {
+            add("vf", String(lroundf(device[DESCR_Battery_Float_Voltage].as<float>() * 10.0f)));
+        }
         if (device[DESCR_Buzzer_Enabled].is<bool>())
         {
             const unsigned inverterFlags = (device[DESCR_Buzzer_Enabled].as<bool>() ? 1u : 0u) |

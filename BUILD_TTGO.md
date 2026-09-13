@@ -191,9 +191,12 @@ QFLAG, so the Dashboard shows the new values. The summary then shows a silent "â
 restart after overload on âœ“" headline until the next automatic edit. The link carries `io ic iu il it itl ig ix sg sd sc
 bms`. Firmware 2.1.17 (no `it` key) still gets its priorities and grid charging as a tail on the Save code.
 
-Only lithium batteries with BMS communication are supported: the voltage setpoints (`PBCV`, `PBDV`, `PSDV`, `PCVV`,
-`PBFT`, which the inverter accepts) are not offered, because with a BMS the inverter works with the % points and the BMS
-sets the charging voltages.
+Only lithium batteries with BMS communication are supported. The switch-over and cut-off voltages (`PBCV`, `PBDV`,
+`PSDV`) are not offered: with a BMS the inverter uses the % points. The charging voltages are: contrary to the manuals,
+this VMII-6000 in LIb mode floats the battery at its own float voltage (`PBFT`). With float 54.0 V the battery stayed at
+88 % (0 A, "Float"); after `PBFT55.2` it took current again and reached 94 % within 10 minutes (2026-09-13). The panel
+offers Float (53.6-56.0 V) and Bulk (55.2 V up to the BMS charge voltage limit from QBMS, 57.6 V here) in 0.2 V steps,
+float <= bulk; Apply keys `k` (bulk, `PCVV`) and `f` (float, `PBFT`), volts x10; link keys `vb` / `vf`.
 
 The board asks `QDOP` (battery % points) and `QBMS` (what the BMS reports: connected, SOC, force-charge / stop-discharge
 / stop-charge flags, C.V. and float voltage, cut-off voltage, max charge and discharge current) a minute after start,
