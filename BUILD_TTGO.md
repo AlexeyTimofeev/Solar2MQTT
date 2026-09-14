@@ -160,9 +160,9 @@ Everything funnels through `requestLoud(headline, type, value)`, which calls `no
 inverter batch that was applied or had something refused. `noteAlert` copies the log under the lock and writes flash
 outside it, because the restart alert is raised on the bot task and everything else on the main thread.
 
-* **Summary**: the last five, newest first, at the very end - after Updated and Version - as `⚠️ Last alerts:`
-  followed by one `* 3m ago Grid on` line each: no blank line, no per-line icons, the age first. Dated by age, not by a
-  clock time, because the board only knows UTC and cannot know the phone's timezone. Built in `footerFor(text, age)`,
+* **Summary**: the last five, newest first, at the very end - after Updated and Version - as a blank line, then
+  `⚠️ Last alerts` (no colon), then one `14 Sep 11:15  Grid on` line each: the dated column, two spaces, the
+  text, no bullets and no per-line icons. Built in `footerFor(text, age)`,
   which takes no lock of its own; `snapshotWithFooter()` reads the snapshot under the lock and releases it before
   calling it. **Never call `footerFor()` or `alertLogText()` while holding the lock**: doing exactly that in the
   `/api/telegram/status` handler deadlocked the endpoint outright, and the task watchdog then reset the board twice -
@@ -271,10 +271,18 @@ due, so the interval stays close to 15 seconds.
 
 ## Summary format
 
-Lines: ⚙️ Mode, 🔋 Battery as a four-segment bar plus (percent) only (green ≥50 %, yellow ≥25 %, red below), ☀️ Solar
-(hidden when solar is switched off), 🔌 Load as a four-segment bar plus (percent) only (green <50 %, yellow <80 %, red
-above), 🏠 Grid, 🌡 Temp, ⚠️ alerts,
-📶 WiFi (OK at -70 dBm or better, otherwise Low signal), ⏳ Up (uptime), 🕒 Updated, each on its own line with a colon. The device-name header was removed on request.
+One `<pre>` block, so the values line up in a column: `<emoji> <label padded to 10 by padLabel()><value>`, no colons.
+Lines: ⚙️ Mode, 🔋 Battery as a moon glyph plus (percent), ☀️ Solar (hidden when solar is switched off), 🔌 Load as a
+moon glyph plus (percent), 🏠 Grid, 🌡 Temp, ⚠️ Warning / Fault (full width, not a label/value pair), 📶 WiFi (OK at
+-70 dBm or better, otherwise Low signal), ⏳ Up (uptime), 🕒 Updated, 💾 Version. The device-name header was removed
+on request.
+
+**Nothing inside the block may carry `<b>` or `<i>`**: Telegram renders a pre block verbatim and rejects a message whose
+entities are nested inside it. So the wrap happens in exactly one place - the `return` of `footerFor()` - and the alert
+headlines, which all carry `<b>`, are prepended *above* it by the single composition site (`body = headline + "\n" +
+body`). The padding is ASCII-only, so a label is always 10 characters; the leading emoji are not (⚙️ is U+2699 plus a
+variation selector, 🔋 is one code point) and clients render them at slightly different widths, so a column can still
+look a hair uneven on some phones - a known trade-off of keeping the icons.
 
 ## High-load summary
 
