@@ -48,4 +48,5 @@
   X(UINT16, "device", "inverterEfficiency", inverterEfficiencyPct, 95, 50, 100) \
   X(UINT16, "device", "batteryFullPct", batteryFullPct, 100, 50, 100) \
   X(BOOL,   "device", "learnBattery", learnBattery, true, 0, 1) \
+  X(INT32,  "device", "tzOffset", tzOffsetHours, 3, -12, 14) \
   SETTINGS_ITEMS_TELEGRAM(X)

@@ -2153,7 +2153,8 @@ struct TelegramService::Impl
         return "s3_" + String(flags, HEX) + "_" + String(_settings.get.batteryCapacityWh()) + "_" +
                String(_settings.get.batteryReservePct()) + "_" + String(_settings.get.batteryFullPct()) + "_" +
                String(_settings.get.inverterIdleW()) + "_" + String(_settings.get.inverterEfficiencyPct()) + "_" +
-               String(_settings.get.telegramPowerAlertW() / 100) + "_" + levelsCode(_settings.get.telegramBatteryAlertLevels());
+               String(_settings.get.telegramPowerAlertW() / 100) + "_" + levelsCode(_settings.get.telegramBatteryAlertLevels()) +
+               "_" + String(_settings.get.tzOffsetHours() + 12); // shifted: a plain number, never a minus sign
     }
 
     // The battery alert levels as the settings code carries them: "30-25-20-15-10", "0" for none.
@@ -2201,7 +2202,8 @@ struct TelegramService::Impl
             start = sep + 1;
         }
         const size_t count = parts.size();
-        if ((version == 1 && count != 5) || (version == 2 && count != 6) || (version == 3 && count != 7 && count != 8 && count != 10))
+        if ((version == 1 && count != 5) || (version == 2 && count != 6) ||
+            (version == 3 && count != 7 && count != 8 && count != 9 && count != 10))
         {
             return false;
         }
@@ -2227,7 +2229,7 @@ struct TelegramService::Impl
         const bool solar = version >= 2 ? (flags & 32) != 0 : _settings.get.solarConnected();
         // s3 with 8 fields: the battery alert levels ("30-20-10", "0" = keep them; bit 8 switches the alerts).
         String alertLevels;
-        if (count == 8 && parts[7] != "0")
+        if ((count == 8 || count == 9) && parts[7] != "0")
         {
             int levels[kBatteryAlertMax];
             const int n = parseAlertLevels(parts[7], levels, kBatteryAlertMax);
@@ -2281,6 +2283,12 @@ struct TelegramService::Impl
         }
         _settings.set.batteryCapacityWh(static_cast<uint32_t>(wh));
         _settings.set.batteryReservePct(static_cast<uint16_t>(reserve));
+        long tzShifted = _settings.get.tzOffsetHours() + 12;
+        if (count == 9 && !(parseField(parts[8], 10, tzShifted) && tzShifted >= 0 && tzShifted <= 26))
+        {
+            return false;
+        }
+        _settings.set.tzOffsetHours(static_cast<int32_t>(tzShifted - 12));
         _settings.set.batteryFullPct(static_cast<uint16_t>(full));
         _settings.set.inverterIdleW(static_cast<uint16_t>(idle));
         _settings.set.inverterEfficiencyPct(static_cast<uint16_t>(efficiency));
@@ -3054,18 +3062,22 @@ struct TelegramService::Impl
         }
     }
 
-    // The board only knows UTC, so alerts are dated by age rather than by a clock time.
-    static String alertAge(int64_t at)
+    // Alerts are dated with the wall clock, using the timezone from Settings (the board itself runs on UTC).
+    // Anything recorded before SNTP had synced has at == 0 and says so rather than showing a 1970 date.
+    String alertWhen(int64_t at) const
     {
-        const int64_t now = unixNow();
-        if (at <= 0 || now <= at + 90)
+        if (at <= 0)
         {
-            return "just now";
+            return "time unknown";
         }
-        const int64_t s = now - at;
-        if (s < 3600) return String(static_cast<long>(s / 60)) + "m ago";
-        if (s < 86400) return String(static_cast<long>(s / 3600)) + "h ago";
-        return String(static_cast<long>(s / 86400)) + "d ago";
+        static const char *const months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                             "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+        const time_t shifted = static_cast<time_t>(at + static_cast<int64_t>(_settings.get.tzOffsetHours()) * 3600);
+        struct tm parts;
+        gmtime_r(&shifted, &parts); // already shifted, so the UTC fields are the local ones
+        char buf[24];
+        snprintf(buf, sizeof(buf), "%02d %s %02d:%02d", parts.tm_mday, months[parts.tm_mon], parts.tm_hour, parts.tm_min);
+        return String(buf);
     }
 
     // The last five alerts at the end of the summary, newest first.
@@ -3083,7 +3095,7 @@ struct TelegramService::Impl
         for (size_t i = 0; i < n; ++i)
         {
             const size_t k = (copy.head + kAlertLog - 1 - i) % kAlertLog;
-            t += "\n* " + alertAge(copy.at[k]) + " " + alertText(copy.type[k], copy.value[k]);
+            t += "\n* " + alertWhen(copy.at[k]) + " " + alertText(copy.type[k], copy.value[k]);
         }
         return t;
     }
@@ -3278,6 +3290,7 @@ struct TelegramService::Impl
             add("wh", String(batteryWh));
         }
         add("wr", String(lroundf(effectiveReservePct())));
+        add("tz", String(_settings.get.tzOffsetHours())); // the Dashboard dates alerts with the same offset
         add("bf", String(_settings.get.batteryFullPct())); // the battery ring is complete at this level
         add("wi", String(lroundf(effectiveIdleW())));      // also used by the power flow panel
         add("we", String(lroundf(effectiveEfficiency() * 100.0f)));
@@ -3529,16 +3542,28 @@ void TelegramService::loop(bool inverterConnected, int wifiRssi)
         applyTestHooked = true;
         auto *impl = _impl;
         LogSerial.onMessage([impl](const std::string &msg) {
-            const size_t at = msg.find("apply i1_");
-            if (at == std::string::npos)
+            size_t at = msg.find("apply i1_");
+            if (at != std::string::npos)
             {
+                String code(msg.substr(at + 6).c_str());
+                code.trim();
+                impl->lockTake();
+                impl->pendingInverterCode = code;
+                impl->lockGive();
                 return;
             }
-            String code(msg.substr(at + 6).c_str());
-            code.trim();
-            impl->lockTake();
-            impl->pendingInverterCode = code;
-            impl->lockGive();
+            at = msg.find("apply s3_"); // the board settings code, exactly as the panel's Save sends it
+            if (at != std::string::npos)
+            {
+                String code(msg.substr(at + 6).c_str());
+                code.trim();
+                const bool ok = impl->applySettingsCode(code);
+                LogSerial.println(String("[Telegram] settings code ") + code + (ok ? " APPLIED" : " REJECTED"));
+                if (ok)
+                {
+                    impl->loadSettings();
+                }
+            }
         });
     }
 #endif
