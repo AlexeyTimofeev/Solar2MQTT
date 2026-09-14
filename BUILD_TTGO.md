@@ -285,7 +285,8 @@ on request.
 `buildSnapshot()` as `summaryLead` and stored under the same lock as the snapshot itself. It exists for the Telegram
 *chat list*, which previews a message with formatting stripped and truncates it around 40 characters, so the fields are
 ordered by what is worth seeing there and the block's own icons stand in as labels to keep it short. It is deliberately
-redundant with the block below, and deliberately *outside* the `<code>` wrap so it cannot disturb the columns. Both
+redundant with the block below, and deliberately *outside* the `<code>` wrap so it cannot disturb the columns, with a
+blank line between the two. Both
 `footerFor()` call sites read it under the lock and pass it in: `snapshotWithFooter()` and the `/api/telegram/status`
 handler.
 

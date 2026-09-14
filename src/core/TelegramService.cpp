@@ -1115,7 +1115,7 @@ struct TelegramService::Impl
         // Wrapped here and nowhere else: callers prepend alert headlines carrying <b>, and Telegram rejects a message
         // with entities nested inside a code block - the headline has to stay above it.
         const String block = "<code>" + text + "</code>";
-        return lead.length() ? lead + "\n" + block : block;
+        return lead.length() ? lead + "\n\n" + block : block;
     }
 
     void deleteMessage(const String &chat, int64_t messageId)
