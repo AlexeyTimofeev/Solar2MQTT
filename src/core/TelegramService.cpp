@@ -119,6 +119,8 @@ constexpr uint32_t kDashSlotSeconds = 900; // dashboard history: one slot per 15
 constexpr size_t kDashSlots = 96;           // 24 hours
 constexpr uint32_t kDashMagic = 0x44534831; // "DSH1"
 constexpr uint8_t kDashNone = 255;          // slot without data
+constexpr size_t kAlertLog = 25;            // alerts kept for the Dashboard log; the summary shows the last five
+constexpr const char *kAlertNamespace = "alerts";
 
 // Dashboard history in RTC memory: survives a crash, watchdog or software restart (firmware update), not a power cut.
 struct DashHistory
@@ -133,6 +135,18 @@ struct DashHistory
     uint8_t off[kDashSlots];  // minutes without grid in the slot
 };
 RTC_NOINIT_ATTR DashHistory dashHist;
+
+// The alert log lives in FLASH, not RTC, so it survives a power cut as well as a firmware update. Alerts are rare (a
+// few a day), so one write each costs nothing; the 15-minute history above would wear the flash out and stays in RTC.
+struct AlertLog
+{
+    uint8_t type[kAlertLog];   // g grid off, G grid back, l load, p grid power, b battery low, o inverter offline,
+                               // r unexpected restart, i inverter settings saved, I inverter change refused
+    uint16_t value[kAlertLog]; // kW x10 for l/p, % for b, settings changed for i/I, 0 otherwise
+    int64_t at[kAlertLog];     // unix time, 0 when the clock was not known yet
+    uint8_t count;
+    uint8_t head;              // next slot to write
+};
 
 #ifdef GRID_ALERT_TEST
 // Test builds only: "gridoff" / "gridon" / "gridreal" typed in the web serial console force the grid state.
@@ -400,6 +414,8 @@ struct TelegramService::Impl
     // Dashboard button: the main thread records the history and builds the link, the bot task reads it under lock.
     String dashboardUrl;
     std::atomic<uint8_t> dashSlotsAllowed {static_cast<uint8_t>(kDashSlots)}; // halves when Telegram rejects the link
+    std::atomic<uint8_t> dashAlertsAllowed {static_cast<uint8_t>(kAlertLog)}; // ... and so does the alert log
+    AlertLog alertLog {};                                                    // under the lock: raised on both tasks
     std::atomic<bool> dashDisabled {false};
     std::atomic<uint32_t> settingsSavedMs {0}; // settings arrived from the dashboard; the summary is edited shortly after
     String settingsHeadline;                   // under lock: silent headline for that edit ("Settings saved ...")
@@ -461,8 +477,12 @@ struct TelegramService::Impl
     uint32_t gridPowerBelowSinceMs = 0;
 
     // A new summary with sound and a headline; headlines requested before it goes out are combined.
-    void requestLoud(const String &headline)
+    void requestLoud(const String &headline, char type = 0, uint16_t value = 0)
     {
+        if (type)
+        {
+            noteAlert(type, value);
+        }
         lockTake();
         loudHeadline = (loudSummaryRequested.load() && loudHeadline.length()) ? loudHeadline + "\n" + headline : headline;
         lockGive();
@@ -563,7 +583,7 @@ struct TelegramService::Impl
         }
         if (_settings.get.telegramGridAlerts())
         {
-            requestLoud(headline);
+            requestLoud(headline, off ? 'g' : 'G');
         }
     }
 
@@ -635,7 +655,8 @@ struct TelegramService::Impl
             gridPowerAboveSinceMs = 0;
             const String limit = String(thresholdW / 1000.0f, (static_cast<uint32_t>(thresholdW) % 1000) ? 1 : 0);
             requestLoud("\xE2\x9A\xA1 <b>" + String(onBattery ? "Load " : "Grid power ") + String(watts / 1000.0f, 1) + " kW</b>" +
-                        (onBattery ? " on battery" : "") + ", above " + limit + " kW"); // ⚡
+                        (onBattery ? " on battery" : "") + ", above " + limit + " kW",
+                        onBattery ? 'l' : 'p', static_cast<uint16_t>(lroundf(watts / 100.0f))); // ⚡
         }
         else
         {
@@ -682,7 +703,7 @@ struct TelegramService::Impl
         {
             inverterOfflineNotified = true;
             lastOfflineNoticeMs = now;
-            requestLoud("\xF0\x9F\x94\xB4 <b>Inverter offline</b>"); // 🔴
+            requestLoud("\xF0\x9F\x94\xB4 <b>Inverter offline</b>", 'o'); // 🔴
         }
     }
     int alertLevels[kBatteryAlertMax] = {};
@@ -795,7 +816,8 @@ struct TelegramService::Impl
         {
             return;
         }
-        requestLoud("\xF0\x9F\xAA\xAB <b>Battery below " + String(fireLevel) + " %</b>"); // 🪫 a summary with sound, no extra message
+        requestLoud("\xF0\x9F\xAA\xAB <b>Battery below " + String(fireLevel) + " %</b>", 'b',
+                    static_cast<uint16_t>(fireLevel)); // 🪫 a summary with sound, no extra message
     }
 
     // LogSerial forwards to WebSerial (async web socket) and must only be used from the main thread,
@@ -1182,6 +1204,8 @@ struct TelegramService::Impl
         {
             dashSlotsAllowed = slots > 12 ? slots / 2 : 0;
         }
+        const uint8_t keptAlerts = dashAlertsAllowed.load();
+        dashAlertsAllowed = keptAlerts > 5 ? keptAlerts / 2 : 0;
         taskLog("[Telegram] Dashboard link rejected (" + err + "); history now " + String(dashSlotsAllowed.load()) + " slots" +
                 (dashDisabled.load() ? ", button off" : ""));
         return true;
@@ -1492,6 +1516,10 @@ struct TelegramService::Impl
         {
             DiagLog::crashReportSent();
             return;
+        }
+        if (crashReportTries == 0)
+        {
+            noteAlert('r', 0); // once per boot: this runs again when a send fails
         }
         ++crashReportTries;
         lastCrashTryMs = millis();
@@ -2852,6 +2880,7 @@ struct TelegramService::Impl
             results += sent.label + state;
             LogSerial.println("[Telegram] Inverter " + sent.command + " answered " + sent.answer + ", read back:" + state);
         }
+        const uint16_t sentCount = static_cast<uint16_t>(inverterCmdSent.size());
         inverterCmdSent.clear();
         inverterVerifyAtMs = 0;
         if (!results.length())
@@ -2862,6 +2891,7 @@ struct TelegramService::Impl
         settingsHeadline = String(failed ? "\xE2\x9A\xA0\xEF\xB8\x8F" : "\xE2\x9C\x85") + " <b>Inverter</b>: " + results;
         lockGive();
         settingsSavedMs = millis() | 1u;
+        noteAlert(failed ? 'I' : 'i', sentCount);
     }
 
 
@@ -2955,6 +2985,111 @@ struct TelegramService::Impl
         }
         t += _settings.get.learnBattery() ? " (in use)" : " (not used)";
         return t;
+    }
+
+    // Alerts are raised on the main thread and, for a restart, on the bot task: copy under the lock, write flash
+    // outside it so the lock is never held across a flash write.
+    void noteAlert(char type, uint16_t value)
+    {
+        AlertLog copy;
+        lockTake();
+        alertLog.type[alertLog.head] = static_cast<uint8_t>(type);
+        alertLog.value[alertLog.head] = value;
+        alertLog.at[alertLog.head] = unixNow();
+        alertLog.head = static_cast<uint8_t>((alertLog.head + 1) % kAlertLog);
+        if (alertLog.count < kAlertLog)
+        {
+            alertLog.count++;
+        }
+        copy = alertLog;
+        lockGive();
+        Preferences p;
+        if (p.begin(kAlertNamespace, false))
+        {
+            p.putBytes("log", &copy, sizeof(copy));
+            p.end();
+        }
+    }
+
+    void alertLoad()
+    {
+        Preferences p;
+        if (!p.begin(kAlertNamespace, true))
+        {
+            return; // nothing saved yet
+        }
+        AlertLog stored {};
+        if (p.getBytes("log", &stored, sizeof(stored)) == sizeof(stored) && stored.count <= kAlertLog &&
+            stored.head < kAlertLog)
+        {
+            lockTake();
+            alertLog = stored;
+            lockGive();
+        }
+        p.end();
+    }
+
+    static String alertText(uint8_t type, uint16_t value)
+    {
+        switch (type)
+        {
+        case 'g': return "\xF0\x9F\x94\xB4 Grid off";
+        case 'G': return "\xF0\x9F\x9F\xA2 Grid back";
+        case 'l': return "\xE2\x9A\xA1 Load " + String(value / 10.0f, 1) + " kW";
+        case 'p': return "\xE2\x9A\xA1 Grid " + String(value / 10.0f, 1) + " kW";
+        case 'b': return "\xF0\x9F\xAA\xAB Battery below " + String(value) + " %";
+        case 'o': return "\xF0\x9F\x94\xB4 Inverter offline";
+        case 'r': return "\xF0\x9F\x92\xA5 Unexpected restart";
+        case 'i': return "\xE2\x9C\x85 Inverter settings saved";
+        case 'I': return "\xE2\x9A\xA0\xEF\xB8\x8F Inverter change refused";
+        default: return String();
+        }
+    }
+
+    // The board only knows UTC, so alerts are dated by age rather than by a clock time.
+    static String alertAge(int64_t at)
+    {
+        const int64_t now = unixNow();
+        if (at <= 0 || now <= at + 90)
+        {
+            return "just now";
+        }
+        const int64_t s = now - at;
+        if (s < 3600) return String(static_cast<long>(s / 60)) + " min ago";
+        if (s < 86400) return String(static_cast<long>(s / 3600)) + " h ago";
+        return String(static_cast<long>(s / 86400)) + " d ago";
+    }
+
+    // The last five alerts at the end of the summary, newest first.
+    String alertLogText()
+    {
+        lockTake();
+        AlertLog copy = alertLog;
+        lockGive();
+        const size_t n = std::min<size_t>(copy.count, 5);
+        if (n == 0)
+        {
+            return String();
+        }
+        String t = "\n<i>\xF0\x9F\x93\x8B Last alerts</i>";
+        for (size_t i = 0; i < n; ++i)
+        {
+            const size_t k = (copy.head + kAlertLog - 1 - i) % kAlertLog;
+            t += "\n<i>" + alertText(copy.type[k], copy.value[k]) + " \xC2\xB7 " + alertAge(copy.at[k]) + "</i>";
+        }
+        return t;
+    }
+
+    static String base36(uint32_t v, size_t width)
+    {
+        static const char *digits = "0123456789abcdefghijklmnopqrstuvwxyz";
+        String s;
+        for (size_t i = 0; i < width; ++i)
+        {
+            s = String(digits[v % 36]) + s;
+            v /= 36;
+        }
+        return s;
     }
 
     void learnLoad()
@@ -3210,6 +3345,30 @@ struct TelegramService::Impl
         add("rs", String(WiFi.RSSI()));
         add("fw", runningVersion());
         add("up", String(millis() / 1000));
+        lockTake();
+        const AlertLog alertCopy = alertLog; // not "alerts": that parameter carries the inverter's warning text
+        lockGive();
+        const size_t an = std::min<size_t>(alertCopy.count, dashAlertsAllowed.load());
+        if (an)
+        {
+            const int64_t nowUnix = unixNow();
+            String a;
+            a.reserve(an * 6);
+            for (size_t i = 0; i < an; ++i) // oldest first
+            {
+                const size_t k = (alertCopy.head + kAlertLog - an + i) % kAlertLog;
+                uint32_t mins = 0;
+                if (alertCopy.at[k] > 0 && nowUnix > alertCopy.at[k])
+                {
+                    const int64_t m = (nowUnix - alertCopy.at[k]) / 60;
+                    mins = static_cast<uint32_t>(m > 46655 ? 46655 : m);
+                }
+                a += static_cast<char>(alertCopy.type[k]);
+                a += base36(alertCopy.value[k] > 1295 ? 1295 : alertCopy.value[k], 2);
+                a += base36(mins, 3);
+            }
+            add("al", a);
+        }
         const size_t n = std::min<size_t>(dashHist.count, dashSlotsAllowed.load());
         if (n)
         {
@@ -3298,7 +3457,8 @@ struct TelegramService::Impl
             }
         }
         text += String("<i>\xF0\x9F\x93\xB6 WiFi: ") + (rssi >= -70 ? "OK" : "Low signal") + "</i>\n"; // 📶, -70 dBm boundary
-        text += "<i>\xE2\x8F\xB3 Up: " + uptimeText() + "</i>"; // ⏳
+        text += "<i>\xE2\x8F\xB3 Up: " + uptimeText() + "</i>";
+        text += alertLogText(); // ⏳
 
         lockTake();
         summarySnapshot = text;
@@ -3326,6 +3486,7 @@ void TelegramService::begin(std::function<bool()> networkConnected)
     _impl->loadSettings();
     _impl->dashInit();
     _impl->learnLoad();
+    _impl->alertLoad();
     configTime(0, 0, "pool.ntp.org", "time.google.com"); // UTC for the dashboard; the page shows the phone's local time
     if (xTaskCreate(Impl::taskEntry, "telegram", kTaskStack, _impl, 1, &_impl->task) != pdPASS)
     {

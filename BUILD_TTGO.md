@@ -148,6 +148,27 @@ the bot sends one new summary with sound and a "⚡ Grid power 5.3 kW, above 5 k
 5 kW") headline; it re-arms after the power has stayed below the threshold for 30 seconds. Since 2.1.17 this replaces
 the separate high load alert.
 
+## Alert log
+
+Every loud alert is also written to a 25-entry log kept in FLASH (NVS namespace `alerts`), so it survives a power cut
+as well as a firmware update - unlike the 24 h history, which churns every 15 minutes and stays in RTC. Alerts are rare
+(a few a day), so one flash write each costs nothing.
+
+Everything funnels through `requestLoud(headline, type, value)`, which calls `noteAlert()`: `g` grid off, `G` grid back,
+`l` load above the threshold on battery, `p` grid power above it, `b` battery below a level, `o` inverter offline,
+`r` unexpected restart (logged once per boot in `sendCrashReport`, not once per delivery attempt), and `i` / `I` for an
+inverter batch that was applied or had something refused. `noteAlert` copies the log under the lock and writes flash
+outside it, because the restart alert is raised on the bot task and everything else on the main thread.
+
+* **Summary**: the last five, newest first, appended after the uptime line. Dated by age ("30 min ago"), not by a clock
+  time - the board only knows UTC and the phone's timezone is unknown to it.
+* **Dashboard**: a foldable "Last alerts" panel between the 24 h chart and Settings, listing all 25 newest-first, hidden
+  when there are none. Link key `al`: six characters per alert - type, value in base36 (2), minutes ago in base36 (3),
+  oldest first, so 25 alerts cost 150 characters. The page must use `Math.floor` for the age exactly as the firmware
+  uses integer division, or the same alert reads differently in the two places.
+* Like the history, the log shrinks when Telegram rejects the link (`dashAlertsAllowed` halves alongside
+  `dashSlotsAllowed`).
+
 ## Learned battery model
 
 With "Learn from outages" (key `device.learnBattery`, default on) the board learns the battery model itself while the

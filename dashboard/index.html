@@ -99,6 +99,11 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       <div class="sm" style="margin-top:6px;text-align:center">Load bars: <span style="color:#6ee7a6">grid on</span> · <span style="color:var(--warn)">partly off</span> · <span style="color:#ff8a78">grid off</span></div>
     </div>
   </div>
+  <details id="alertPanel" class="pn hidden">
+    <summary>🔔 Last alerts</summary>
+    <div id="alertList"></div>
+  </details>
+
   <details id="setPanel" class="pn hidden">
     <summary>⚙️ Settings</summary>
 
@@ -261,6 +266,25 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
   else { $('grid').textContent = gv !== null ? Math.round(gv) + ' V' : '–'; $('gridSub').textContent = gf !== null ? gf.toFixed(1) + ' Hz' : ''; }
   $('temp').textContent = tc !== null ? tc + ' °C · ' + (tc < 60 ? 'normal' : tc < 75 ? 'warm' : 'hot') : '–';
   if (pv !== null) { $('solarRow').classList.remove('hidden'); $('solar').textContent = pv + ' W'; }
+  // Alert log (al): six characters each - type, value in base36 (2), minutes ago in base36 (3), oldest first.
+  var alertName = { g: '🔴 Grid off', G: '🟢 Grid back', o: '🔴 Inverter offline', r: '💥 Unexpected restart',
+                    i: '✅ Inverter settings saved', I: '⚠️ Inverter change refused' };
+  var alertAgo = function (m) {
+    if (m < 2) return 'just now';
+    if (m < 60) return m + ' min ago';
+    if (m < 1440) return Math.floor(m / 60) + ' h ago';
+    return Math.floor(m / 1440) + ' d ago';   // floor, so the page and the summary never disagree
+  };
+  var alertCode = q.get('al') || '', alertRows = '';
+  for (var ai = 0; ai + 6 <= alertCode.length; ai += 6) {
+    var aType = alertCode.charAt(ai);
+    var aVal = parseInt(alertCode.substr(ai + 1, 2), 36), aMin = parseInt(alertCode.substr(ai + 3, 3), 36);
+    var aText = alertName[aType] || (aType === 'b' ? '🪫 Battery below ' + aVal + ' %'
+              : aType === 'l' ? '⚡ Load ' + (aVal / 10).toFixed(1) + ' kW'
+              : aType === 'p' ? '⚡ Grid ' + (aVal / 10).toFixed(1) + ' kW' : '');
+    if (aText) alertRows = '<div class="kv"><span>' + aText + '</span><span>' + alertAgo(aMin) + '</span></div>' + alertRows;
+  }
+  if (alertRows) { $('alertList').innerHTML = alertRows; $('alertPanel').classList.remove('hidden'); }
   // ⚙️ Settings, only inside Telegram (a plain browser can't hand changes to the bot). The buttons open the bot link
   // t.me/<bot>?start=<code>; the board applies it and deletes that message.
   // Save (alerts, battery & estimates): s3_flags_Wh_reserve_full_idle_efficiency_alert; older firmware sends s2 / s1 in
