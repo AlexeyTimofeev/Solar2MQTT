@@ -148,6 +148,44 @@ the bot sends one new summary with sound and a "⚡ Grid power 5.3 kW, above 5 k
 5 kW") headline; it re-arms after the power has stayed below the threshold for 30 seconds. Since 2.1.17 this replaces
 the separate high load alert.
 
+## Alert log
+
+Every loud alert is also written to a 25-entry log kept in FLASH (NVS namespace `alerts`), so it survives a power cut
+as well as a firmware update - unlike the 24 h history, which churns every 15 minutes and stays in RTC. Alerts are rare
+(a few a day), so one flash write each costs nothing.
+
+Everything funnels through `requestLoud(headline, type, value)`, which calls `noteAlert()`: `g` grid off, `G` grid back,
+`l` load above the threshold on battery, `p` grid power above it, `b` battery below a level, `o` inverter offline,
+`r` unexpected restart (logged once per boot in `sendCrashReport`, not once per delivery attempt), and `i` / `I` for an
+inverter batch that was applied or had something refused. `noteAlert` copies the log under the lock and writes flash
+outside it, because the restart alert is raised on the bot task and everything else on the main thread.
+
+* **Summary**: the last five, newest first, at the very end - after Updated and Version - as `⚠️ Last alerts:`
+  followed by one `* 3m ago Grid on` line each: no blank line, no per-line icons, the age first. Dated by age, not by a
+  clock time, because the board only knows UTC and cannot know the phone's timezone. Built in `footerFor(text, age)`,
+  which takes no lock of its own; `snapshotWithFooter()` reads the snapshot under the lock and releases it before
+  calling it. **Never call `footerFor()` or `alertLogText()` while holding the lock**: doing exactly that in the
+  `/api/telegram/status` handler deadlocked the endpoint outright, and the task watchdog then reset the board twice -
+  which the alert log itself faithfully recorded as two unexpected restarts.
+* **Timezone** (`device.tzOffset`, whole hours -12..+14, default +3): alerts are dated with the wall clock instead of
+  an age. `alertWhen()` shifts the stored UTC time by the offset and formats "14 Sep 11:15"; anything recorded before
+  SNTP synced has `at == 0` and reads "time unknown" rather than a 1970 date. The Dashboard uses the SAME offset (link
+  key `tz`) and derives each alert's absolute time from the link's own `t` minus the alert's age, so the two surfaces
+  can never disagree. The Board tab has a UTC-12..UTC+14 dropdown.
+  Encoding traps, all deliberate: the offset rides in the save code as **field 9 shifted by +12** (0..26) because `-`
+  already separates the battery alert levels; `applySettingsCode` gained an explicit `count == 9` branch (7 / 8 / 10
+  keep their old meanings, 10 being the legacy 2.1.17 tail); and the levels test widened to `count == 8 || count == 9`
+  or a 9-field code would silently drop the levels. The page's regex captures the field ahead of its trailing
+  catch-all, so older cached pages still parse a 9-field code and keep saving 8.
+* Only a genuine fault raises the restart alert: `DiagLog::isUnexpected()` covers panic, the watchdogs and brownout,
+  so an ordinary OTA restart (`ESP_RST_SW`) never adds one.
+* **Dashboard**: a foldable "Last alerts" panel between the 24 h chart and Settings, listing all 25 newest-first, hidden
+  when there are none. Link key `al`: six characters per alert - type, value in base36 (2), minutes ago in base36 (3),
+  oldest first, so 25 alerts cost 150 characters. The page must use `Math.floor` for the age exactly as the firmware
+  uses integer division, or the same alert reads differently in the two places.
+* Like the history, the log shrinks when Telegram rejects the link (`dashAlertsAllowed` halves alongside
+  `dashSlotsAllowed`).
+
 ## Learned battery model
 
 With "Learn from outages" (key `device.learnBattery`, default on) the board learns the battery model itself while the
