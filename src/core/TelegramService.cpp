@@ -2088,13 +2088,13 @@ struct TelegramService::Impl
     // Main thread: estimated time until the inverter's low-battery cut-off while it runs on battery. The usable energy
     // above the reserve is drawn at load / efficiency + the inverter's own consumption (learned, or from Settings).
     // Empty when not on battery or the capacity is not set.
-    String timeLeftText(const String &mode, float batteryPct)
+    // How long the battery would carry the present load. Computed in every mode, not only on battery: while the grid
+    // is up it answers "what if it went away now", which is when the number is actually worth knowing.
+    String timeLeftText(float batteryPct)
     {
         const uint32_t capacityWh = effectiveCapacityWh();
-        String upper = mode;
-        upper.toUpperCase();
         float loadW = 0;
-        if (capacityWh == 0 || batteryPct < 0 || upper.indexOf("BATTERY") < 0 || !readNumber(DESCR_AC_Out_Watt, loadW))
+        if (capacityWh == 0 || batteryPct < 0 || !readNumber(DESCR_AC_Out_Watt, loadW))
         {
             return String();
         }
@@ -2106,7 +2106,7 @@ struct TelegramService::Impl
         }
         const float usableWh = capacityWh * std::max(batteryPct - reserve, 0.0f) / 100.0f;
         const uint32_t seconds = static_cast<uint32_t>(usableWh / drawW * 3600.0f);
-        return "\xE2\x89\x88 " + DiagLog::formatDuration(seconds); // ≈ 10h 18m
+        return DiagLog::formatDuration(seconds); // "10h 18m" - the "Estimated" label carries the meaning now
     }
 
     void dashInit()
@@ -3544,11 +3544,10 @@ struct TelegramService::Impl
             const String percent = num(DESCR_Battery_Percent, 0, "%");
             text += "\xF0\x9F\x94\x8B " + padLabel("Battery") + percent + "\n"; // 🔋
 
-            const String left = timeLeftText(modeRaw, okPercent ? percentValue : -1.0f);
+            const String left = timeLeftText(okPercent ? percentValue : -1.0f);
             if (left.length())
             {
-                text.remove(text.length() - 1); // continue the battery line: "Battery: 🌖 (69%) ≈ 10h 18m"
-                text += " " + left + "\n";
+                text += "\xE2\x8F\xB1\xEF\xB8\x8F " + padLabel("Estimated") + left + "\n"; // ⏱️ its own line
             }
 
             if (solarConnected)
@@ -3573,6 +3572,10 @@ struct TelegramService::Impl
             lead = "\xE2\x9A\x99\xEF\xB8\x8F" + (mode.length() ? mode : String("?")); // ⚙️
             lead += " \xF0\x9F\x8F\xA0" + (gridOff ? String("off") : num(DESCR_AC_In_Voltage, 1, "V")); // 🏠
             lead += " \xF0\x9F\x94\x8B" + percent;                                                      // 🔋
+            if (left.length())
+            {
+                lead += " \xE2\x8F\xB1\xEF\xB8\x8F" + left; // ⏱️ right after the battery
+            }
             lead += " \xF0\x9F\x94\x8C" + num(DESCR_AC_Out_Percent, 0, "%");                            // 🔌
             lead += " \xF0\x9F\x8C\xA1" + num(DESCR_Inverter_Bus_Temperature, 0, "\xC2\xB0");           // 🌡
             readNumber(DESCR_AC_Out_Watt, loadW);

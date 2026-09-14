@@ -300,13 +300,14 @@ One `<code>` block, so the values line up in a column: `<emoji> <label padded to
 `<code>` and not `<pre>`: Telegram offers no plain "monospace" formatting - only the two code entities - and current
 clients dress a `<pre>` block as a code panel with a bar down the left and a Copy button on top, while `<code>` gives
 the same fixed-width columns with none of that chrome.
-Lines, in order: ⚙️ Mode, 🏠 Grid, 🔋 Battery (the percentage alone), ☀️ Solar (hidden when solar is switched off),
+Lines, in order: ⚙️ Mode, 🏠 Grid, 🔋 Battery (the percentage alone), ⏱️ Estimated (how long the battery would carry
+the present load, skipped when capacity or the percentage is unknown), ☀️ Solar (hidden when solar is switched off),
 🔌 Load (the percentage alone), 🌡 Temp, ⚠️ Warning / Fault (full width, not a label/value pair), 📶 WiFi (OK at
 -70 dBm or better, otherwise Low signal), ⏳ Up (uptime), 🕒 Updated, 💾 Version. Grid sits directly under Mode so the
 block matches the lead's order. The moon glyphs are gone - the number already said what they said - and `bar10()` went
 with them. The device-name header was removed on request.
 
-**Lead line**: one plain line above the block - `⚙️Line 🏠223.7V 🔋95% 🔌22% 🌡51° 📶OK ⏳8m 🕒1s 💾2.1.23` - built in
+**Lead line**: one plain line above the block - `⚙️Line 🏠223.7V 🔋95% ⏱️13h 15m 🔌22% 🌡51° 📶OK ⏳8m 🕒1s 💾2.1.23` - built in
 `buildSnapshot()` as `summaryLead` and stored under the same lock as the snapshot itself. It exists for the Telegram
 *chat list*, which previews a message with formatting stripped and truncates it around 40 characters, so the fields are
 ordered by what is worth seeing there and the block's own icons stand in as labels to keep it short. It is deliberately
@@ -524,8 +525,8 @@ load % (bars coloured by grid state: on / partly off / off) with today's usage a
 * History: 96 slots of 15 minutes (battery % at the end, average load in 25 W steps, minutes without grid) in RTC
   memory, so it survives a crash or a firmware update but not a power cut. The board's clock comes from NTP (UTC); the
   page shows times and "today" in the phone's timezone.
-* Time left on battery (dashboard panel, and at the end of the summary's Battery line while on battery, e.g.
-  "🔋 Battery    69% ≈ 10h 18m") =
+* Time left on battery (the dashboard panel, and the summary's own ⏱️ Estimated line - in every mode now, not only
+  while on battery: with the grid up it answers "what if it went away this moment") =
   capacity × (battery % − reserve) ÷ (load ÷ efficiency + own consumption), with the learned values once known (see
   "Learned battery model"), otherwise from the ⚙️ Settings panel: Battery
   capacity [Wh] (hidden while 0), Battery reserve [%] (the inverter's low-battery cut-off, default 10), Inverter own
