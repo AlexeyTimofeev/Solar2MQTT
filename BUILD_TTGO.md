@@ -137,6 +137,17 @@ announced. During an outage the summary's grid line reads "off for 2h 13m". As w
 is removed, so the chat still holds only the summary. Test builds with `-DGRID_ALERT_TEST` accept `gridoff`, `gridon`
 and `gridreal` in the web serial console; `gridhigh` fakes a grid power of 5.5 kW.
 
+**Phantom "Grid off" after a restart during an outage (fixed 2026-09-14).** `clearLiveDataPreservingDs18b20()` empties
+LiveData on every boot and every reconnect, and `readNumber()` / `readText()` return false / empty for a missing key -
+so on the first *connected* poll `gridIsOff()` read "grid on" from no data at all. Note it cannot tell "no data" from
+"grid present": both disjuncts simply come out false. That single sample wiped `dashHist.outageStart` (so the summary
+restarted the outage clock from zero) and latched `gridAnnouncedOff = false`; ten seconds later the real values
+arrived, disagreed, and the board announced an outage that had in fact begun long before. The fingerprint in the log is
+two `g` entries with no `G` between them. `gridReadingValid()` now gates the only two places that latch state -
+`checkGridChange()` and the outage bookkeeping in `dashRecord()`. The other four `gridIsOff()` callers are deliberately
+left alone: they hold no state and self-correct on the next poll, so widening the change would have been risk without
+benefit.
+
 ## Power alert
 
 The Dashboard's ⚙️ Settings has a "Power alert above" dropdown (`telegram.powerAlertW`, default 5000 W; 1-6 kW on the

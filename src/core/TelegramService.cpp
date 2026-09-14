@@ -494,6 +494,16 @@ struct TelegramService::Impl
     }
 
     // Main thread: the grid counts as off while the inverter runs on battery or reports no AC input.
+    // True only once the inverter has actually reported something to judge by. Every boot and every reconnect clears
+    // LiveData, and readNumber() / readText() return false / empty for a missing key - so on the first connected poll
+    // gridIsOff() reads "grid on" from no data at all. That single sample used to wipe dashHist.outageStart and latch
+    // gridAnnouncedOff = false, and ten seconds later the board announced an outage that never started.
+    static bool gridReadingValid()
+    {
+        float acIn = 0;
+        return readText(DESCR_Inverter_Operation_Mode).length() > 0 || readNumber(DESCR_AC_In_Voltage, acIn);
+    }
+
     static bool gridIsOff()
     {
 #ifdef GRID_ALERT_TEST
@@ -575,6 +585,11 @@ struct TelegramService::Impl
         if (!inverterConnected)
         {
             gridPendingSinceMs = 0;
+            return;
+        }
+        if (!gridReadingValid())
+        {
+            gridPendingSinceMs = 0; // nothing to judge by yet: do not latch a state and do not announce one
             return;
         }
         const bool off = gridIsOff();
@@ -2165,10 +2180,10 @@ struct TelegramService::Impl
                     dashHist.outageStart = unix - (now - outageStartMs) / 1000; // the clock was set after the outage began
                 }
             }
-            else
+            else if (gridReadingValid())
             {
                 gridWasOff = false;
-                dashHist.outageStart = 0;
+                dashHist.outageStart = 0; // only on a real reading - empty LiveData must not erase a running outage
             }
         }
         if (now - slotStartMs < kDashSlotSeconds * 1000UL)
