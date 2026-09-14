@@ -401,6 +401,7 @@ struct TelegramService::Impl
     uint32_t lastCrashTryMs = 0;
 
     String summarySnapshot;
+    String summaryLead;
     uint32_t snapshotMs = 0;
     uint32_t lastSnapshotBuildMs = 0;
     bool lastInverterConnected = false;
@@ -534,7 +535,7 @@ struct TelegramService::Impl
         {
             seconds = (millis() - outageStartMs) / 1000;
         }
-        return seconds ? "<b>off</b> for " + DiagLog::formatDuration(seconds) : String("<b>off</b>");
+        return seconds ? "off for " + DiagLog::formatDuration(seconds) : String("off");
     }
 
     // Main thread: a summary with sound and a "Grid off" / "Grid back" headline once the grid has changed and the new
@@ -1079,17 +1080,19 @@ struct TelegramService::Impl
     String snapshotWithFooter()
     {
         String text;
+        String lead;
         uint32_t age = 0;
         lockTake();
         text = summarySnapshot;
+        lead = summaryLead;
         age = snapshotMs ? (millis() - snapshotMs) / 1000 : 0;
         lockGive();
-        return footerFor(text, age);
+        return footerFor(text, age, lead);
     }
 
     // The footer on a snapshot the caller has already read. Takes no lock itself (alertLogText does), so a caller
     // holding the lock must release it first - doing otherwise deadlocks the whole endpoint.
-    String footerFor(String text, uint32_t age)
+    String footerFor(String text, uint32_t age, const String &lead)
     {
         if (text.length() == 0)
         {
@@ -1103,9 +1106,16 @@ struct TelegramService::Impl
             text += "\n\xF0\x9F\x86\x95 New version " + offered + " available"; // 🆕
         }
         text += alertLogText(); // last of all, after Updated / Version
+        // Safety net, and it has already earned its keep: gridText() used to return "<b>off</b>", which nests an
+        // entity inside the block and makes Telegram refuse the whole message - during an outage, of all times.
+        text.replace("<b>", "");
+        text.replace("</b>", "");
+        text.replace("<i>", "");
+        text.replace("</i>", "");
         // Wrapped here and nowhere else: callers prepend alert headlines carrying <b>, and Telegram rejects a message
         // with entities nested inside a code block - the headline has to stay above it.
-        return "<code>" + text + "</code>";
+        const String block = "<code>" + text + "</code>";
+        return lead.length() ? lead + "\n" + block : block;
     }
 
     void deleteMessage(const String &chat, int64_t messageId)
@@ -3439,10 +3449,12 @@ struct TelegramService::Impl
         String alerts;
         bool gridOff = false;
         int batteryPct = -1;
+        String lead; // the plain line above the block - this is what the Telegram chat list shows as the preview
         float loadW = 0;
         if (!inverterConnected)
         {
-            text += "\xE2\x9A\xA0\xEF\xB8\x8F Inverter not connected\n"; // ⚠️
+            text += "\xE2\x9A\xA0\xEF\xB8\x8F Inverter not connected\n";
+            lead = "\xE2\x9A\xA0\xEF\xB8\x8F Inverter not connected"; // ⚠️
         }
         else
         {
@@ -3483,6 +3495,13 @@ struct TelegramService::Impl
             const String fault = filterAlerts(readText(DESCR_Fault_Code), solarConnected, onBattery);
             alerts = (warning.length() && fault.length()) ? warning + "; " + fault : warning + fault;
             gridOff = gridIsOff();
+            // Chat-list preview: mode first, then the block's own icons doing duty as labels, so nothing needs
+            // spelling out and the line stays short enough to survive the list's truncation.
+            lead = (mode.length() ? mode : String("?"));
+            lead += " \xF0\x9F\x8F\xA0" + (gridOff ? String("off") : num(DESCR_AC_In_Voltage, 1, "V")); // 🏠
+            lead += " \xF0\x9F\x94\x8B" + percent;                                                      // 🔋
+            lead += " \xF0\x9F\x94\x8C" + num(DESCR_AC_Out_Percent, 0, "%");                            // 🔌
+            lead += " \xF0\x9F\x8C\xA1" + num(DESCR_Inverter_Bus_Temperature, 0, "\xC2\xB0");           // 🌡
             readNumber(DESCR_AC_Out_Watt, loadW);
             if (warning.length() || fault.length())
             {
@@ -3492,11 +3511,15 @@ struct TelegramService::Impl
                 text += "\n";
             }
         }
+        lead += " \xE2\x8F\xB3" + uptimeText();         // ⏳
+        lead += " \xF0\x9F\x92\xBE" + runningVersion(); // 💾
+
         text += String("\xF0\x9F\x93\xB6 ") + padLabel("WiFi") + (rssi >= -70 ? "OK" : "Low signal") + "\n"; // 📶, -70 dBm boundary
         text += "\xE2\x8F\xB3 " + padLabel("Up") + uptimeText(); // ⏳
 
         lockTake();
         summarySnapshot = text;
+        summaryLead = lead;
         snapshotMs = millis();
         lockGive();
 
@@ -3692,6 +3715,7 @@ String TelegramService::statusJson() const
     else
     {
         String snap;
+        String lead;
         uint32_t snapAge = 0;
         _impl->lockTake();
         doc["enabled"] = _impl->enabled;
@@ -3704,10 +3728,11 @@ String TelegramService::statusJson() const
         doc["lastSummaryAgo"] = _impl->lastSummaryMs ? static_cast<long>((millis() - _impl->lastSummaryMs) / 1000) : -1;
         doc["dashboardUrl"] = _impl->dashboardUrl;
         snap = _impl->summarySnapshot;
+        lead = _impl->summaryLead;
         snapAge = _impl->snapshotMs ? (millis() - _impl->snapshotMs) / 1000 : 0;
         _impl->lockGive();
         // Built after the lock is released: footerFor() -> alertLogText() takes it again.
-        doc["summaryPreview"] = _impl->footerFor(snap, snapAge);
+        doc["summaryPreview"] = _impl->footerFor(snap, snapAge, lead);
     }
     String json;
     serializeJson(doc, json);
