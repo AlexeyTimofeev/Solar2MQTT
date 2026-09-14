@@ -98,9 +98,10 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       <div class="chart" style="height:170px"><canvas id="cB" role="img" aria-label="Battery percent and average load per 15 minutes as percent of the inverter rating, bars coloured by grid state"></canvas></div>
       <div class="sm" style="margin-top:6px;text-align:center">Load bars: <span style="color:#6ee7a6">grid on</span> · <span style="color:var(--warn)">partly off</span> · <span style="color:#ff8a78">grid off</span></div>
     </div>
+    <div class="kv" id="todayRow" style="margin-top:8px"><span>Today</span><span id="today"></span></div>
   </div>
   <details id="alertPanel" class="pn hidden">
-    <summary>🔔 Last alerts</summary>
+    <summary>🔔 Alerts</summary>
     <div id="alertList"></div>
   </details>
 
@@ -166,12 +167,15 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
     <div class="sm" style="margin-top:10px;text-align:center">Each button sends a short command to the bot (removed from the chat right away); the summary then confirms it.</div>
   </details>
 
-  <div class="pn">
-    <div class="kv" id="todayRow"><span>Today</span><span id="today"></span></div>
-    <div class="kv"><span>Inverter</span><span id="temp"></span></div>
-    <div class="kv hidden" id="solarRow"><span>Solar</span><span id="solar"></span></div>
-    <div class="kv"><span>Board</span><span id="board"></span></div>
-  </div>
+  <details id="infoPanel" class="pn">
+    <summary>ℹ️ Info</summary>
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" aria-selected="true" data-tab="infoBoard">🔌 Board</button>
+      <button type="button" role="tab" aria-selected="false" data-tab="infoInv" id="infoInvBtn">⚡ Inverter</button>
+    </div>
+    <div role="tabpanel" id="infoBoard"></div>
+    <div role="tabpanel" id="infoInv" hidden></div>
+  </details>
 
   <p class="sm" style="text-align:center;margin-top:14px">Data from the latest summary. Close and tap 📊 Dashboard again for newer values.</p>
 </main>
@@ -181,6 +185,20 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
   if (tg) { try { tg.ready(); tg.expand(); tg.setHeaderColor('#08131d'); tg.setBackgroundColor('#08131d'); } catch (e) {} }
   var q = new URLSearchParams(location.hash.slice(1));
   var $ = function (id) { return document.getElementById(id); };
+  var esc = function (s) { return String(s).replace(/[<>&]/g, function (c) { return { '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]; }); };
+  // Segmented tabs: exactly one panel at a time, scoped to one container so Settings and Info can each have a strip.
+  function wireTabs(panelId) {
+    var tabs = [].slice.call($(panelId).querySelectorAll('[role=tab]'));
+    tabs.forEach(function (t) {
+      t.addEventListener('click', function () {
+        tabs.forEach(function (o) {
+          var on = o === t;
+          o.setAttribute('aria-selected', on ? 'true' : 'false');
+          $(o.getAttribute('data-tab')).hidden = !on;
+        });
+      });
+    });
+  }
   if (!q.has('v')) { $('empty').classList.remove('hidden'); return; }
   $('app').classList.remove('hidden');
 
@@ -265,11 +283,10 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
   }
   if (gridOff) { $('grid').textContent = 'Off'; $('grid').style.color = '#ff8a78'; $('gridSub').textContent = os ? 'since ' + hhmm(os) : (outFor !== null ? 'for ' + dur(outFor) : ''); }
   else { $('grid').textContent = gv !== null ? Math.round(gv) + ' V' : '–'; $('gridSub').textContent = gf !== null ? gf.toFixed(1) + ' Hz' : ''; }
-  $('temp').textContent = tc !== null ? tc + ' °C · ' + (tc < 60 ? 'normal' : tc < 75 ? 'warm' : 'hot') : '–';
-  if (pv !== null) { $('solarRow').classList.remove('hidden'); $('solar').textContent = pv + ' W'; }
   // Alert log (al): six characters each - type, value in base36 (2), minutes ago in base36 (3), oldest first.
-  var alertName = { g: '🔴 Grid off', G: '🟢 Grid on', o: '🔴 Inverter offline', r: '💥 Unexpected restart',
-                    i: '✅ Inverter settings saved', I: '⚠️ Inverter change refused' };
+  // Three levels, like a log: 🔴 error, 🟡 warning, 🔵 info - the same ones alertIcon() uses in the summary.
+  var alertName = { g: '🔵 Grid off', G: '🔵 Grid on', o: '🔴 Inverter offline', r: '🔴 Unexpected restart',
+                    i: '🔵 Inverter settings saved', I: '🟡 Inverter change refused' };
   // Same wall-clock date as the summary: the link's own timestamp minus the alert's age, shifted by the board's offset.
   var alertMonths = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   var alertTz = num('tz');
@@ -282,9 +299,10 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
   for (var ai = 0; ai + 6 <= alertCode.length; ai += 6) {
     var aType = alertCode.charAt(ai);
     var aVal = parseInt(alertCode.substr(ai + 1, 2), 36), aMin = parseInt(alertCode.substr(ai + 3, 3), 36);
-    var aText = alertName[aType] || (aType === 'b' ? '🪫 Battery below ' + aVal + ' %'
-              : aType === 'l' ? '⚡ Load ' + (aVal / 10).toFixed(1) + ' kW'
-              : aType === 'p' ? '⚡ Grid ' + (aVal / 10).toFixed(1) + ' kW' : '');
+    var aText = alertName[aType] || (aType === 'W' ? '🟡 Wi-Fi low, -' + aVal + ' dBm'
+              : aType === 'b' ? '🟡 Battery below ' + aVal + ' %'
+              : aType === 'l' ? '🟡 Load ' + (aVal / 10).toFixed(1) + ' kW'
+              : aType === 'p' ? '🟡 Grid ' + (aVal / 10).toFixed(1) + ' kW' : '');
     if (aText) alertRows = '<div class="kv"><span>' + aText + '</span><span>' + alertWhen(aMin) + '</span></div>' + alertRows;
   }
   if (alertRows) { $('alertList').innerHTML = alertRows; $('alertPanel').classList.remove('hidden'); }
@@ -486,17 +504,7 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       if (ver === 3) showLearn();
       refresh();
     });
-    // Segmented tabs: exactly one section is shown at a time.
-    var tabs = [].slice.call($('setPanel').querySelectorAll('[role=tab]'));
-    tabs.forEach(function (t) {
-      t.addEventListener('click', function () {
-        tabs.forEach(function (o) {
-          var on = o === t;
-          o.setAttribute('aria-selected', on ? 'true' : 'false');
-          $(o.getAttribute('data-tab')).hidden = !on;
-        });
-      });
-    });
+    wireTabs('setPanel');
     $('setPanel').addEventListener('input', refresh); $('setPanel').addEventListener('change', refresh);
     if (ver === 3) showLearn();
     refresh();
@@ -571,7 +579,74 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
       $('todayRow').classList.add('hidden');
     }
   }
-  $('board').textContent = (q.get('fw') || '?') + ' · Wi-Fi ' + (q.get('rs') || '?') + ' dBm · up ' + dur(num('up') || 0);
+  // ℹ️ Info: every parameter the link carries, read-only. Values are escaped - the warning and BMS strings come
+  // from the inverter.
+  var kvRows = function (id, rows) {
+    var html = '';
+    rows.forEach(function (r) {
+      if (r[1] === null || r[1] === undefined || r[1] === '') return;
+      html += '<div class="kv"><span>' + esc(r[0]) + '</span><span>' + esc(r[1]) + '</span></div>';
+    });
+    $(id).innerHTML = html || '<div class="sm">No data.</div>';
+  };
+  var rsv = num('rs'), tzv = num('tz'), okN = num('ok'), naN = num('na'), whv = num('wh'), lcv = num('lc');
+  kvRows('infoBoard', [
+    ['Firmware', q.get('fw')],
+    ['Uptime', num('up') !== null ? dur(num('up')) : null],
+    ['Wi-Fi signal', rsv !== null ? rsv + ' dBm · ' + (rsv >= -70 ? 'OK' : 'low') : null],
+    ['Timezone', tzv !== null ? 'UTC' + (tzv >= 0 ? '+' : '') + tzv : null],
+    ['Inverter link', okN !== null ? okN + ' ok · ' + (naN || 0) + ' no answer' : null],
+    ['Battery capacity', whv ? (whv / 1000).toFixed(1) + ' kWh' : null],
+    ['Cut-off level', num('wr') !== null ? num('wr') + ' %' : null],
+    ['Battery full at', num('bf') !== null ? num('bf') + ' %' : null],
+    ['Own use', num('wi') !== null ? num('wi') + ' W' : null],
+    ['Efficiency', num('we') !== null ? num('we') + ' %' : null],
+    ['Learned on battery', num('lh') !== null ? num('lh') + ' h' : null],
+    ['Learned capacity', lcv ? (lcv / 1000).toFixed(1) + ' kWh' : null],
+    ['Learned efficiency', num('le') !== null ? num('le') + ' %' : null],
+    ['Learned own use', num('li') !== null ? num('li') + ' W' : null],
+    ['Bot', q.get('bu') ? '@' + q.get('bu') : null]
+  ]);
+  if (connected) {
+    var ixf = num('ix'), igv = q.get('ig'), onOff = function (bit) { return ixf === null ? null : (ixf & bit ? 'on' : 'off'); };
+    kvRows('infoInv', [
+      ['Mode', mode],
+      ['Battery', b !== null ? Math.round(b) + ' %' : null],
+      ['Battery voltage', bv !== null ? bv.toFixed(1) + ' V' : null],
+      ['Charge current', bc ? bc + ' A' : null],
+      ['Discharge current', bd ? bd + ' A' : null],
+      ['Charging stage', { 1: 'Bulk', 2: 'Absorb', 3: 'Float' }[num('cs')]],
+      ['Load', l !== null ? l + ' W' : null],
+      ['Load of rating', lp !== null ? lp + ' %' : null],
+      ['Apparent load', va !== null ? va + ' VA' : null],
+      ['Grid voltage', gv !== null ? gv.toFixed(1) + ' V' : null],
+      ['Grid frequency', gf !== null ? gf.toFixed(1) + ' Hz' : null],
+      ['Output voltage', ov !== null ? ov.toFixed(1) + ' V' : null],
+      ['Output frequency', of !== null ? of.toFixed(1) + ' Hz' : null],
+      ['Temperature', tc !== null ? tc + ' °C · ' + (tc < 60 ? 'normal' : tc < 75 ? 'warm' : 'hot') : null],
+      ['Solar', pv !== null ? pv + ' W' : null],
+      ['Warning', q.get('w')],
+      ['Rating', lr !== null ? lr + ' W' : null],
+      ['Output priority', q.get('op')],
+      ['Charger priority', q.get('cp')],
+      ['Grid charging', num('iu') !== null ? num('iu') + ' A' : null],
+      ['Total charging', num('it') !== null ? num('it') + ' A' : null],
+      ['Grid input range', igv === null ? null : (igv === '1' ? 'UPS (fast)' : 'Appliance (wide)')],
+      ['Charge up to', num('vb', 10) !== null ? num('vb', 10).toFixed(1) + ' V' : null],
+      ['Then hold at', num('vf', 10) !== null ? num('vf', 10).toFixed(1) + ' V' : null],
+      ['Back to grid below', num('sg') !== null ? num('sg') + ' %' : null],
+      ['Back to battery above', num('sd') !== null ? num('sd') + ' %' : null],
+      ['Battery cut-off', num('sc') !== null ? num('sc') + ' %' : null],
+      ['Buzzer', onOff(1)],
+      ['Overload bypass', onOff(2)],
+      ['Restart after overload', onOff(4)],
+      ['Restart after overheating', onOff(8)],
+      ['BMS', q.get('bms')]
+    ]);
+  } else {
+    $('infoInvBtn').classList.add('hidden');
+  }
+  wireTabs('infoPanel');
 })();
 </script>
 </body>

@@ -156,14 +156,16 @@ as well as a firmware update - unlike the 24 h history, which churns every 15 mi
 
 Everything funnels through `requestLoud(headline, type, value)`, which calls `noteAlert()`: `g` grid off, `G` grid back,
 `l` load above the threshold on battery, `p` grid power above it, `b` battery below a level, `o` inverter offline,
-`r` unexpected restart (logged once per boot in `sendCrashReport`, not once per delivery attempt), and `i` / `I` for an
-inverter batch that was applied or had something refused. `noteAlert` copies the log under the lock and writes flash
+`r` unexpected restart (logged once per boot in `sendCrashReport`, not once per delivery attempt), `W` Wi-Fi signal
+low, and `i` / `I` for an inverter batch that was applied or had something refused. `noteAlert` copies the log under the lock and writes flash
 outside it, because the restart alert is raised on the bot task and everything else on the main thread.
 
 * **Summary**: the last five, newest first, at the very end - after Updated and Version - as a blank line, then
-  `⚠️ Last alerts` (no colon), then one `14 Sep 11:15 🟢 Grid on` line each: the dated column, one space, the type's
-  icon, then the text - no bullets. The icons are exactly the Dashboard's (`alertName` in the page, `alertIcon()` in
-  the firmware), so one alert reads the same on both surfaces. Built in `footerFor(text, age, lead)`,
+  `⚠️ Last alerts` (no colon), then one `14 Sep 11:15 🔵 Grid on` line each: the dated column, one space, the
+  severity icon, then the text - no bullets. Three levels, like a log: 🔴 error (unexpected restart, inverter
+  offline), 🟡 warning (load or grid draw above the threshold, battery low, Wi-Fi low, inverter change refused),
+  🔵 info (grid on/off, settings saved). The Dashboard shows the same three (`alertName` in the page, `alertIcon()`
+  in the firmware), so one alert reads the same on both surfaces. Built in `footerFor(text, age, lead)`,
   which takes no lock of its own; `snapshotWithFooter()` reads the snapshot under the lock and releases it before
   calling it. **Never call `footerFor()` or `alertLogText()` while holding the lock**: doing exactly that in the
   `/api/telegram/status` handler deadlocked the endpoint outright, and the task watchdog then reset the board twice -
@@ -180,7 +182,13 @@ outside it, because the restart alert is raised on the bot task and everything e
   catch-all, so older cached pages still parse a 9-field code and keep saving 8.
 * Only a genuine fault raises the restart alert: `DiagLog::isUnexpected()` covers panic, the watchdogs and brownout,
   so an ordinary OTA restart (`ESP_RST_SW`) never adds one.
-* **Dashboard**: a foldable "Last alerts" panel between the 24 h chart and Settings, listing all 25 newest-first, hidden
+* **Wi-Fi low** (`W`, built in, no setting): `checkWifiSignal()` mirrors the grid debounce. The signal must stay below
+  `kWifiLowDbm` (-70, the same boundary the summary calls "Low signal") for `kWifiConfirmMs` (60 s - far longer than
+  the grid's 10 s, because signal strength fluctuates constantly), and it re-arms only once it recovers past
+  `kWifiOkDbm` (-65). That 5 dB of hysteresis is the point: without it a link sitting at the boundary would alert over
+  and over. There is deliberately no "recovered" alert. The value carried is the positive dBm, so `alertText()` prints
+  it back as "Wi-Fi low, -72 dBm".
+* **Dashboard**: a foldable "Alerts" panel between the 24 h chart and Settings, listing all 25 newest-first, hidden
   when there are none. Link key `al`: six characters per alert - type, value in base36 (2), minutes ago in base36 (3),
   oldest first, so 25 alerts cost 150 characters. The page must use `Math.floor` for the age exactly as the firmware
   uses integer division, or the same alert reads differently in the two places.
@@ -276,25 +284,27 @@ One `<code>` block, so the values line up in a column: `<emoji> <label padded to
 `<code>` and not `<pre>`: Telegram offers no plain "monospace" formatting - only the two code entities - and current
 clients dress a `<pre>` block as a code panel with a bar down the left and a Copy button on top, while `<code>` gives
 the same fixed-width columns with none of that chrome.
-Lines: ⚙️ Mode, 🔋 Battery as a moon glyph plus (percent), ☀️ Solar (hidden when solar is switched off), 🔌 Load as a
-moon glyph plus (percent), 🏠 Grid, 🌡 Temp, ⚠️ Warning / Fault (full width, not a label/value pair), 📶 WiFi (OK at
--70 dBm or better, otherwise Low signal), ⏳ Up (uptime), 🕒 Updated, 💾 Version. The device-name header was removed
-on request.
+Lines, in order: ⚙️ Mode, 🏠 Grid, 🔋 Battery (the percentage alone), ☀️ Solar (hidden when solar is switched off),
+🔌 Load (the percentage alone), 🌡 Temp, ⚠️ Warning / Fault (full width, not a label/value pair), 📶 WiFi (OK at
+-70 dBm or better, otherwise Low signal), ⏳ Up (uptime), 🕒 Updated, 💾 Version. Grid sits directly under Mode so the
+block matches the lead's order. The moon glyphs are gone - the number already said what they said - and `bar10()` went
+with them. The device-name header was removed on request.
 
-**Lead line**: one plain line above the block - `Line 🏠223.7V 🔋95% 🔌22% 🌡51° 📶OK ⏳8m 💾2.1.23` - built in
+**Lead line**: one plain line above the block - `⚙️Line 🏠223.7V 🔋95% 🔌22% 🌡51° 📶OK ⏳8m 🕒1s 💾2.1.23` - built in
 `buildSnapshot()` as `summaryLead` and stored under the same lock as the snapshot itself. It exists for the Telegram
 *chat list*, which previews a message with formatting stripped and truncates it around 40 characters, so the fields are
 ordered by what is worth seeing there and the block's own icons stand in as labels to keep it short. It is deliberately
 redundant with the block below, and deliberately *outside* the `<code>` wrap so it cannot disturb the columns, with a
 blank line between the two. Both
 `footerFor()` call sites read it under the lock and pass it in: `snapshotWithFooter()` and the `/api/telegram/status`
-handler.
+handler - which is also where 🕒 Updated and 💾 Version join it, because the age is only known when the snapshot is
+read, not when it is composed.
 
 **Nothing inside the block may carry `<b>` or `<i>`**: Telegram renders a code block verbatim and rejects a message whose
 entities are nested inside it. So the wrap happens in exactly one place - the `return` of `footerFor()` - and the alert
 headlines, which all carry `<b>`, are prepended *above* it by the single composition site (`body = headline + "\n" +
 body`). The padding is ASCII-only, so a label is always 11 characters. It was 11 to put the values on the same column
-as the alert text; the alert rows have since taken a per-type icon and a single space, so the two blocks no longer
+as the alert text; the alert rows have since taken a severity icon and a single space, so the two blocks no longer
 share a column - 11 stayed because it reads well on its own. The leading emoji are not ASCII (⚙️ is
 U+2699 plus a variation selector, 🔋 is one code point) and clients render them at slightly different widths, so a
 column can still look a hair uneven on some phones - a known trade-off of keeping the icons.
@@ -309,7 +319,7 @@ helper's *return value*. Audit what flows into the block by data flow, not by se
 ## High-load summary
 
 Removed in 2.1.17 (the `telegram.loadAlert` setting is gone): the power alert covers it, with the house load above the
-threshold while the inverter runs on battery. Battery and Load show one moon-phase glyph for the level (🌑 🌘 🌗 🌖 🌕 for about 0, 25, 50, 75, 100 %, nearest quarter), no colour cue. The Grid line shows voltage only, and WiFi, uptime and Updated are separate lines.
+threshold while the inverter runs on battery. Battery and Load show the percentage alone - no glyph, no colour cue. The Grid line shows voltage only, and WiFi, uptime and Updated are separate lines.
 
 ## Multiple chats
 
@@ -456,8 +466,8 @@ The summary's 📊 Dashboard button opens `dashboard/index.html` (repository roo
 battery tile reads "53.5 V · Float · ⬆ 7 A": voltage, then the charging stage from link key `cs` — 1 bulk, 2 absorb,
 3 float, left out while nothing is charging, from `Inverter_Charge_State` — then the charge or discharge current), the
 power flow panel (with the battery discharge time while the grid is off), warnings, a 24 h chart of battery % and
-load % (bars coloured by grid state: on / partly off / off), today's usage and outages, inverter temperature and
-board health.
+load % (bars coloured by grid state: on / partly off / off) with today's usage and outages under it, and an
+ℹ️ Info panel carrying every parameter the link holds.
 
 * ⚙️ Settings panel (inside Telegram, private chat only): grid on/off, power alert with its threshold, battery alerts,
   solar panels connected, battery capacity, cut-off, learn from outages (with what has been
@@ -468,10 +478,22 @@ board health.
   8 battery, 32 solar, 64 learn, 128 forget once), the learned values (`lh` hours, `lc` Wh, `le` %, `li` W), the
   inverter's settings (`io`, `ic`, `iu`, allowed amps `il`) and the bot's username (`bu`). Save may append
   `_<output>_<charger>_<amps>` (each a number or `x` for unchanged). `s1` and `s2` codes from older pages are still
-  accepted, and the page answers older firmware in its own format. The battery ring, the summary's moon and the T-Display battery bar are complete at the "battery full" level
+  accepted, and the page answers older firmware in its own format. The battery ring and the T-Display battery bar are complete at the "battery full" level
   (`device.batteryFullPct`, default 100 %, link key `bf`), the page always saves 100 % (the float voltage decides how full the battery gets). Save opens `t.me/<bot>?start=<code>`, so
   Telegram sends `/start <code>` from the user's chat; the board validates and applies it (only from a paired chat),
   deletes that message and edits the summary a few seconds later so the Dashboard link carries the new values.
+
+* ℹ️ Info panel (after Settings, foldable, read-only, with the same segmented tabs): 🔌 Board and ⚡ Inverter, listing
+  every parameter the link already carries - it needs **no new link keys**, so it adds nothing to a URL that degrades
+  by halving history and alerts when Telegram rejects it. Board: `fw`, `up`, `rs`, `tz`, `ok`/`na`, `wh`, `wr`, `bf`,
+  `wi`, `we`, the learned set (`lh`, `lc`, `le`, `li`) and `bu`. Inverter: `m`, `b`, `bv`, `bc`, `bd`, `cs`, `l`,
+  `lp`, `va`, `gv`, `gf`, `ov`, `of`, `tc`, `pv`, `w`, `lr`, `op`, `cp`, `iu`, `it`, `ig`, `vb`, `vf`, `sg`, `sd`,
+  `sc`, the `ix` flags and `bms`. Rows with no value are skipped, and the Inverter tab hides itself when the inverter
+  did not answer. Values are escaped: `w` and `bms` come from the inverter. It replaced the old four-row panel -
+  Today moved into the history card it is computed from, temperature and solar became Inverter rows. Beware the
+  falsy trap: `ix=0` is a real value (all four flags off) and must render as "off", not vanish.
+  `wireTabs(panelId)` is shared with Settings and scoped to one container, so the two tab strips never move each
+  other's panels - verified by clicking both.
 
 * Power flow panel: Grid → Home, Grid → Battery (charging) and Battery → Home (discharging) with moving dots, faster
   for more power. The grid circle's ring fills against the inverter's rated power (AC_Out_Rating_Active_Power, 6 kW
@@ -484,7 +506,7 @@ board health.
   memory, so it survives a crash or a firmware update but not a power cut. The board's clock comes from NTP (UTC); the
   page shows times and "today" in the phone's timezone.
 * Time left on battery (dashboard panel, and at the end of the summary's Battery line while on battery, e.g.
-  "🔋 Battery: 🌖 (69%) ≈ 10h 18m") =
+  "🔋 Battery    69% ≈ 10h 18m") =
   capacity × (battery % − reserve) ÷ (load ÷ efficiency + own consumption), with the learned values once known (see
   "Learned battery model"), otherwise from the ⚙️ Settings panel: Battery
   capacity [Wh] (hidden while 0), Battery reserve [%] (the inverter's low-battery cut-off, default 10), Inverter own
