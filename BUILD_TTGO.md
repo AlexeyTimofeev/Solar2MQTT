@@ -303,18 +303,18 @@ the same fixed-width columns with none of that chrome.
 Lines, in order: ⚙️ Mode, 🏠 Grid, 🔋 Battery (the percentage alone), ⏱️ Estimated (how long the battery would carry
 the present load, skipped when capacity or the percentage is unknown), ☀️ Solar (hidden when solar is switched off),
 🔌 Load (the percentage alone), 🌡 Temp, ⚠️ Warning / Fault (full width, not a label/value pair), 📶 WiFi (OK at
--70 dBm or better, otherwise Low signal), ⏳ Up (uptime), 🕒 Updated, 💾 Version. Grid sits directly under Mode so the
+-70 dBm or better, otherwise Low signal), 🕒 Updated, ⏳ Uptime, 💾 Version. Grid sits directly under Mode so the
 block matches the lead's order. The moon glyphs are gone - the number already said what they said - and `bar10()` went
 with them. The device-name header was removed on request.
 
-**Lead line**: one plain line above the block - `⚙️Line 🏠223.7V 🔋95% ⏱️13h 15m 🔌22% 🌡51° 📶OK ⏳8m 🕒1s 💾2.1.23` - built in
+**Lead line**: one plain line above the block - `⚙️Line 🏠223.7V 🔋95% ⏱️13h 15m 🔌22% 🌡51° 📶OK 🕒1s ⏳8m 💾2.1.23` - built in
 `buildSnapshot()` as `summaryLead` and stored under the same lock as the snapshot itself. It exists for the Telegram
 *chat list*, which previews a message with formatting stripped and truncates it around 40 characters, so the fields are
 ordered by what is worth seeing there and the block's own icons stand in as labels to keep it short. It is deliberately
 redundant with the block below, and deliberately *outside* the `<code>` wrap so it cannot disturb the columns, with a
 blank line between the two. Both
 `footerFor()` call sites read it under the lock and pass it in: `snapshotWithFooter()` and the `/api/telegram/status`
-handler - which is also where 🕒 Updated and 💾 Version join it, because the age is only known when the snapshot is
+handler - which is also where 🕒 Updated, ⏳ Uptime and 💾 Version join it, because the age is only known when the snapshot is
 read, not when it is composed.
 
 **Nothing inside the block may carry `<b>` or `<i>`**: Telegram renders a code block verbatim and rejects a message whose
