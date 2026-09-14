@@ -271,18 +271,22 @@ due, so the interval stays close to 15 seconds.
 
 ## Summary format
 
-One `<pre>` block, so the values line up in a column: `<emoji> <label padded to 10 by padLabel()><value>`, no colons.
+One `<code>` block, so the values line up in a column: `<emoji> <label padded to 11 by padLabel()><value>`, no colons.
+`<code>` and not `<pre>`: Telegram offers no plain "monospace" formatting - only the two code entities - and current
+clients dress a `<pre>` block as a code panel with a bar down the left and a Copy button on top, while `<code>` gives
+the same fixed-width columns with none of that chrome.
 Lines: ⚙️ Mode, 🔋 Battery as a moon glyph plus (percent), ☀️ Solar (hidden when solar is switched off), 🔌 Load as a
 moon glyph plus (percent), 🏠 Grid, 🌡 Temp, ⚠️ Warning / Fault (full width, not a label/value pair), 📶 WiFi (OK at
 -70 dBm or better, otherwise Low signal), ⏳ Up (uptime), 🕒 Updated, 💾 Version. The device-name header was removed
 on request.
 
-**Nothing inside the block may carry `<b>` or `<i>`**: Telegram renders a pre block verbatim and rejects a message whose
+**Nothing inside the block may carry `<b>` or `<i>`**: Telegram renders a code block verbatim and rejects a message whose
 entities are nested inside it. So the wrap happens in exactly one place - the `return` of `footerFor()` - and the alert
 headlines, which all carry `<b>`, are prepended *above* it by the single composition site (`body = headline + "\n" +
-body`). The padding is ASCII-only, so a label is always 10 characters; the leading emoji are not (⚙️ is U+2699 plus a
-variation selector, 🔋 is one code point) and clients render them at slightly different widths, so a column can still
-look a hair uneven on some phones - a known trade-off of keeping the icons.
+body`). The padding is ASCII-only, so a label is always 11 characters - which is what lands the values on column 14,
+the same column the alert text starts on (a 12-character date plus two spaces). The leading emoji are not ASCII (⚙️ is
+U+2699 plus a variation selector, 🔋 is one code point) and clients render them at slightly different widths, so a
+column can still look a hair uneven on some phones - a known trade-off of keeping the icons.
 
 ## High-load summary
 

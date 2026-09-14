@@ -332,12 +332,13 @@ String bar10(int percent, bool /*highIsBad*/)
     return String(kPhases[(percent * 4 + 50) / 100]);
 }
 
-// The summary is one monospace block, so values line up in a column: label padded to 10 characters.
-// Nothing inside that block may carry <b> / <i> - Telegram renders a pre block verbatim and rejects nested entities.
+// The summary is one monospace block, so values line up in a column: label padded to 11 characters, which puts the
+// values on the same column as the alert rows below (12-character date plus two spaces).
+// Nothing inside that block may carry <b> / <i> - Telegram renders a code block verbatim and rejects nested entities.
 String padLabel(const char *name)
 {
     String s(name);
-    while (s.length() < 10)
+    while (s.length() < 11)
     {
         s += ' ';
     }
@@ -1103,8 +1104,8 @@ struct TelegramService::Impl
         }
         text += alertLogText(); // last of all, after Updated / Version
         // Wrapped here and nowhere else: callers prepend alert headlines carrying <b>, and Telegram rejects a message
-        // with entities nested inside a pre block - the headline has to stay above it.
-        return "<pre>" + text + "</pre>";
+        // with entities nested inside a code block - the headline has to stay above it.
+        return "<code>" + text + "</code>";
     }
 
     void deleteMessage(const String &chat, int64_t messageId)
