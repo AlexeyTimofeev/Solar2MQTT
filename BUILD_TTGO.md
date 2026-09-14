@@ -160,9 +160,10 @@ Everything funnels through `requestLoud(headline, type, value)`, which calls `no
 inverter batch that was applied or had something refused. `noteAlert` copies the log under the lock and writes flash
 outside it, because the restart alert is raised on the bot task and everything else on the main thread.
 
-* **Summary**: the last five, newest first, at the very end - after Updated and Version - as `⚠️ Last alerts:`
-  followed by one `* 3m ago Grid on` line each: no blank line, no per-line icons, the age first. Dated by age, not by a
-  clock time, because the board only knows UTC and cannot know the phone's timezone. Built in `footerFor(text, age)`,
+* **Summary**: the last five, newest first, at the very end - after Updated and Version - as a blank line, then
+  `⚠️ Last alerts` (no colon), then one `14 Sep 11:15 🟢 Grid on` line each: the dated column, one space, the type's
+  icon, then the text - no bullets. The icons are exactly the Dashboard's (`alertName` in the page, `alertIcon()` in
+  the firmware), so one alert reads the same on both surfaces. Built in `footerFor(text, age, lead)`,
   which takes no lock of its own; `snapshotWithFooter()` reads the snapshot under the lock and releases it before
   calling it. **Never call `footerFor()` or `alertLogText()` while holding the lock**: doing exactly that in the
   `/api/telegram/status` handler deadlocked the endpoint outright, and the task watchdog then reset the board twice -
@@ -271,10 +272,39 @@ due, so the interval stays close to 15 seconds.
 
 ## Summary format
 
-Lines: ⚙️ Mode, 🔋 Battery as a four-segment bar plus (percent) only (green ≥50 %, yellow ≥25 %, red below), ☀️ Solar
-(hidden when solar is switched off), 🔌 Load as a four-segment bar plus (percent) only (green <50 %, yellow <80 %, red
-above), 🏠 Grid, 🌡 Temp, ⚠️ alerts,
-📶 WiFi (OK at -70 dBm or better, otherwise Low signal), ⏳ Up (uptime), 🕒 Updated, each on its own line with a colon. The device-name header was removed on request.
+One `<code>` block, so the values line up in a column: `<emoji> <label padded to 11 by padLabel()><value>`, no colons.
+`<code>` and not `<pre>`: Telegram offers no plain "monospace" formatting - only the two code entities - and current
+clients dress a `<pre>` block as a code panel with a bar down the left and a Copy button on top, while `<code>` gives
+the same fixed-width columns with none of that chrome.
+Lines: ⚙️ Mode, 🔋 Battery as a moon glyph plus (percent), ☀️ Solar (hidden when solar is switched off), 🔌 Load as a
+moon glyph plus (percent), 🏠 Grid, 🌡 Temp, ⚠️ Warning / Fault (full width, not a label/value pair), 📶 WiFi (OK at
+-70 dBm or better, otherwise Low signal), ⏳ Up (uptime), 🕒 Updated, 💾 Version. The device-name header was removed
+on request.
+
+**Lead line**: one plain line above the block - `Line 🏠223.7V 🔋95% 🔌22% 🌡51° 📶OK ⏳8m 💾2.1.23` - built in
+`buildSnapshot()` as `summaryLead` and stored under the same lock as the snapshot itself. It exists for the Telegram
+*chat list*, which previews a message with formatting stripped and truncates it around 40 characters, so the fields are
+ordered by what is worth seeing there and the block's own icons stand in as labels to keep it short. It is deliberately
+redundant with the block below, and deliberately *outside* the `<code>` wrap so it cannot disturb the columns, with a
+blank line between the two. Both
+`footerFor()` call sites read it under the lock and pass it in: `snapshotWithFooter()` and the `/api/telegram/status`
+handler.
+
+**Nothing inside the block may carry `<b>` or `<i>`**: Telegram renders a code block verbatim and rejects a message whose
+entities are nested inside it. So the wrap happens in exactly one place - the `return` of `footerFor()` - and the alert
+headlines, which all carry `<b>`, are prepended *above* it by the single composition site (`body = headline + "\n" +
+body`). The padding is ASCII-only, so a label is always 11 characters. It was 11 to put the values on the same column
+as the alert text; the alert rows have since taken a per-type icon and a single space, so the two blocks no longer
+share a column - 11 stayed because it reads well on its own. The leading emoji are not ASCII (⚙️ is
+U+2699 plus a variation selector, 🔋 is one code point) and clients render them at slightly different widths, so a
+column can still look a hair uneven on some phones - a known trade-off of keeping the icons.
+
+`gridText()` broke this rule from the moment the block was introduced: it returned `<b>off</b> for 5m`, which appears
+only while the grid is down - so the summary would have failed during an outage and at no other time. No release ever
+carried it (2.1.23 and earlier have no code block, where that bold `off` was correct); it lived in the branch builds
+ms1-ms3 and was fixed in ms4. `footerFor()` now strips `<b>` and `<i>` from the body before wrapping, as a net. The
+lesson is how it was missed: grepping `text += ...<b>` finds only markup written inline, and this arrived from a
+helper's *return value*. Audit what flows into the block by data flow, not by searching for a pattern.
 
 ## High-load summary
 

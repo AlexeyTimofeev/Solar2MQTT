@@ -332,6 +332,19 @@ String bar10(int percent, bool /*highIsBad*/)
     return String(kPhases[(percent * 4 + 50) / 100]);
 }
 
+// The summary is one monospace block, so values line up in a column: label padded to 11 characters, which puts the
+// values on the same column as the alert rows below (12-character date plus two spaces).
+// Nothing inside that block may carry <b> / <i> - Telegram renders a code block verbatim and rejects nested entities.
+String padLabel(const char *name)
+{
+    String s(name);
+    while (s.length() < 11)
+    {
+        s += ' ';
+    }
+    return s;
+}
+
 String uptimeText()
 {
     uint32_t s = millis() / 1000;
@@ -388,6 +401,7 @@ struct TelegramService::Impl
     uint32_t lastCrashTryMs = 0;
 
     String summarySnapshot;
+    String summaryLead;
     uint32_t snapshotMs = 0;
     uint32_t lastSnapshotBuildMs = 0;
     bool lastInverterConnected = false;
@@ -521,7 +535,7 @@ struct TelegramService::Impl
         {
             seconds = (millis() - outageStartMs) / 1000;
         }
-        return seconds ? "<b>off</b> for " + DiagLog::formatDuration(seconds) : String("<b>off</b>");
+        return seconds ? "off for " + DiagLog::formatDuration(seconds) : String("off");
     }
 
     // Main thread: a summary with sound and a "Grid off" / "Grid back" headline once the grid has changed and the new
@@ -1066,31 +1080,42 @@ struct TelegramService::Impl
     String snapshotWithFooter()
     {
         String text;
+        String lead;
         uint32_t age = 0;
         lockTake();
         text = summarySnapshot;
+        lead = summaryLead;
         age = snapshotMs ? (millis() - snapshotMs) / 1000 : 0;
         lockGive();
-        return footerFor(text, age);
+        return footerFor(text, age, lead);
     }
 
     // The footer on a snapshot the caller has already read. Takes no lock itself (alertLogText does), so a caller
     // holding the lock must release it first - doing otherwise deadlocks the whole endpoint.
-    String footerFor(String text, uint32_t age)
+    String footerFor(String text, uint32_t age, const String &lead)
     {
         if (text.length() == 0)
         {
             text = "\xE2\x9A\xA0\xEF\xB8\x8F No inverter data yet"; // ⚠️
         }
-        text += "\n<i>\xF0\x9F\x95\x92 Updated: " + String(age) + "s ago</i>"; // 🕒
-        text += "\n<i>\xF0\x9F\x92\xBE Version: " + runningVersion() + "</i>"; // 💾
+        text += "\n\xF0\x9F\x95\x92 " + padLabel("Updated") + String(age) + "s ago"; // 🕒
+        text += "\n\xF0\x9F\x92\xBE " + padLabel("Version") + runningVersion(); // 💾
         const String offered = newVersionOffered();
         if (offered.length())
         {
-            text += "\n\xF0\x9F\x86\x95 <b>New version " + offered + " available</b>"; // 🆕
+            text += "\n\xF0\x9F\x86\x95 New version " + offered + " available"; // 🆕
         }
         text += alertLogText(); // last of all, after Updated / Version
-        return text;
+        // Safety net, and it has already earned its keep: gridText() used to return "<b>off</b>", which nests an
+        // entity inside the block and makes Telegram refuse the whole message - during an outage, of all times.
+        text.replace("<b>", "");
+        text.replace("</b>", "");
+        text.replace("<i>", "");
+        text.replace("</i>", "");
+        // Wrapped here and nowhere else: callers prepend alert headlines carrying <b>, and Telegram rejects a message
+        // with entities nested inside a code block - the headline has to stay above it.
+        const String block = "<code>" + text + "</code>";
+        return lead.length() ? lead + "\n\n" + block : block;
     }
 
     void deleteMessage(const String &chat, int64_t messageId)
@@ -3045,6 +3070,25 @@ struct TelegramService::Impl
         p.end();
     }
 
+    // The Dashboard's alert panel already labels each type with an icon (alertName in the page); the summary uses the
+    // same ones so a single alert looks identical on both surfaces.
+    static String alertIcon(uint8_t type)
+    {
+        switch (type)
+        {
+        case 'g': return "\xF0\x9F\x94\xB4";         // 🔴
+        case 'G': return "\xF0\x9F\x9F\xA2";         // 🟢
+        case 'l':
+        case 'p': return "\xE2\x9A\xA1";             // ⚡
+        case 'b': return "\xF0\x9F\xAA\xAB";         // 🪫
+        case 'o': return "\xF0\x9F\x94\xB4";         // 🔴
+        case 'r': return "\xF0\x9F\x92\xA5";         // 💥
+        case 'i': return "\xE2\x9C\x85";             // ✅
+        case 'I': return "\xE2\x9A\xA0\xEF\xB8\x8F"; // ⚠️
+        default: return String();
+        }
+    }
+
     static String alertText(uint8_t type, uint16_t value)
     {
         switch (type)
@@ -3091,11 +3135,13 @@ struct TelegramService::Impl
         {
             return String();
         }
-        String t = "\n\xE2\x9A\xA0\xEF\xB8\x8F Last alerts:";
+        String t = "\n\n\xE2\x9A\xA0\xEF\xB8\x8F Last alerts";
         for (size_t i = 0; i < n; ++i)
         {
             const size_t k = (copy.head + kAlertLog - 1 - i) % kAlertLog;
-            t += "\n* " + alertWhen(copy.at[k]) + " " + alertText(copy.type[k], copy.value[k]);
+            const String icon = alertIcon(copy.type[k]);
+            t += "\n" + alertWhen(copy.at[k]) + " " + (icon.length() ? icon + " " : String()) +
+                 alertText(copy.type[k], copy.value[k]);
         }
         return t;
     }
@@ -3424,22 +3470,24 @@ struct TelegramService::Impl
         String alerts;
         bool gridOff = false;
         int batteryPct = -1;
+        String lead; // the plain line above the block - this is what the Telegram chat list shows as the preview
         float loadW = 0;
         if (!inverterConnected)
         {
-            text += "\xE2\x9A\xA0\xEF\xB8\x8F Inverter not connected\n"; // ⚠️
+            text += "\xE2\x9A\xA0\xEF\xB8\x8F Inverter not connected\n";
+            lead = "\xE2\x9A\xA0\xEF\xB8\x8F Inverter not connected"; // ⚠️
         }
         else
         {
             const String mode = htmlEscape(readText(DESCR_Inverter_Operation_Mode));
-            text += "\xE2\x9A\x99\xEF\xB8\x8F Mode: <b>" + (mode.length() ? mode : String("?")) + "</b>\n"; // ⚙️
+            text += "\xE2\x9A\x99\xEF\xB8\x8F " + padLabel("Mode") + (mode.length() ? mode : String("?")) + "\n"; // ⚙️
 
             float percentValue = -1;
             const bool okPercent = readNumber(DESCR_Battery_Percent, percentValue);
             batteryPct = okPercent ? static_cast<int>(percentValue + 0.5f) : -1;
             modeRaw = readText(DESCR_Inverter_Operation_Mode);
             const String percent = num(DESCR_Battery_Percent, 0, "%");
-            text += "\xF0\x9F\x94\x8B Battery: " + bar10(okPercent ? static_cast<int>(percentValue * 100.0f / _settings.get.batteryFullPct() + 0.5f) : -1, false) +
+            text += "\xF0\x9F\x94\x8B " + padLabel("Battery") + bar10(okPercent ? static_cast<int>(percentValue * 100.0f / _settings.get.batteryFullPct() + 0.5f) : -1, false) +
                     " (" + percent + ")\n"; // 🔋
 
             const String left = timeLeftText(modeRaw, okPercent ? percentValue : -1.0f);
@@ -3451,15 +3499,15 @@ struct TelegramService::Impl
 
             if (solarConnected)
             {
-                text += "\xE2\x98\x80\xEF\xB8\x8F Solar: <b>" + num(DESCR_PV_Charging_Power, 0, " W") + "</b>  " +
+                text += "\xE2\x98\x80\xEF\xB8\x8F " + padLabel("Solar") + num(DESCR_PV_Charging_Power, 0, " W") + "  " +
                         num(DESCR_PV_Input_Voltage, 1, " V") + "\n";
             }
             float loadPercent = -1;
             const bool okLoad = readNumber(DESCR_AC_Out_Percent, loadPercent);
-            text += "\xF0\x9F\x94\x8C Load: " + bar10(okLoad ? static_cast<int>(loadPercent + 0.5f) : -1, true) +
+            text += "\xF0\x9F\x94\x8C " + padLabel("Load") + bar10(okLoad ? static_cast<int>(loadPercent + 0.5f) : -1, true) +
                     " (" + num(DESCR_AC_Out_Percent, 0, "%") + ")\n"; // 🔌
-            text += "\xF0\x9F\x8F\xA0 Grid: " + gridText() + "\n"; // 🏠
-            text += "\xF0\x9F\x8C\xA1 Temp: " + num(DESCR_Inverter_Bus_Temperature, 0, " \xC2\xB0" "C") + "\n"; // 🌡
+            text += "\xF0\x9F\x8F\xA0 " + padLabel("Grid") + gridText() + "\n"; // 🏠
+            text += "\xF0\x9F\x8C\xA1 " + padLabel("Temp") + num(DESCR_Inverter_Bus_Temperature, 0, " \xC2\xB0" "C") + "\n"; // 🌡
 
             String modeUpper = mode;
             modeUpper.toUpperCase();
@@ -3468,6 +3516,13 @@ struct TelegramService::Impl
             const String fault = filterAlerts(readText(DESCR_Fault_Code), solarConnected, onBattery);
             alerts = (warning.length() && fault.length()) ? warning + "; " + fault : warning + fault;
             gridOff = gridIsOff();
+            // Chat-list preview: mode first, then the block's own icons doing duty as labels, so nothing needs
+            // spelling out and the line stays short enough to survive the list's truncation.
+            lead = (mode.length() ? mode : String("?"));
+            lead += " \xF0\x9F\x8F\xA0" + (gridOff ? String("off") : num(DESCR_AC_In_Voltage, 1, "V")); // 🏠
+            lead += " \xF0\x9F\x94\x8B" + percent;                                                      // 🔋
+            lead += " \xF0\x9F\x94\x8C" + num(DESCR_AC_Out_Percent, 0, "%");                            // 🔌
+            lead += " \xF0\x9F\x8C\xA1" + num(DESCR_Inverter_Bus_Temperature, 0, "\xC2\xB0");           // 🌡
             readNumber(DESCR_AC_Out_Watt, loadW);
             if (warning.length() || fault.length())
             {
@@ -3477,11 +3532,16 @@ struct TelegramService::Impl
                 text += "\n";
             }
         }
-        text += String("<i>\xF0\x9F\x93\xB6 WiFi: ") + (rssi >= -70 ? "OK" : "Low signal") + "</i>\n"; // 📶, -70 dBm boundary
-        text += "<i>\xE2\x8F\xB3 Up: " + uptimeText() + "</i>"; // ⏳
+        lead += " \xF0\x9F\x93\xB6" + String(rssi >= -70 ? "OK" : "Low"); // 📶
+        lead += " \xE2\x8F\xB3" + uptimeText();         // ⏳
+        lead += " \xF0\x9F\x92\xBE" + runningVersion(); // 💾
+
+        text += String("\xF0\x9F\x93\xB6 ") + padLabel("WiFi") + (rssi >= -70 ? "OK" : "Low signal") + "\n"; // 📶, -70 dBm boundary
+        text += "\xE2\x8F\xB3 " + padLabel("Up") + uptimeText(); // ⏳
 
         lockTake();
         summarySnapshot = text;
+        summaryLead = lead;
         snapshotMs = millis();
         lockGive();
 
@@ -3677,6 +3737,7 @@ String TelegramService::statusJson() const
     else
     {
         String snap;
+        String lead;
         uint32_t snapAge = 0;
         _impl->lockTake();
         doc["enabled"] = _impl->enabled;
@@ -3689,10 +3750,11 @@ String TelegramService::statusJson() const
         doc["lastSummaryAgo"] = _impl->lastSummaryMs ? static_cast<long>((millis() - _impl->lastSummaryMs) / 1000) : -1;
         doc["dashboardUrl"] = _impl->dashboardUrl;
         snap = _impl->summarySnapshot;
+        lead = _impl->summaryLead;
         snapAge = _impl->snapshotMs ? (millis() - _impl->snapshotMs) / 1000 : 0;
         _impl->lockGive();
         // Built after the lock is released: footerFor() -> alertLogText() takes it again.
-        doc["summaryPreview"] = _impl->footerFor(snap, snapAge);
+        doc["summaryPreview"] = _impl->footerFor(snap, snapAge, lead);
     }
     String json;
     serializeJson(doc, json);
