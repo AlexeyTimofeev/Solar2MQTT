@@ -1331,11 +1331,10 @@ struct TelegramService::Impl
             return;
         }
 
+        // No headline any more: every alert has its own row in the Events list, so there is no reason to rewrite the
+        // summary with a "Grid off" / "Grid back" top line. The alert still arrives with sound - only the extra line
+        // is gone. The headline arguments are now unused and come out in a follow-up cleanup.
         String body = snapshotWithFooter();
-        if (headline.length())
-        {
-            body = headline + "\n" + body;
-        }
         int64_t newId = 0;
         bool edited = false;
         bool sent = false;
@@ -3175,7 +3174,7 @@ struct TelegramService::Impl
         {
             return String();
         }
-        String t = "\n\n\xE2\x9A\xA0\xEF\xB8\x8F Last alerts";
+        String t = "\n\n\xE2\x9A\xA0\xEF\xB8\x8F Events";
         for (size_t i = 0; i < n; ++i)
         {
             const size_t k = (copy.head + kAlertLog - 1 - i) % kAlertLog;

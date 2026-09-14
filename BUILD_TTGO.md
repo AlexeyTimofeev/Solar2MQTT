@@ -122,16 +122,16 @@ skips the SOLAR page. Setting key: `device.solarConnected`.
 The Dashboard's ⚙️ Settings has a "Battery low at, %" field: comma separated levels (key `telegram.batteryAlertLevels`, default
 30,25,20,15,10, up to 8 levels of 1-99 %); an empty field switches the alerts off (key `telegram.batteryAlerts`). The settings code
 carries the levels as an optional 8th field of `s3` (`30-20-10`, `0` = none).
-When the battery percentage falls through one of these levels the bot sends a new summary with sound and a
-"🪫 Battery below 25 %" headline; the previous summary is removed, so there are no separate alert messages. A level re-arms once the battery has climbed 3 points above it, and the
+When the battery percentage falls through one of these levels the bot sends a new summary with sound; the
+previous summary is removed, so there are no separate alert messages. A level re-arms once the battery has climbed 3 points above it, and the
 tracking restarts whenever the inverter link drops, so reconnects never produce false alerts. Alerts are delivered
 between long-poll cycles, so expect up to about 20 seconds of delay.
 
 ## Grid alerts
 
 The Dashboard's ⚙️ Settings has "Grid off / back" (key `telegram.gridAlerts`, default
-on). When the inverter runs on battery (or reports no AC input) for 10 seconds, the bot sends a new summary with sound and
-a "🔴 Grid off" headline; when the grid has been back for 10 seconds, one with "🟢 Grid back after 2h 13m". Shorter
+on). When the inverter runs on battery (or reports no AC input) for 10 seconds, the bot sends a new summary with sound;
+when the grid has been back for 10 seconds, another. Shorter
 dips are ignored, nothing is announced while the inverter itself is unreachable, and the state found at boot is not
 announced. During an outage the summary's grid line reads "off for 2h 13m". As with every alert, the previous summary
 is removed, so the chat still holds only the summary. Test builds with `-DGRID_ALERT_TEST` accept `gridoff`, `gridon`
@@ -144,8 +144,7 @@ page, 0.5-20 kW in the firmware). It has no on/off switch: the page always keeps
 it practically quiet, and an alert switched off earlier shows as 6 kW. While the grid is on it watches the grid power, estimated as on
 the dashboard (appliances + battery charging from the grid / efficiency + the inverter's own consumption); during an
 outage it watches the house load the inverter carries. Once the power has stayed above the threshold for 10 seconds
-the bot sends one new summary with sound and a "⚡ Grid power 5.3 kW, above 5 kW" (or "⚡ Load 5.3 kW on battery, above
-5 kW") headline; it re-arms after the power has stayed below the threshold for 30 seconds. Since 2.1.17 this replaces
+the bot sends one new summary with sound; it re-arms after the power has stayed below the threshold for 30 seconds. Since 2.1.17 this replaces
 the separate high load alert.
 
 ## Alert log
@@ -160,8 +159,12 @@ Everything funnels through `requestLoud(headline, type, value)`, which calls `no
 low, and `i` / `I` for an inverter batch that was applied or had something refused. `noteAlert` copies the log under the lock and writes flash
 outside it, because the restart alert is raised on the bot task and everything else on the main thread.
 
+The `headline` argument is **no longer displayed**. Every alert has its own row in the Events list, so the summary is
+not rewritten with a "Grid off" top line any more: the alert still arrives with sound, only the extra line is gone.
+The headline strings are still built and passed down; they are dead and come out in a follow-up cleanup.
+
 * **Summary**: the last five, newest first, at the very end - after Updated and Version - as a blank line, then
-  `⚠️ Last alerts` (no colon), then one `14 Sep 11:15 🔵 Grid on` line each: the dated column, one space, the
+  `⚠️ Events` (no colon), then one `14 Sep 11:15 🔵 Grid on` line each: the dated column, one space, the
   severity icon, then the text - no bullets. Three levels, like a log: 🔴 error (unexpected restart, inverter
   offline), 🟡 warning (load or grid draw above the threshold, battery low, Wi-Fi low, inverter change refused),
   🔵 info (grid on/off, settings saved). The Dashboard shows the same three (`alertName` in the page, `alertIcon()`
@@ -188,7 +191,7 @@ outside it, because the restart alert is raised on the bot task and everything e
   `kWifiOkDbm` (-65). That 5 dB of hysteresis is the point: without it a link sitting at the boundary would alert over
   and over. There is deliberately no "recovered" alert. The value carried is the positive dBm, so `alertText()` prints
   it back as "Wi-Fi low, -72 dBm".
-* **Dashboard**: a foldable "Alerts" panel between the 24 h chart and Settings, listing all 25 newest-first, hidden
+* **Dashboard**: a foldable "Events" panel between the 24 h chart and Settings, listing all 25 newest-first, hidden
   when there are none. Link key `al`: six characters per alert - type, value in base36 (2), minutes ago in base36 (3),
   oldest first, so 25 alerts cost 150 characters. The page must use `Math.floor` for the age exactly as the firmware
   uses integer division, or the same alert reads differently in the two places.
@@ -229,7 +232,7 @@ The panel uses dropdowns that list only accepted values (the % points at whole p
 
 **Full real-change test, 86 commands, 2026-09-13 (every setting restored, QPIRI/QFLAG/QDOP verified identical to the start):** every exposed setting is genuinely settable, confirmed by reading QPIRI/QDOP back — NOT by the answer byte. Float `PBFT` accepted the whole 53.6-56.0 V range; bulk `PCVV` the whole 55.2-57.6 V range (57.6 = BMS charge limit); cut-off `PSDC` 0/5/10/20/30/40/50; `PBCC`/`PBDC` arbitrary whole %; all four flags on and off; input range both ways; output priority 0/1/2 (POP02 = SBU really moves the house to Battery mode, POP00 back to Line). The one genuine rejection among priorities is charger priority 0 (Utility first), see the table.
 
-**KEY: this inverter's answer byte is unreliable.** About 8 of the 86 setters answered `NOA` (empty) or even `NAK` while the setting still changed correctly (proven by read-back): `PBFT54.9`/`55.2` NOA, `PCVV56.2` NAK, `PCVV56.4`/`57.4` NOA, `PGR01` NAK, `PSDC010` NOA (plus one `QMN` CRC error). So `ACK`/`NAK`/`NOA` cannot be trusted on this unit, and the current "⚠️ Inverter: refused / (no answer)" headline (built from the answer byte) will sometimes be wrong. **Fixed on branch `verify-readback`: the headline is built from a read-back, not from the answer byte.** Each finished command is kept with its intended value; `kInverterVerifyDelayMs` (8 s) after the last one — and after QDOP when a % point changed — `verifyCommand()` compares the inverter's own QPIRI / QFLAG / QDOP values against what was asked and `finishInverterBatch()` writes "setting ✓" or "setting not applied" (commands that cannot be read back keep the old ACK/NAK wording).** This also correctly catches the true refusals (grid charging, charger-priority Utility-first), where the read-back does not move. The allowed currents are asked once a
+**KEY: this inverter's answer byte is unreliable.** About 8 of the 86 setters answered `NOA` (empty) or even `NAK` while the setting still changed correctly (proven by read-back): `PBFT54.9`/`55.2` NOA, `PCVV56.2` NAK, `PCVV56.4`/`57.4` NOA, `PGR01` NAK, `PSDC010` NOA (plus one `QMN` CRC error). So `ACK`/`NAK`/`NOA` cannot be trusted on this unit, and the "⚠️ Inverter: refused / (no answer)" result text (built from the answer byte) was sometimes wrong. **Fixed: the result is built from a read-back, not from the answer byte.** Each finished command is kept with its intended value; `kInverterVerifyDelayMs` (8 s) after the last one — and after QDOP when a % point changed — `verifyCommand()` compares the inverter's own QPIRI / QFLAG / QDOP values against what was asked and `finishInverterBatch()` writes "setting ✓" or "setting not applied" (commands that cannot be read back keep the old ACK/NAK wording).** This also correctly catches the true refusals (grid charging, charger-priority Utility-first), where the read-back does not move. The allowed currents are asked once a
 minute after start. Apply sends `/start i1_<key><value>_...` with only the
 changed settings (Telegram allows 64 characters, too few next to the board's settings): o, c, g, z buzzer (u and t are still accepted, the page no longer sends them),
 y bypass, w restart after overload, q restart after overheating, and the battery % points b back to grid, e back to
@@ -238,8 +241,10 @@ cut-off % <= back to grid % < back to battery %) and sends nothing if any part i
 (...)"). % changes are ordered so the chain stays valid on the way (lowered values from the bottom up, raised ones from
 the top down). Commands go one at a time, 8 s apart (20 s before `PSDC`; flag commands that follow another command
 closely go unanswered), with one retry when there is no answer; setting commands make the driver re-read QPIRI and
-QFLAG, so the Dashboard shows the new values. The summary then shows a silent "✅ Inverter: total charging 100 A ✓,
-restart after overload on ✓" headline until the next automatic edit. The link carries `io ic iu il it itl ig ix sg sd sc
+QFLAG, so the Dashboard shows the new values. The summary is then refreshed silently but carries no result line any
+more: the Events list records only "Inverter settings saved" or "Inverter change refused", so **which** setting the
+inverter accepted is no longer surfaced anywhere. If that detail is wanted back, enrich the event text - do not
+reinstate the headline. The link carries `io ic iu il it itl ig ix sg sd sc
 bms`. Firmware 2.1.17 (no `it` key) still gets its priorities and grid charging as a tail on the Save code.
 
 Only lithium batteries with BMS communication are supported. The switch-over and cut-off voltages (`PBCV`, `PBDV`,
@@ -301,9 +306,10 @@ handler - which is also where 🕒 Updated and 💾 Version join it, because the
 read, not when it is composed.
 
 **Nothing inside the block may carry `<b>` or `<i>`**: Telegram renders a code block verbatim and rejects a message whose
-entities are nested inside it. So the wrap happens in exactly one place - the `return` of `footerFor()` - and the alert
-headlines, which all carry `<b>`, are prepended *above* it by the single composition site (`body = headline + "\n" +
-body`). The padding is ASCII-only, so a label is always 11 characters. It was 11 to put the values on the same column
+entities are nested inside it, so the wrap happens in exactly one place - the `return` of `footerFor()`. Headlines used
+to be prepended *above* the block for exactly this reason; nothing is prepended any more, but **the rule still stands** -
+`gridText()` returning `<b>off</b>` would still make Telegram refuse the whole summary, and only while the grid is down.
+Do not relax it because the headlines are gone. The padding is ASCII-only, so a label is always 11 characters. It was 11 to put the values on the same column
 as the alert text; the alert rows have since taken a severity icon and a single space, so the two blocks no longer
 share a column - 11 stayed because it reads well on its own. The leading emoji are not ASCII (⚙️ is
 U+2699 plus a variation selector, 🔋 is one code point) and clients render them at slightly different widths, so a
@@ -331,7 +337,7 @@ last summary message id is stored per chat in NVS (`tg/lastMsgs` as JSON), so cl
 ## Inverter offline notice
 
 Always on: when the inverter link has been down for 15 seconds after having worked, the bot sends one summary with
-sound and a "🔴 Inverter offline" headline to every chat, at most once per five minutes. Nothing is sent at boot before
+sound to every chat, at most once per five minutes. Nothing is sent at boot before
 the inverter was ever seen.
 
 # CrowPanel 3.5" variant (`crowpanel35_telegram`, parked)
