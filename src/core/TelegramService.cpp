@@ -1143,13 +1143,14 @@ struct TelegramService::Impl
             text = "\xE2\x9A\xA0\xEF\xB8\x8F No inverter data yet"; // ⚠️
         }
         text += "\n\xF0\x9F\x95\x92 " + padLabel("Updated") + String(age) + "s ago"; // 🕒
+        text += "\n\xE2\x8F\xB3 " + padLabel("Uptime") + uptimeText(); // ⏳ after Updated, as asked
         text += "\n\xF0\x9F\x92\xBE " + padLabel("Version") + runningVersion(); // 💾
         const String offered = newVersionOffered();
         if (offered.length())
         {
             text += "\n\xF0\x9F\x86\x95 New version " + offered + " available"; // 🆕
         }
-        text += alertLogText(); // last of all, after Updated / Version
+        text += alertLogText(); // last of all, after Updated / Uptime / Version
         // Safety net, and it has already earned its keep: gridText() used to return "<b>off</b>", which nests an
         // entity inside the block and makes Telegram refuse the whole message - during an outage, of all times.
         text.replace("<b>", "");
@@ -1167,6 +1168,7 @@ struct TelegramService::Impl
         // read, not when it is composed.
         String head = lead;
         head += " \xF0\x9F\x95\x92" + String(age) + "s";  // 🕒 Updated, kept short for the chat list
+        head += " \xE2\x8F\xB3" + uptimeText();            // ⏳ Uptime
         head += " \xF0\x9F\x92\xBE" + runningVersion();   // 💾 Version
         return head + "\n\n" + block;
     }
@@ -3588,10 +3590,9 @@ struct TelegramService::Impl
             }
         }
         lead += " \xF0\x9F\x93\xB6" + String(rssi >= -70 ? "OK" : "Low"); // 📶
-        lead += " \xE2\x8F\xB3" + uptimeText();         // ⏳
 
-        text += String("\xF0\x9F\x93\xB6 ") + padLabel("WiFi") + (rssi >= -70 ? "OK" : "Low signal") + "\n"; // 📶, -70 dBm boundary
-        text += "\xE2\x8F\xB3 " + padLabel("Up") + uptimeText(); // ⏳
+        // Last line of the body, deliberately without a newline: footerFor() prepends one to each footer line.
+        text += String("\xF0\x9F\x93\xB6 ") + padLabel("WiFi") + (rssi >= -70 ? "OK" : "Low signal"); // 📶, -70 dBm boundary
 
         lockTake();
         summarySnapshot = text;
