@@ -485,8 +485,10 @@ load % (bars coloured by grid state: on / partly off / off) with today's usage a
 
 * ℹ️ Info panel (after Settings, foldable, read-only, with the same segmented tabs): 🔌 Board and ⚡ Inverter, listing
   every parameter the link already carries - it needs **no new link keys**, so it adds nothing to a URL that degrades
-  by halving history and alerts when Telegram rejects it. Board: `fw`, `up`, `rs`, `tz`, `ok`/`na`, `wh`, `wr`, `bf`,
-  `wi`, `we`, the learned set (`lh`, `lc`, `le`, `li`) and `bu`. Inverter: `m`, `b`, `bv`, `bc`, `bd`, `cs`, `l`,
+  by halving history and alerts when Telegram rejects it. Board: `fw`, `up`, `rs`, `tz`, `ok`/`na`, `wh`,
+  `wi`, `we`, the learned set (`lh`, `lc`, `le`, `li`) and `bu`. `wr` and `bf` are still
+  sent and still used - the power flow and the battery ring need them - but they are not Info rows: `wr` duplicates
+  the inverter's own cut-off (`sc`) and `bf` stopped being a setting. Inverter: `m`, `b`, `bv`, `bc`, `bd`, `cs`, `l`,
   `lp`, `va`, `gv`, `gf`, `ov`, `of`, `tc`, `pv`, `w`, `lr`, `op`, `cp`, `iu`, `it`, `ig`, `vb`, `vf`, `sg`, `sd`,
   `sc`, the `ix` flags and `bms`. Rows with no value are skipped, and the Inverter tab hides itself when the inverter
   did not answer. Values are escaped: `w` and `bms` come from the inverter. It replaced the old four-row panel -
