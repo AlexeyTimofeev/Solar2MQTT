@@ -93,6 +93,9 @@ constexpr int kBatteryRearmMargin = 3;
 constexpr uint32_t kBatteryConfirmMs = 30000; // a level must stay crossed this long before it alerts
 constexpr uint32_t kGridConfirmMs = 10000;       // grid off / back must last this long before it is announced
 constexpr uint32_t kGridPowerConfirmMs = 10000;  // power alert: above the threshold from Settings this long
+constexpr int kWifiLowDbm = -70;                 // the same boundary the summary calls "Low signal"
+constexpr int kWifiOkDbm = -65;                  // ... and 5 dB of hysteresis before it can alert again
+constexpr uint32_t kWifiConfirmMs = 60000;       // signal fluctuates far more than the grid, so confirm for a minute
 constexpr uint32_t kGridPowerRearmMs = 30000;    // re-armed once it has stayed below the threshold this long
 constexpr uint32_t kAutoSummaryIntervalMs = 15000; // also refreshes the Dashboard button's data
 constexpr uint32_t kSettingsRefreshDelayMs = 3000;  // dashboard Save: edit the summary once the link carries the new values
@@ -317,21 +320,6 @@ String filterAlerts(const String &raw, bool solarConnected, bool onBattery)
     return out;
 }
 
-// Single moon-phase glyph for a 0..100 value: 🌑 🌘 🌗 🌖 🌕, rounded to the nearest quarter.
-String bar10(int percent, bool /*highIsBad*/)
-{
-    static const char *const kPhases[] = {
-        "\xF0\x9F\x8C\x91", // 🌑 ~0 %
-        "\xF0\x9F\x8C\x98", // 🌘 ~25 %
-        "\xF0\x9F\x8C\x97", // 🌗 ~50 %
-        "\xF0\x9F\x8C\x96", // 🌖 ~75 %
-        "\xF0\x9F\x8C\x95", // 🌕 ~100 %
-    };
-    if (percent < 0) percent = 0;
-    if (percent > 100) percent = 100;
-    return String(kPhases[(percent * 4 + 50) / 100]);
-}
-
 // The summary is one monospace block, so values line up in a column: label padded to 11 characters, which puts the
 // values on the same column as the alert rows below (12-character date plus two spaces).
 // Nothing inside that block may carry <b> / <i> - Telegram renders a code block verbatim and rejects nested entities.
@@ -484,6 +472,8 @@ struct TelegramService::Impl
     bool gridStateKnown = false;     // grid on/off alerts (main thread)
     bool gridAnnouncedOff = false;
     uint32_t gridPendingSinceMs = 0; // a change has been seen but not yet confirmed
+    bool wifiAnnouncedLow = false;   // Wi-Fi signal alert (main thread), re-armed only above kWifiOkDbm
+    uint32_t wifiPendingSinceMs = 0;
     uint32_t gridOffStartMs = 0;
     bool gridOffStartKnown = false;
     bool gridPowerArmed = true;          // grid power alert (main thread)
@@ -536,6 +526,45 @@ struct TelegramService::Impl
             seconds = (millis() - outageStartMs) / 1000;
         }
         return seconds ? "off for " + DiagLog::formatDuration(seconds) : String("off");
+    }
+
+    // Main thread: one alert when the signal has stayed below kWifiLowDbm for kWifiConfirmMs. It re-arms only once the
+    // signal recovers past kWifiOkDbm, so a link hovering at the boundary cannot alert over and over; there is no
+    // "recovered" alert, which would only double the noise for something that fixes itself.
+    void checkWifiSignal(int rssi)
+    {
+        if (WiFi.status() != WL_CONNECTED)
+        {
+            wifiPendingSinceMs = 0;
+            return;
+        }
+        const uint32_t now = millis();
+        if (rssi >= kWifiLowDbm)
+        {
+            wifiPendingSinceMs = 0;
+            if (wifiAnnouncedLow && rssi >= kWifiOkDbm)
+            {
+                wifiAnnouncedLow = false;
+            }
+            return;
+        }
+        if (wifiAnnouncedLow)
+        {
+            return;
+        }
+        if (wifiPendingSinceMs == 0)
+        {
+            wifiPendingSinceMs = now | 1u;
+            return;
+        }
+        if (now - wifiPendingSinceMs < kWifiConfirmMs)
+        {
+            return;
+        }
+        wifiPendingSinceMs = 0;
+        wifiAnnouncedLow = true;
+        requestLoud("\xF0\x9F\x93\xB6 <b>Wi-Fi signal low</b> (" + String(rssi) + " dBm)", 'W',
+                    static_cast<uint16_t>(rssi < 0 ? -rssi : 0)); // 📶
     }
 
     // Main thread: a summary with sound and a "Grid off" / "Grid back" headline once the grid has changed and the new
@@ -1115,7 +1144,16 @@ struct TelegramService::Impl
         // Wrapped here and nowhere else: callers prepend alert headlines carrying <b>, and Telegram rejects a message
         // with entities nested inside a code block - the headline has to stay above it.
         const String block = "<code>" + text + "</code>";
-        return lead.length() ? lead + "\n\n" + block : block;
+        if (lead.length() == 0)
+        {
+            return block;
+        }
+        // Updated and Version join the lead here, not in buildSnapshot: the age is only known when the snapshot is
+        // read, not when it is composed.
+        String head = lead;
+        head += " \xF0\x9F\x95\x92" + String(age) + "s";  // 🕒 Updated, kept short for the chat list
+        head += " \xF0\x9F\x92\xBE" + runningVersion();   // 💾 Version
+        return head + "\n\n" + block;
     }
 
     void deleteMessage(const String &chat, int64_t messageId)
@@ -3076,15 +3114,16 @@ struct TelegramService::Impl
     {
         switch (type)
         {
-        case 'g': return "\xF0\x9F\x94\xB4";         // 🔴
-        case 'G': return "\xF0\x9F\x9F\xA2";         // 🟢
-        case 'l':
-        case 'p': return "\xE2\x9A\xA1";             // ⚡
-        case 'b': return "\xF0\x9F\xAA\xAB";         // 🪫
-        case 'o': return "\xF0\x9F\x94\xB4";         // 🔴
-        case 'r': return "\xF0\x9F\x92\xA5";         // 💥
-        case 'i': return "\xE2\x9C\x85";             // ✅
-        case 'I': return "\xE2\x9A\xA0\xEF\xB8\x8F"; // ⚠️
+        case 'r': // unexpected restart
+        case 'o': return "\xF0\x9F\x94\xB4";  // 🔴 error: inverter offline
+        case 'l': // load above the threshold
+        case 'p': // grid draw above it
+        case 'b': // battery below a level
+        case 'W': // Wi-Fi signal low
+        case 'I': return "\xF0\x9F\x9F\xA1";  // 🟡 warning: inverter change refused
+        case 'g': // grid off
+        case 'G': // grid back
+        case 'i': return "\xF0\x9F\x94\xB5";  // 🔵 info: inverter settings saved
         default: return String();
         }
     }
@@ -3102,6 +3141,7 @@ struct TelegramService::Impl
         case 'r': return "Unexpected restart";
         case 'i': return "Inverter settings saved";
         case 'I': return "Inverter change refused";
+        case 'W': return "Wi-Fi low, -" + String(value) + " dBm";
         default: return String();
         }
     }
@@ -3481,14 +3521,14 @@ struct TelegramService::Impl
         {
             const String mode = htmlEscape(readText(DESCR_Inverter_Operation_Mode));
             text += "\xE2\x9A\x99\xEF\xB8\x8F " + padLabel("Mode") + (mode.length() ? mode : String("?")) + "\n"; // ⚙️
+            text += "\xF0\x9F\x8F\xA0 " + padLabel("Grid") + gridText() + "\n"; // 🏠
 
             float percentValue = -1;
             const bool okPercent = readNumber(DESCR_Battery_Percent, percentValue);
             batteryPct = okPercent ? static_cast<int>(percentValue + 0.5f) : -1;
             modeRaw = readText(DESCR_Inverter_Operation_Mode);
             const String percent = num(DESCR_Battery_Percent, 0, "%");
-            text += "\xF0\x9F\x94\x8B " + padLabel("Battery") + bar10(okPercent ? static_cast<int>(percentValue * 100.0f / _settings.get.batteryFullPct() + 0.5f) : -1, false) +
-                    " (" + percent + ")\n"; // 🔋
+            text += "\xF0\x9F\x94\x8B " + padLabel("Battery") + percent + "\n"; // 🔋
 
             const String left = timeLeftText(modeRaw, okPercent ? percentValue : -1.0f);
             if (left.length())
@@ -3504,9 +3544,7 @@ struct TelegramService::Impl
             }
             float loadPercent = -1;
             const bool okLoad = readNumber(DESCR_AC_Out_Percent, loadPercent);
-            text += "\xF0\x9F\x94\x8C " + padLabel("Load") + bar10(okLoad ? static_cast<int>(loadPercent + 0.5f) : -1, true) +
-                    " (" + num(DESCR_AC_Out_Percent, 0, "%") + ")\n"; // 🔌
-            text += "\xF0\x9F\x8F\xA0 " + padLabel("Grid") + gridText() + "\n"; // 🏠
+            text += "\xF0\x9F\x94\x8C " + padLabel("Load") + num(DESCR_AC_Out_Percent, 0, "%") + "\n"; // 🔌
             text += "\xF0\x9F\x8C\xA1 " + padLabel("Temp") + num(DESCR_Inverter_Bus_Temperature, 0, " \xC2\xB0" "C") + "\n"; // 🌡
 
             String modeUpper = mode;
@@ -3518,7 +3556,7 @@ struct TelegramService::Impl
             gridOff = gridIsOff();
             // Chat-list preview: mode first, then the block's own icons doing duty as labels, so nothing needs
             // spelling out and the line stays short enough to survive the list's truncation.
-            lead = (mode.length() ? mode : String("?"));
+            lead = "\xE2\x9A\x99\xEF\xB8\x8F" + (mode.length() ? mode : String("?")); // ⚙️
             lead += " \xF0\x9F\x8F\xA0" + (gridOff ? String("off") : num(DESCR_AC_In_Voltage, 1, "V")); // 🏠
             lead += " \xF0\x9F\x94\x8B" + percent;                                                      // 🔋
             lead += " \xF0\x9F\x94\x8C" + num(DESCR_AC_Out_Percent, 0, "%");                            // 🔌
@@ -3534,7 +3572,6 @@ struct TelegramService::Impl
         }
         lead += " \xF0\x9F\x93\xB6" + String(rssi >= -70 ? "OK" : "Low"); // 📶
         lead += " \xE2\x8F\xB3" + uptimeText();         // ⏳
-        lead += " \xF0\x9F\x92\xBE" + runningVersion(); // 💾
 
         text += String("\xF0\x9F\x93\xB6 ") + padLabel("WiFi") + (rssi >= -70 ? "OK" : "Low signal") + "\n"; // 📶, -70 dBm boundary
         text += "\xE2\x8F\xB3 " + padLabel("Up") + uptimeText(); // ⏳
@@ -3645,6 +3682,7 @@ void TelegramService::loop(bool inverterConnected, int wifiRssi)
     _impl->buildSnapshot(inverterConnected, wifiRssi);
     _impl->checkBatteryAlerts(inverterConnected);
     _impl->checkGridChange(inverterConnected);
+    _impl->checkWifiSignal(wifiRssi);
     _impl->checkGridPower(inverterConnected);
     _impl->checkInverterLink(inverterConnected);
     _impl->pumpInverterCommands(inverterConnected);
