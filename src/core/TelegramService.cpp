@@ -1071,6 +1071,13 @@ struct TelegramService::Impl
         text = summarySnapshot;
         age = snapshotMs ? (millis() - snapshotMs) / 1000 : 0;
         lockGive();
+        return footerFor(text, age);
+    }
+
+    // The footer on a snapshot the caller has already read. Takes no lock itself (alertLogText does), so a caller
+    // holding the lock must release it first - doing otherwise deadlocks the whole endpoint.
+    String footerFor(String text, uint32_t age)
+    {
         if (text.length() == 0)
         {
             text = "\xE2\x9A\xA0\xEF\xB8\x8F No inverter data yet"; // ⚠️
@@ -1082,6 +1089,7 @@ struct TelegramService::Impl
         {
             text += "\n\xF0\x9F\x86\x95 <b>New version " + offered + " available</b>"; // 🆕
         }
+        text += alertLogText(); // last of all, after Updated / Version
         return text;
     }
 
@@ -3033,15 +3041,15 @@ struct TelegramService::Impl
     {
         switch (type)
         {
-        case 'g': return "\xF0\x9F\x94\xB4 Grid off";
-        case 'G': return "\xF0\x9F\x9F\xA2 Grid back";
-        case 'l': return "\xE2\x9A\xA1 Load " + String(value / 10.0f, 1) + " kW";
-        case 'p': return "\xE2\x9A\xA1 Grid " + String(value / 10.0f, 1) + " kW";
-        case 'b': return "\xF0\x9F\xAA\xAB Battery below " + String(value) + " %";
-        case 'o': return "\xF0\x9F\x94\xB4 Inverter offline";
-        case 'r': return "\xF0\x9F\x92\xA5 Unexpected restart";
-        case 'i': return "\xE2\x9C\x85 Inverter settings saved";
-        case 'I': return "\xE2\x9A\xA0\xEF\xB8\x8F Inverter change refused";
+        case 'g': return "Grid off";
+        case 'G': return "Grid on";
+        case 'l': return "Load " + String(value / 10.0f, 1) + " kW";
+        case 'p': return "Grid " + String(value / 10.0f, 1) + " kW";
+        case 'b': return "Battery below " + String(value) + " %";
+        case 'o': return "Inverter offline";
+        case 'r': return "Unexpected restart";
+        case 'i': return "Inverter settings saved";
+        case 'I': return "Inverter change refused";
         default: return String();
         }
     }
@@ -3055,9 +3063,9 @@ struct TelegramService::Impl
             return "just now";
         }
         const int64_t s = now - at;
-        if (s < 3600) return String(static_cast<long>(s / 60)) + " min ago";
-        if (s < 86400) return String(static_cast<long>(s / 3600)) + " h ago";
-        return String(static_cast<long>(s / 86400)) + " d ago";
+        if (s < 3600) return String(static_cast<long>(s / 60)) + "m ago";
+        if (s < 86400) return String(static_cast<long>(s / 3600)) + "h ago";
+        return String(static_cast<long>(s / 86400)) + "d ago";
     }
 
     // The last five alerts at the end of the summary, newest first.
@@ -3071,11 +3079,11 @@ struct TelegramService::Impl
         {
             return String();
         }
-        String t = "\n<i>\xF0\x9F\x93\x8B Last alerts</i>";
+        String t = "\n\xE2\x9A\xA0\xEF\xB8\x8F Last alerts:";
         for (size_t i = 0; i < n; ++i)
         {
             const size_t k = (copy.head + kAlertLog - 1 - i) % kAlertLog;
-            t += "\n<i>" + alertText(copy.type[k], copy.value[k]) + " \xC2\xB7 " + alertAge(copy.at[k]) + "</i>";
+            t += "\n* " + alertAge(copy.at[k]) + " " + alertText(copy.type[k], copy.value[k]);
         }
         return t;
     }
@@ -3457,8 +3465,7 @@ struct TelegramService::Impl
             }
         }
         text += String("<i>\xF0\x9F\x93\xB6 WiFi: ") + (rssi >= -70 ? "OK" : "Low signal") + "</i>\n"; // 📶, -70 dBm boundary
-        text += "<i>\xE2\x8F\xB3 Up: " + uptimeText() + "</i>";
-        text += alertLogText(); // ⏳
+        text += "<i>\xE2\x8F\xB3 Up: " + uptimeText() + "</i>"; // ⏳
 
         lockTake();
         summarySnapshot = text;
@@ -3644,6 +3651,8 @@ String TelegramService::statusJson() const
     }
     else
     {
+        String snap;
+        uint32_t snapAge = 0;
         _impl->lockTake();
         doc["enabled"] = _impl->enabled;
         doc["ready"] = _impl->ready.load();
@@ -3654,8 +3663,11 @@ String TelegramService::statusJson() const
         doc["summariesSent"] = _impl->summariesSent;
         doc["lastSummaryAgo"] = _impl->lastSummaryMs ? static_cast<long>((millis() - _impl->lastSummaryMs) / 1000) : -1;
         doc["dashboardUrl"] = _impl->dashboardUrl;
-        doc["summaryPreview"] = _impl->summarySnapshot; // for checking the summary text from the local web API
+        snap = _impl->summarySnapshot;
+        snapAge = _impl->snapshotMs ? (millis() - _impl->snapshotMs) / 1000 : 0;
         _impl->lockGive();
+        // Built after the lock is released: footerFor() -> alertLogText() takes it again.
+        doc["summaryPreview"] = _impl->footerFor(snap, snapAge);
     }
     String json;
     serializeJson(doc, json);

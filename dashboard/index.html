@@ -267,13 +267,13 @@ details summary{cursor:pointer;font-size:14px;list-style-position:inside}
   $('temp').textContent = tc !== null ? tc + ' °C · ' + (tc < 60 ? 'normal' : tc < 75 ? 'warm' : 'hot') : '–';
   if (pv !== null) { $('solarRow').classList.remove('hidden'); $('solar').textContent = pv + ' W'; }
   // Alert log (al): six characters each - type, value in base36 (2), minutes ago in base36 (3), oldest first.
-  var alertName = { g: '🔴 Grid off', G: '🟢 Grid back', o: '🔴 Inverter offline', r: '💥 Unexpected restart',
+  var alertName = { g: '🔴 Grid off', G: '🟢 Grid on', o: '🔴 Inverter offline', r: '💥 Unexpected restart',
                     i: '✅ Inverter settings saved', I: '⚠️ Inverter change refused' };
   var alertAgo = function (m) {
     if (m < 2) return 'just now';
-    if (m < 60) return m + ' min ago';
-    if (m < 1440) return Math.floor(m / 60) + ' h ago';
-    return Math.floor(m / 1440) + ' d ago';   // floor, so the page and the summary never disagree
+    if (m < 60) return m + 'm ago';
+    if (m < 1440) return Math.floor(m / 60) + 'h ago';
+    return Math.floor(m / 1440) + 'd ago';   // same wording and flooring as the summary, so they never disagree
   };
   var alertCode = q.get('al') || '', alertRows = '';
   for (var ai = 0; ai + 6 <= alertCode.length; ai += 6) {

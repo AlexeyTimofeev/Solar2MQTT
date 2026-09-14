@@ -160,8 +160,15 @@ Everything funnels through `requestLoud(headline, type, value)`, which calls `no
 inverter batch that was applied or had something refused. `noteAlert` copies the log under the lock and writes flash
 outside it, because the restart alert is raised on the bot task and everything else on the main thread.
 
-* **Summary**: the last five, newest first, appended after the uptime line. Dated by age ("30 min ago"), not by a clock
-  time - the board only knows UTC and the phone's timezone is unknown to it.
+* **Summary**: the last five, newest first, at the very end - after Updated and Version - as `⚠️ Last alerts:`
+  followed by one `* 3m ago Grid on` line each: no blank line, no per-line icons, the age first. Dated by age, not by a
+  clock time, because the board only knows UTC and cannot know the phone's timezone. Built in `footerFor(text, age)`,
+  which takes no lock of its own; `snapshotWithFooter()` reads the snapshot under the lock and releases it before
+  calling it. **Never call `footerFor()` or `alertLogText()` while holding the lock**: doing exactly that in the
+  `/api/telegram/status` handler deadlocked the endpoint outright, and the task watchdog then reset the board twice -
+  which the alert log itself faithfully recorded as two unexpected restarts.
+* Only a genuine fault raises the restart alert: `DiagLog::isUnexpected()` covers panic, the watchdogs and brownout,
+  so an ordinary OTA restart (`ESP_RST_SW`) never adds one.
 * **Dashboard**: a foldable "Last alerts" panel between the 24 h chart and Settings, listing all 25 newest-first, hidden
   when there are none. Link key `al`: six characters per alert - type, value in base36 (2), minutes ago in base36 (3),
   oldest first, so 25 alerts cost 150 characters. The page must use `Math.floor` for the age exactly as the firmware
