@@ -3070,6 +3070,25 @@ struct TelegramService::Impl
         p.end();
     }
 
+    // The Dashboard's alert panel already labels each type with an icon (alertName in the page); the summary uses the
+    // same ones so a single alert looks identical on both surfaces.
+    static String alertIcon(uint8_t type)
+    {
+        switch (type)
+        {
+        case 'g': return "\xF0\x9F\x94\xB4";         // 🔴
+        case 'G': return "\xF0\x9F\x9F\xA2";         // 🟢
+        case 'l':
+        case 'p': return "\xE2\x9A\xA1";             // ⚡
+        case 'b': return "\xF0\x9F\xAA\xAB";         // 🪫
+        case 'o': return "\xF0\x9F\x94\xB4";         // 🔴
+        case 'r': return "\xF0\x9F\x92\xA5";         // 💥
+        case 'i': return "\xE2\x9C\x85";             // ✅
+        case 'I': return "\xE2\x9A\xA0\xEF\xB8\x8F"; // ⚠️
+        default: return String();
+        }
+    }
+
     static String alertText(uint8_t type, uint16_t value)
     {
         switch (type)
@@ -3120,7 +3139,9 @@ struct TelegramService::Impl
         for (size_t i = 0; i < n; ++i)
         {
             const size_t k = (copy.head + kAlertLog - 1 - i) % kAlertLog;
-            t += "\n" + alertWhen(copy.at[k]) + "  " + alertText(copy.type[k], copy.value[k]);
+            const String icon = alertIcon(copy.type[k]);
+            t += "\n" + alertWhen(copy.at[k]) + " " + (icon.length() ? icon + " " : String()) +
+                 alertText(copy.type[k], copy.value[k]);
         }
         return t;
     }
@@ -3511,6 +3532,7 @@ struct TelegramService::Impl
                 text += "\n";
             }
         }
+        lead += " \xF0\x9F\x93\xB6" + String(rssi >= -70 ? "OK" : "Low"); // 📶
         lead += " \xE2\x8F\xB3" + uptimeText();         // ⏳
         lead += " \xF0\x9F\x92\xBE" + runningVersion(); // 💾
 
