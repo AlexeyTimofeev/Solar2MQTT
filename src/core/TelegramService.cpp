@@ -1115,7 +1115,16 @@ struct TelegramService::Impl
         // Wrapped here and nowhere else: callers prepend alert headlines carrying <b>, and Telegram rejects a message
         // with entities nested inside a code block - the headline has to stay above it.
         const String block = "<code>" + text + "</code>";
-        return lead.length() ? lead + "\n\n" + block : block;
+        if (lead.length() == 0)
+        {
+            return block;
+        }
+        // Updated and Version join the lead here, not in buildSnapshot: the age is only known when the snapshot is
+        // read, not when it is composed.
+        String head = lead;
+        head += " \xF0\x9F\x95\x92" + String(age) + "s";  // 🕒 Updated, kept short for the chat list
+        head += " \xF0\x9F\x92\xBE" + runningVersion();   // 💾 Version
+        return head + "\n\n" + block;
     }
 
     void deleteMessage(const String &chat, int64_t messageId)
@@ -3076,15 +3085,15 @@ struct TelegramService::Impl
     {
         switch (type)
         {
-        case 'g': return "\xF0\x9F\x94\xB4";         // 🔴
-        case 'G': return "\xF0\x9F\x9F\xA2";         // 🟢
-        case 'l':
-        case 'p': return "\xE2\x9A\xA1";             // ⚡
-        case 'b': return "\xF0\x9F\xAA\xAB";         // 🪫
-        case 'o': return "\xF0\x9F\x94\xB4";         // 🔴
-        case 'r': return "\xF0\x9F\x92\xA5";         // 💥
-        case 'i': return "\xE2\x9C\x85";             // ✅
-        case 'I': return "\xE2\x9A\xA0\xEF\xB8\x8F"; // ⚠️
+        case 'r': // unexpected restart
+        case 'o': return "\xF0\x9F\x94\xB4";  // 🔴 error: inverter offline
+        case 'l': // load above the threshold
+        case 'p': // grid draw above it
+        case 'b': // battery below a level
+        case 'I': return "\xF0\x9F\x9F\xA1";  // 🟡 warning: inverter change refused
+        case 'g': // grid off
+        case 'G': // grid back
+        case 'i': return "\xF0\x9F\x94\xB5";  // 🔵 info: inverter settings saved
         default: return String();
         }
     }
@@ -3481,6 +3490,7 @@ struct TelegramService::Impl
         {
             const String mode = htmlEscape(readText(DESCR_Inverter_Operation_Mode));
             text += "\xE2\x9A\x99\xEF\xB8\x8F " + padLabel("Mode") + (mode.length() ? mode : String("?")) + "\n"; // ⚙️
+            text += "\xF0\x9F\x8F\xA0 " + padLabel("Grid") + gridText() + "\n"; // 🏠
 
             float percentValue = -1;
             const bool okPercent = readNumber(DESCR_Battery_Percent, percentValue);
@@ -3506,7 +3516,6 @@ struct TelegramService::Impl
             const bool okLoad = readNumber(DESCR_AC_Out_Percent, loadPercent);
             text += "\xF0\x9F\x94\x8C " + padLabel("Load") + bar10(okLoad ? static_cast<int>(loadPercent + 0.5f) : -1, true) +
                     " (" + num(DESCR_AC_Out_Percent, 0, "%") + ")\n"; // 🔌
-            text += "\xF0\x9F\x8F\xA0 " + padLabel("Grid") + gridText() + "\n"; // 🏠
             text += "\xF0\x9F\x8C\xA1 " + padLabel("Temp") + num(DESCR_Inverter_Bus_Temperature, 0, " \xC2\xB0" "C") + "\n"; // 🌡
 
             String modeUpper = mode;
@@ -3518,7 +3527,7 @@ struct TelegramService::Impl
             gridOff = gridIsOff();
             // Chat-list preview: mode first, then the block's own icons doing duty as labels, so nothing needs
             // spelling out and the line stays short enough to survive the list's truncation.
-            lead = (mode.length() ? mode : String("?"));
+            lead = "\xE2\x9A\x99\xEF\xB8\x8F" + (mode.length() ? mode : String("?")); // ⚙️
             lead += " \xF0\x9F\x8F\xA0" + (gridOff ? String("off") : num(DESCR_AC_In_Voltage, 1, "V")); // 🏠
             lead += " \xF0\x9F\x94\x8B" + percent;                                                      // 🔋
             lead += " \xF0\x9F\x94\x8C" + num(DESCR_AC_Out_Percent, 0, "%");                            // 🔌
@@ -3534,7 +3543,6 @@ struct TelegramService::Impl
         }
         lead += " \xF0\x9F\x93\xB6" + String(rssi >= -70 ? "OK" : "Low"); // 📶
         lead += " \xE2\x8F\xB3" + uptimeText();         // ⏳
-        lead += " \xF0\x9F\x92\xBE" + runningVersion(); // 💾
 
         text += String("\xF0\x9F\x93\xB6 ") + padLabel("WiFi") + (rssi >= -70 ? "OK" : "Low signal") + "\n"; // 📶, -70 dBm boundary
         text += "\xE2\x8F\xB3 " + padLabel("Up") + uptimeText(); // ⏳
