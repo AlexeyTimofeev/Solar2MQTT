@@ -494,6 +494,16 @@ struct TelegramService::Impl
     }
 
     // Main thread: the grid counts as off while the inverter runs on battery or reports no AC input.
+    // True only once the inverter has actually reported something to judge by. Every boot and every reconnect clears
+    // LiveData, and readNumber() / readText() return false / empty for a missing key - so on the first connected poll
+    // gridIsOff() reads "grid on" from no data at all. That single sample used to wipe dashHist.outageStart and latch
+    // gridAnnouncedOff = false, and ten seconds later the board announced an outage that never started.
+    static bool gridReadingValid()
+    {
+        float acIn = 0;
+        return readText(DESCR_Inverter_Operation_Mode).length() > 0 || readNumber(DESCR_AC_In_Voltage, acIn);
+    }
+
     static bool gridIsOff()
     {
 #ifdef GRID_ALERT_TEST
@@ -575,6 +585,11 @@ struct TelegramService::Impl
         if (!inverterConnected)
         {
             gridPendingSinceMs = 0;
+            return;
+        }
+        if (!gridReadingValid())
+        {
+            gridPendingSinceMs = 0; // nothing to judge by yet: do not latch a state and do not announce one
             return;
         }
         const bool off = gridIsOff();
@@ -1331,11 +1346,10 @@ struct TelegramService::Impl
             return;
         }
 
+        // No headline any more: every alert has its own row in the Events list, so there is no reason to rewrite the
+        // summary with a "Grid off" / "Grid back" top line. The alert still arrives with sound - only the extra line
+        // is gone. The headline arguments are now unused and come out in a follow-up cleanup.
         String body = snapshotWithFooter();
-        if (headline.length())
-        {
-            body = headline + "\n" + body;
-        }
         int64_t newId = 0;
         bool edited = false;
         bool sent = false;
@@ -2074,13 +2088,13 @@ struct TelegramService::Impl
     // Main thread: estimated time until the inverter's low-battery cut-off while it runs on battery. The usable energy
     // above the reserve is drawn at load / efficiency + the inverter's own consumption (learned, or from Settings).
     // Empty when not on battery or the capacity is not set.
-    String timeLeftText(const String &mode, float batteryPct)
+    // How long the battery would carry the present load. Computed in every mode, not only on battery: while the grid
+    // is up it answers "what if it went away now", which is when the number is actually worth knowing.
+    String timeLeftText(float batteryPct)
     {
         const uint32_t capacityWh = effectiveCapacityWh();
-        String upper = mode;
-        upper.toUpperCase();
         float loadW = 0;
-        if (capacityWh == 0 || batteryPct < 0 || upper.indexOf("BATTERY") < 0 || !readNumber(DESCR_AC_Out_Watt, loadW))
+        if (capacityWh == 0 || batteryPct < 0 || !readNumber(DESCR_AC_Out_Watt, loadW))
         {
             return String();
         }
@@ -2092,7 +2106,7 @@ struct TelegramService::Impl
         }
         const float usableWh = capacityWh * std::max(batteryPct - reserve, 0.0f) / 100.0f;
         const uint32_t seconds = static_cast<uint32_t>(usableWh / drawW * 3600.0f);
-        return "\xE2\x89\x88 " + DiagLog::formatDuration(seconds); // ≈ 10h 18m
+        return DiagLog::formatDuration(seconds); // "10h 18m" - the "Estimated" label carries the meaning now
     }
 
     void dashInit()
@@ -2166,10 +2180,10 @@ struct TelegramService::Impl
                     dashHist.outageStart = unix - (now - outageStartMs) / 1000; // the clock was set after the outage began
                 }
             }
-            else
+            else if (gridReadingValid())
             {
                 gridWasOff = false;
-                dashHist.outageStart = 0;
+                dashHist.outageStart = 0; // only on a real reading - empty LiveData must not erase a running outage
             }
         }
         if (now - slotStartMs < kDashSlotSeconds * 1000UL)
@@ -3175,7 +3189,7 @@ struct TelegramService::Impl
         {
             return String();
         }
-        String t = "\n\n\xE2\x9A\xA0\xEF\xB8\x8F Last alerts";
+        String t = "\n\n\xE2\x9A\xA0\xEF\xB8\x8F Events";
         for (size_t i = 0; i < n; ++i)
         {
             const size_t k = (copy.head + kAlertLog - 1 - i) % kAlertLog;
@@ -3530,11 +3544,10 @@ struct TelegramService::Impl
             const String percent = num(DESCR_Battery_Percent, 0, "%");
             text += "\xF0\x9F\x94\x8B " + padLabel("Battery") + percent + "\n"; // 🔋
 
-            const String left = timeLeftText(modeRaw, okPercent ? percentValue : -1.0f);
+            const String left = timeLeftText(okPercent ? percentValue : -1.0f);
             if (left.length())
             {
-                text.remove(text.length() - 1); // continue the battery line: "Battery: 🌖 (69%) ≈ 10h 18m"
-                text += " " + left + "\n";
+                text += "\xE2\x8F\xB1\xEF\xB8\x8F " + padLabel("Estimated") + left + "\n"; // ⏱️ its own line
             }
 
             if (solarConnected)
@@ -3559,6 +3572,10 @@ struct TelegramService::Impl
             lead = "\xE2\x9A\x99\xEF\xB8\x8F" + (mode.length() ? mode : String("?")); // ⚙️
             lead += " \xF0\x9F\x8F\xA0" + (gridOff ? String("off") : num(DESCR_AC_In_Voltage, 1, "V")); // 🏠
             lead += " \xF0\x9F\x94\x8B" + percent;                                                      // 🔋
+            if (left.length())
+            {
+                lead += " \xE2\x8F\xB1\xEF\xB8\x8F" + left; // ⏱️ right after the battery
+            }
             lead += " \xF0\x9F\x94\x8C" + num(DESCR_AC_Out_Percent, 0, "%");                            // 🔌
             lead += " \xF0\x9F\x8C\xA1" + num(DESCR_Inverter_Bus_Temperature, 0, "\xC2\xB0");           // 🌡
             readNumber(DESCR_AC_Out_Watt, loadW);
