@@ -4,6 +4,7 @@
 #include <Update.h>
 #include <WiFi.h>
 
+#include "core/DisplayService.h"
 #include "core/GitHubOtaUpdater.h"
 #include "core/LogSerial.h"
 #include "core/SettingsPrefs.h"
@@ -16,6 +17,7 @@
 #include "www.h"
 
 extern Settings _settings;
+extern DisplayService displayService;
 
 namespace
 {
@@ -645,6 +647,68 @@ void WebServerHandler::registerRoutes()
 
         _inverterService.queueCommand(command);
         request->send(200, "application/json", "{\"success\":true}"); });
+
+#if HAS_TFT && DISPLAY_TOOLS
+    // Reads the panel back over SPI and streams it as a BMP, so the layout can be checked from the Mac.
+    _server.on("/api/screenshot", HTTP_GET, [](AsyncWebServerRequest *request)
+               {
+        const int W = displayService.panelWidth();
+        const int H = displayService.panelHeight();
+        if (W <= 0 || H <= 0) { return request->send(503, "text/plain", "no panel"); }
+        const size_t rowBytes = static_cast<size_t>(W) * 3;
+        const size_t total = 54 + rowBytes * H;
+        static uint8_t header[54];
+        memset(header, 0, sizeof(header));
+        header[0] = 'B'; header[1] = 'M';
+        const uint32_t fileSize = total, pixOffset = 54, dibSize = 40, planesBits = (1u << 16) | 24u;
+        memcpy(header + 2, &fileSize, 4);
+        memcpy(header + 10, &pixOffset, 4);
+        memcpy(header + 14, &dibSize, 4);
+        const int32_t bw = W, bh = H;
+        memcpy(header + 18, &bw, 4);
+        memcpy(header + 22, &bh, 4);
+        memcpy(header + 26, &planesBits, 4);
+        AsyncWebServerResponse *res = request->beginChunkedResponse("image/bmp",
+            [W, H, rowBytes, total](uint8_t *buf, size_t maxLen, size_t index) -> size_t {
+                static uint8_t row[520 * 3];
+                static int cachedY = -1;
+                if (index == 0) { cachedY = -1; }
+                size_t made = 0;
+                while (made < maxLen && index + made < total)
+                {
+                    const size_t pos = index + made;
+                    if (pos < 54) { buf[made++] = header[pos]; continue; }
+                    const size_t off = pos - 54;
+                    const int y = H - 1 - static_cast<int>(off / rowBytes);
+                    const size_t within = off % rowBytes;
+                    if (cachedY != y) { displayService.readRow(y, row, W); cachedY = y; }
+                    buf[made++] = row[within]; // already B, G, R per pixel
+                }
+                return made; });
+        request->send(res); });
+
+    _server.on("/api/display/calibrate", HTTP_POST, [](AsyncWebServerRequest *request)
+               {
+        displayService.requestTouchCalibration();
+        request->send(200, "application/json", "{\"success\":true,\"message\":\"tap each corner target\"}"); });
+
+    _server.on("/api/display/calibrate", HTTP_GET, [](AsyncWebServerRequest *request)
+               {
+        uint16_t v[8];
+        if (!displayService.calibrationValues(v)) { return request->send(409, "application/json", "{\"done\":false}"); }
+        String out = "{\"done\":true,\"values\":[";
+        for (int i = 0; i < 8; ++i) { out += String(v[i]); if (i < 7) { out += ","; } }
+        out += "]}";
+        request->send(200, "application/json", out); });
+
+    _server.on("/api/display/page", HTTP_POST, [](AsyncWebServerRequest *request)
+               {
+        int page = 0;
+        if (request->hasParam("n", true)) { page = request->getParam("n", true)->value().toInt(); }
+        else if (request->hasParam("n")) { page = request->getParam("n")->value().toInt(); }
+        displayService.setPage(static_cast<uint8_t>(page < 0 ? 0 : page));
+        request->send(200, "application/json", "{\"success\":true}"); });
+#endif
 
     _server.on("/api/reboot", HTTP_POST, [this](AsyncWebServerRequest *request)
                {

@@ -619,6 +619,12 @@ void DisplayService::begin()
     _impl = new Impl();
     _impl->tft.init();
     _impl->tft.setRotation(TFT_ROTATION);
+#if TFT_BOARD_CYD35 && !CYD35_TOUCH_CAP
+    // Measured with calibrateTouch() on the ESP32-3248S035R at rotation 1 (2026-09-24). Without it the
+    // raw XPT2046 ranges from the datasheets map every tap into a 50 px strip, so only one edge ever fires.
+    static uint16_t kTouchCal[8] = {340, 3867, 3786, 3847, 350, 325, 3801, 297};
+    _impl->tft.setTouchCalibrate(kTouchCal);
+#endif
     _impl->tft.setBrightness(200);
     _impl->tft.fillScreen(TFT_BLACK);
     _impl->computeGeometry();
@@ -694,6 +700,56 @@ bool DisplayService::pollTouch(uint32_t now, bool &next)
 #endif
 }
 
+int DisplayService::panelWidth() const { return _impl ? _impl->W : 0; }
+int DisplayService::panelHeight() const { return _impl ? _impl->H : 0; }
+
+bool DisplayService::readRow(int y, uint8_t *bgr, int width)
+{
+    if (_impl == nullptr || bgr == nullptr) { return false; }
+    static lgfx::rgb888_t line[520];
+    if (width > 520) { width = 520; }
+    _impl->tft.readRect(0, y, width, 1, line); // true colour, so the caller needs no pixel-format guesswork
+    for (int x = 0; x < width; ++x)
+    {
+        bgr[x * 3 + 0] = line[x].b;
+        bgr[x * 3 + 1] = line[x].g;
+        bgr[x * 3 + 2] = line[x].r;
+    }
+    return true;
+}
+
+void DisplayService::requestTouchCalibration()
+{
+    _calibRequested = true;
+}
+
+// The eight values LovyanGFX returns from calibrateTouch(); false until a calibration has run.
+bool DisplayService::calibrationValues(uint16_t *out) const
+{
+    if (out == nullptr || !_calibDone) { return false; }
+    for (int i = 0; i < 8; ++i) { out[i] = _calib[i]; }
+    return true;
+}
+
+void DisplayService::setPage(uint8_t page)
+{
+    _page = static_cast<uint8_t>(page % TFT_DASH_PAGE_COUNT);
+    _forceRedraw = true;
+}
+
+#if TFT_DASH_PAGES
+// Called from the main loop and from inside a redraw: a tap that starts and ends while the screen is
+// being painted would otherwise fall between two samples and be lost.
+void DisplayService::latchTouch(uint32_t now)
+{
+    bool tapRight = false;
+    if (pollTouch(now, tapRight))
+    {
+        _tapSteps.fetch_add(tapRight ? 1 : -1, std::memory_order_relaxed);
+    }
+}
+#endif
+
 void DisplayService::loop(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress)
 {
     if (_impl == nullptr)
@@ -702,11 +758,37 @@ void DisplayService::loop(bool wifiConnected, bool apMode, bool inverterConnecte
     }
     const uint32_t now = millis();
 
-#if TFT_DASH_PAGES
-    bool tapRight = false;
-    if (pollTouch(now, tapRight))
+#if DISPLAY_TOOLS
+    if (_calibRequested)
     {
-        _page = static_cast<uint8_t>((_page + (tapRight ? 1 : TFT_DASH_PAGE_COUNT - 1)) % TFT_DASH_PAGE_COUNT);
+        // LovyanGFX draws a target in each corner and waits for a tap; the eight values it returns map
+        // raw touch readings to screen pixels for this panel and rotation. Bake them into the board class.
+        _calibRequested = false;
+        lgfx::LGFXBase &cg = _impl->target();
+        cg.fillScreen(TFT_BLACK);
+        cg.setFont(&fonts::FreeSansBold12pt7b);
+        cg.setTextDatum(textdatum_t::middle_center);
+        cg.setTextColor(TFT_WHITE, TFT_BLACK);
+        cg.drawString("Touch calibration", _impl->W / 2, _impl->H / 2 - 20);
+        cg.setFont(&fonts::FreeSans9pt7b);
+        cg.drawString("tap each corner target", _impl->W / 2, _impl->H / 2 + 12);
+        delay(1200);
+        _impl->tft.calibrateTouch(_calib, TFT_WHITE, TFT_BLACK, 24);
+        _calibDone = true;
+        Serial.printf("[TOUCH] calibration %u %u %u %u %u %u %u %u\n", _calib[0], _calib[1], _calib[2], _calib[3],
+                      _calib[4], _calib[5], _calib[6], _calib[7]);
+        _forceRedraw = true;
+        _drawnOnce = false;
+    }
+#endif
+#if TFT_DASH_PAGES
+    latchTouch(now);
+    const int steps = _tapSteps.exchange(0, std::memory_order_relaxed);
+    if (steps != 0)
+    {
+        int page = (static_cast<int>(_page) + steps) % TFT_DASH_PAGE_COUNT;
+        if (page < 0) { page += TFT_DASH_PAGE_COUNT; }
+        _page = static_cast<uint8_t>(page);
         _forceRedraw = true;
     }
 #else
@@ -889,7 +971,8 @@ void DisplayService::fillDemo(Snap &s)
     {
         const float ph = i / 95.0f;
         s.batt[i] = static_cast<uint8_t>(62 + 26 * sinf(ph * 3.1f + 1.2f));
-        s.load[i] = static_cast<uint8_t>((900 + 800 * sinf(ph * 9.0f) + 300 * sinf(ph * 21.0f)) / 25.0f);
+        const float lw = 900.0f + 800.0f * sinf(ph * 9.0f) + 300.0f * sinf(ph * 21.0f);
+        s.load[i] = static_cast<uint8_t>(fmaxf(0.0f, fminf(240.0f, lw / 25.0f)));
         s.off[i] = (i >= 40 && i <= 46) ? (i == 40 || i == 46 ? 7 : 15) : 0;
     }
     const char t[] = {'G', 'g', 'b', 'p', 'r', 'i'};
@@ -966,8 +1049,9 @@ void DisplayService::drawSummary(const Snap &s)
 {
     Impl &I = *_impl;
     lgfx::LGFXBase &g = I.target();
-    const int left = I.padX, colW = I.W / 2 - I.padX - 4, right = I.W / 2 + 4;
-    const int top = I.hdrH + 14, rowH = 40;
+    const int left = I.padX, right = I.W / 2 + 4;
+    const int colW = I.W / 2 - I.padX - 10;
+    const int top = I.hdrH + 12, rowH = 46;
     struct Row { const char *label; String value; uint32_t color; };
     Row rows[8];
     int n = 0;
@@ -989,11 +1073,11 @@ void DisplayService::drawSummary(const Snap &s)
         const int y = top + (i / 2) * rowH;
         g.setFont(&fonts::FreeSans9pt7b);
         I.at(rows[i].label, x, y, textdatum_t::top_left, colW, rgb(g, kMuted));
-        g.setFont(&fonts::FreeSansBold18pt7b);
-        I.at(rows[i].value, x, y + 16, textdatum_t::top_left, colW, rgb(g, rows[i].color));
+        g.setFont(&fonts::FreeSansBold12pt7b);
+        I.at(rows[i].value, x, y + 17, textdatum_t::top_left, colW, rgb(g, rows[i].color));
     }
     g.setFont(&fonts::FreeSans9pt7b);
-    I.at(String(STRVERSION) + (s.link ? "" : "   no inverter data"), I.padX, I.H - 14, textdatum_t::bottom_left,
+    I.at(String(STRVERSION) + (s.link ? "" : "   no inverter data"), I.padX, I.H - 26, textdatum_t::bottom_left,
          I.W - 2 * I.padX, rgb(g, kMuted));
 }
 
@@ -1026,14 +1110,18 @@ void DisplayService::drawFlow(const Snap &s)
     ring(bx, by, br, s.fullPct > 0 ? s.battPct / s.fullPct : 0, battCol);
 
     g.setFont(&fonts::FreeSansBold12pt7b);
-    I.at(s.gridOff ? String("off") : String("> ") + kw(s.gridW), gx, gy, textdatum_t::middle_center, 2 * r - 12,
-         s.gridOff ? rgb(g, kRed) : gridCol);
-    I.at(kw(s.loadW), hx, hy, textdatum_t::middle_center, 2 * r - 12, s.gridOff ? homeCol : rgb(g, kInk));
+    g.setTextDatum(textdatum_t::middle_center);
+    g.setTextColor(s.gridOff ? rgb(g, kRed) : gridCol); // transparent: the ring is redrawn under it
+    g.drawString(s.gridOff ? String("off") : kw(s.gridW), gx, gy);
+    g.setTextColor(s.gridOff ? homeCol : rgb(g, kInk));
+    g.drawString(kw(s.loadW), hx, hy);
     String bv = "idle";
     uint32_t bc = kMuted;
-    if (s.battChargeW >= 1) { bv = String("v ") + kw(s.battChargeW); bc = kBlue; }
-    else if (s.battDischargeW >= 1) { bv = String("^ ") + kw(s.battDischargeW); bc = kAmber; }
-    I.at(bv, bx, by, textdatum_t::middle_center, 2 * br - 12, rgb(g, bc));
+    if (s.battChargeW >= 1) { bv = String("+") + kw(s.battChargeW); bc = kBlue; }
+    else if (s.battDischargeW >= 1) { bv = String("-") + kw(s.battDischargeW); bc = kAmber; }
+    g.setTextColor(rgb(g, bc));
+    g.drawString(bv, bx, by);
+    g.setTextColor(rgb(g, kInk), TFT_BLACK); // back to opaque for the rest of the screen
 
     g.setFont(&fonts::FreeSans9pt7b);
     I.at("Grid", gx, gy + r + 16, textdatum_t::top_center, 90, rgb(g, kMuted));
@@ -1044,14 +1132,14 @@ void DisplayService::drawFlow(const Snap &s)
     g.setFont(&fonts::FreeSansBold12pt7b);
     if (s.gridOff && s.leftS)
     {
-        I.at(String("Battery discharge time ") + dur(s.leftS), I.W / 2, I.H - 16, textdatum_t::bottom_center,
+        I.at(String("Battery discharge time ") + dur(s.leftS), I.W / 2, I.H - 26, textdatum_t::bottom_center,
              I.W - 2 * I.padX, rgb(g, kAmber));
     }
     else
     {
         g.setFont(&fonts::FreeSans9pt7b);
         I.at(String(static_cast<int>(s.tempC + 0.5f)) + " C   " + String(s.outV, 1) + " V   " + dur(millis() / 1000),
-             I.W / 2, I.H - 16, textdatum_t::bottom_center, I.W - 2 * I.padX, rgb(g, kMuted));
+             I.W / 2, I.H - 26, textdatum_t::bottom_center, I.W - 2 * I.padX, rgb(g, kMuted));
     }
 }
 
@@ -1059,7 +1147,7 @@ void DisplayService::drawHistory(const Snap &s)
 {
     Impl &I = *_impl;
     lgfx::LGFXBase &g = I.target();
-    const int x0 = I.padX + 26, x1 = I.W - I.padX, y0 = I.hdrH + 18, y1 = I.H - 34;
+    const int x0 = I.padX + 26, x1 = I.W - I.padX, y0 = I.hdrH + 18, y1 = I.H - 46;
     const int h = y1 - y0, w = x1 - x0;
     g.setFont(&fonts::FreeSans9pt7b);
     for (int p = 0; p <= 100; p += 25)
@@ -1089,8 +1177,8 @@ void DisplayService::drawHistory(const Snap &s)
         g.drawLine(xa, ya, xb, yb, rgb(g, kBlue));
         g.drawLine(xa, ya - 1, xb, yb - 1, rgb(g, kBlue));
     }
-    I.at("battery %", x0, I.H - 26, textdatum_t::top_left, 120, rgb(g, kBlue));
-    I.at("load, bars by grid state", x1, I.H - 26, textdatum_t::top_right, 260, rgb(g, kMuted));
+    I.at("battery %", x0, I.H - 42, textdatum_t::top_left, 120, rgb(g, kBlue));
+    I.at("load, bars by grid state", x1, I.H - 42, textdatum_t::top_right, 260, rgb(g, kMuted));
 }
 
 void DisplayService::drawAlerts(const Snap &s)
@@ -1137,13 +1225,13 @@ void DisplayService::renderDashboard(bool wifiConnected, bool apMode, bool inver
     (void)ipAddress;
     Snap s;
 #if DISPLAY_DEMO
-    fillDemo(s);
+    fillDemo(s);                                  // history and alert arrays, which have no live source yet
+    if (inverterConnected) { fillLive(s, true); } // real (or simulated) values win for everything else
 #else
     fillLive(s, inverterConnected);
 #endif
     static const char *const kTitles[kPages] = {"Summary", "Power flow", "Last 24 h", "Alerts"};
 
-    g.startWrite();
     g.setTextSize(1);
     if (!_drawnOnce || _forceRedraw || _impl->lastRenderedPage != _page)
     {
@@ -1151,6 +1239,7 @@ void DisplayService::renderDashboard(bool wifiConnected, bool apMode, bool inver
         _impl->lastRenderedPage = _page;
     }
     drawHeader(kTitles[_page], wifiConnected, apMode, inverterConnected);
+    latchTouch(millis());
     switch (_page)
     {
     case 1: drawFlow(s); break;
@@ -1158,7 +1247,7 @@ void DisplayService::renderDashboard(bool wifiConnected, bool apMode, bool inver
     case 3: drawAlerts(s); break;
     default: drawSummary(s); break;
     }
-    g.endWrite();
+    latchTouch(millis());
 }
 
 void DisplayService::render(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress)
@@ -1344,5 +1433,9 @@ void DisplayService::render(bool wifiConnected, bool apMode, bool inverterConnec
 
 void DisplayService::begin() {}
 void DisplayService::loop(bool, bool, bool, bool, const String &) {}
+int DisplayService::panelWidth() const { return 0; }
+int DisplayService::panelHeight() const { return 0; }
+bool DisplayService::readRow(int, uint8_t *, int) { return false; }
+void DisplayService::setPage(uint8_t) {}
 
 #endif

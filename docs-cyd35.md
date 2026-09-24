@@ -76,6 +76,7 @@ R — XPT2046 (shared HSPI):
 - Raw calibration seen in working configs: macsbug `x_min 360, x_max 4200, y_min 180, y_max 3900, offset_rotation 3` (with `setRotation(1|3)`); factory LovyanGFX demo `x 222–3367, y 192–3732, offset_rotation 6` (with `setRotation(0)`); after an S3 transplant macsbug used `420–3900 / 420–3700`. Panels vary — run `tft.calibrateTouch()` once and persist the 8 values.
 - IRQ: macsbug found `pin_int = 36` unreliable at 240 MHz (fine at 160 MHz) and recommends `pin_int = -1` (polling). GPIO36/39 pick up glitches while Wi-Fi is active; mitigations `adc_power_acquire()` in setup and `WiFi.setSleep(false)` (macsbug).
 - rzeldent: `TOUCH_MIRROR_X=true`, `XPT2046_Z_THRESHOLD=600`.
+- **Measured on Alex's board (2026-09-24, rotation 1):** `calibrateTouch()` returned `340, 3867, 3786, 3847, 350, 325, 3801, 297`, now applied with `setTouchCalibrate()` in DisplayService::begin(). The published raw ranges (`x 360-4200, y 180-3900, offset_rotation 3`) map every tap into a ~50 px strip on this panel, which looks like "touch works but only one screen edge responds". Panels vary: re-run the calibration per board.
 - ST7796 SDO not tri-stating on a shared bus is a known TFT_eSPI caveat (discussion #898); the shared-bus configs below nevertheless work on this board (`bus_shared = true`).
 
 C — GT911 (I2C):

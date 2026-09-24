@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <atomic>
 
 // TTGO T-Display TFT front end.
 // Shows the battery state of charge by default; the two on-board buttons page through
@@ -10,6 +11,13 @@ class DisplayService
 public:
     void begin();
     void loop(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress);
+    // Debug builds only: read the panel back for screenshots and switch screens over HTTP.
+    int panelWidth() const;
+    int panelHeight() const;
+    bool readRow(int y, uint8_t *bgr, int width);
+    void setPage(uint8_t page);
+    void requestTouchCalibration();
+    bool calibrationValues(uint16_t *out) const;
 
 private:
 #if HAS_TFT
@@ -36,7 +44,7 @@ private:
     static constexpr uint32_t kPollIntervalMs = 1000;
     static constexpr uint32_t kForceRedrawMs = 10000;
     static constexpr uint32_t kDebounceMs = 40;
-    static constexpr uint32_t kTouchLockoutMs = 300;
+    static constexpr uint32_t kTouchLockoutMs = 120; // one tap per 120 ms: fast tapping must not drop pages
     static constexpr uint32_t kTouchReleaseMs = 60;
 
     Button _btnPrev;
@@ -53,6 +61,13 @@ private:
     uint32_t _touchDownMs = 0;
     uint32_t _touchLastSeenMs = 0;
     bool pollTouch(uint32_t now, bool &next);
+    // Touch runs in its own task: the main loop is paced by the inverter poll at ~10 Hz, which is too
+    // coarse to catch a quick tap. The mutex keeps touch reads off the SPI bus while the screen draws.
+    std::atomic<int> _tapSteps {0};
+    void latchTouch(uint32_t now);
+    volatile bool _calibRequested = false;
+    bool _calibDone = false;
+    uint16_t _calib[8] = {0, 0, 0, 0, 0, 0, 0, 0}; // sample the touch and remember the step, including mid-redraw
 
     bool pollButton(Button &button, uint32_t now);
     void render(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress);
