@@ -57,6 +57,14 @@ private:
     bool pollButton(Button &button, uint32_t now);
     void render(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress);
     void renderDashboard(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress);
+    struct Snap;
+    void fillDemo(Snap &s);
+    void fillLive(Snap &s, bool inverterConnected);
+    void drawHeader(const char *title, bool wifiConnected, bool apMode, bool inverterConnected);
+    void drawSummary(const Snap &s);
+    void drawFlow(const Snap &s);
+    void drawHistory(const Snap &s);
+    void drawAlerts(const Snap &s);
     String buildSignature(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress) const;
 #endif
 };

@@ -24,8 +24,12 @@ extern Settings _settings;
 #endif
 // One screen with everything instead of pages you tap through. The paged layout is a 240x135
 // design scaled up, which looks soft on a big panel; the dashboard draws at native font size.
-#ifndef TFT_SINGLE_PAGE
-#define TFT_SINGLE_PAGE 0
+#ifndef TFT_DASH_PAGES
+#define TFT_DASH_PAGES 0
+#endif
+#define TFT_DASH_PAGE_COUNT 4
+#ifndef DISPLAY_DEMO
+#define DISPLAY_DEMO 0
 #endif
 
 namespace
@@ -698,7 +702,14 @@ void DisplayService::loop(bool wifiConnected, bool apMode, bool inverterConnecte
     }
     const uint32_t now = millis();
 
-#if !TFT_SINGLE_PAGE
+#if TFT_DASH_PAGES
+    bool tapRight = false;
+    if (pollTouch(now, tapRight))
+    {
+        _page = static_cast<uint8_t>((_page + (tapRight ? 1 : TFT_DASH_PAGE_COUNT - 1)) % TFT_DASH_PAGE_COUNT);
+        _forceRedraw = true;
+    }
+#else
     const bool solarConnected = _settings.get.solarConnected();
     auto pageHidden = [solarConnected](uint8_t page) { return page == PageSolar && !solarConnected; };
     bool tapNext = false;
@@ -718,7 +729,7 @@ void DisplayService::loop(bool wifiConnected, bool apMode, bool inverterConnecte
         _page = PageBattery;
         _forceRedraw = true;
     }
-#endif // !TFT_SINGLE_PAGE
+#endif // !TFT_DASH_PAGES
 
     if (!_forceRedraw && (now - _lastPollMs) < kPollIntervalMs)
     {
@@ -751,7 +762,8 @@ String DisplayService::buildSignature(bool wifiConnected, bool apMode, bool inve
     s += inverterConnected ? 'I' : 'i';
     s += ipAddress;
     s += '|';
-#if TFT_SINGLE_PAGE
+#if TFT_DASH_PAGES
+    s += _page;
     if (inverterConnected)
     {
         s += readText(DESCR_Inverter_Operation_Mode);
@@ -792,13 +804,42 @@ String DisplayService::buildSignature(bool wifiConnected, bool apMode, bool inve
     return s;
 }
 
-#if TFT_SINGLE_PAGE
+#if TFT_DASH_PAGES
 
+// Four screens, tapped left/right: summary, power flow, 24 h history, alerts. The palette and the
+// rules are the Telegram dashboard's, so the panel and the phone show the same thing.
 namespace
 {
-String upTimeText(uint32_t ms)
+constexpr uint32_t kBlue = 0x58B8FF, kGreen = 0x30C977, kAmber = 0xF6C549, kRed = 0xFF8A78;
+constexpr uint32_t kMuted = 0x8AA0B5, kInk = 0xEEF6FF, kTrack = 0x2A3A48, kPanel = 0x08131D;
+constexpr int kPages = TFT_DASH_PAGE_COUNT;
+
+uint32_t rgb(lgfx::LGFXBase &g, uint32_t v)
 {
-    const uint32_t s = ms / 1000;
+    return g.color888((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF);
+}
+
+// The dashboard's green-to-red scale: hsl(120t, 75%, 52%), t = 1 green, 0 red.
+uint32_t scaleColor(lgfx::LGFXBase &g, float t)
+{
+    if (t < 0) { t = 0; }
+    if (t > 1) { t = 1; }
+    const float h = 120.0f * t / 60.0f, c = 0.75f * (1.0f - fabsf(2.0f * 0.52f - 1.0f)), m = 0.52f - c / 2.0f;
+    const float x = c * (1.0f - fabsf(fmodf(h, 2.0f) - 1.0f));
+    float r = 0, gr = 0, b = 0;
+    if (h < 1) { r = c; gr = x; }
+    else if (h < 2) { r = x; gr = c; }
+    else { gr = c; b = x; }
+    return g.color888(static_cast<int>((r + m) * 255), static_cast<int>((gr + m) * 255), static_cast<int>((b + m) * 255));
+}
+
+String kw(float w)
+{
+    return w >= 1000.0f ? String(w / 1000.0f, 1) + " kW" : String(static_cast<long>(w + 0.5f)) + " W";
+}
+
+String dur(uint32_t s)
+{
     if (s < 3600) { return String(s / 60) + "m"; }
     if (s < 86400) { return String(s / 3600) + "h " + String((s % 3600) / 60) + "m"; }
     return String(s / 86400) + "d " + String((s % 86400) / 3600) + "h";
@@ -806,151 +847,317 @@ String upTimeText(uint32_t ms)
 
 uint32_t modeColor(const String &mode)
 {
-    if (mode.equalsIgnoreCase("Line")) { return TFT_GREEN; }
-    if (mode.equalsIgnoreCase("Battery")) { return TFT_ORANGE; }
-    if (mode.equalsIgnoreCase("Fault")) { return TFT_RED; }
-    return TFT_CYAN;
+    if (mode.equalsIgnoreCase("Line")) { return kGreen; }
+    if (mode.equalsIgnoreCase("Battery")) { return kAmber; }
+    if (mode.equalsIgnoreCase("Fault")) { return kRed; }
+    return kBlue;
 }
+
 } // namespace
 
-// Everything on one screen: mode and link state on top, battery on the left, the inverter's
-// numbers on the right, uptime and version at the bottom. Every string is drawn with
-// setTextSize(1) and a font that is already the right size, so nothing is scaled up.
+// Everything the four screens draw. Filled from the live values, or generated in a preview build.
+struct DisplayService::Snap
+{
+    bool link = false;
+    String mode;
+    bool gridOff = false;
+    float gridV = 0, gridHz = 0, gridW = 0;
+    float battPct = 0, battV = 0, battChargeW = 0, battDischargeW = 0;
+    float loadW = 0, loadPct = 0, outV = 0, outHz = 0;
+    float pvW = 0, tempC = 0;
+    int fullPct = 100, ratingW = 6000;
+    uint32_t leftS = 0;
+    uint8_t batt[96], load[96], off[96];
+    int slots = 0;
+    char aType[8];
+    uint16_t aValue[8];
+    uint32_t aAgeMin[8];
+    int alerts = 0;
+};
+
+#if DISPLAY_DEMO
+void DisplayService::fillDemo(Snap &s)
+{
+    s.link = true;
+    s.mode = "Line";
+    s.gridV = 223.7f; s.gridHz = 50.0f; s.gridW = 1640.0f;
+    s.battPct = 88; s.battV = 53.4f; s.battChargeW = 400.0f;
+    s.loadW = 1240.0f; s.loadPct = 31; s.outV = 230.1f; s.outHz = 50.0f;
+    s.tempC = 48; s.fullPct = 90; s.leftS = 37080;
+    s.slots = 96;
+    for (int i = 0; i < 96; ++i)
+    {
+        const float ph = i / 95.0f;
+        s.batt[i] = static_cast<uint8_t>(62 + 26 * sinf(ph * 3.1f + 1.2f));
+        s.load[i] = static_cast<uint8_t>((900 + 800 * sinf(ph * 9.0f) + 300 * sinf(ph * 21.0f)) / 25.0f);
+        s.off[i] = (i >= 40 && i <= 46) ? (i == 40 || i == 46 ? 7 : 15) : 0;
+    }
+    const char t[] = {'G', 'g', 'b', 'p', 'r', 'i'};
+    const uint16_t v[] = {0, 0, 25, 55, 0, 3};
+    const uint32_t a[] = {143, 218, 260, 611, 1455, 2880};
+    for (int i = 0; i < 6; ++i) { s.aType[i] = t[i]; s.aValue[i] = v[i]; s.aAgeMin[i] = a[i]; }
+    s.alerts = 6;
+}
+#endif
+
+void DisplayService::fillLive(Snap &s, bool inverterConnected)
+{
+    s.link = inverterConnected;
+    if (!inverterConnected) { return; }
+    s.mode = readText(DESCR_Inverter_Operation_Mode);
+    float v = 0;
+    if (readNumber(DESCR_AC_In_Voltage, v)) { s.gridV = v; }
+    if (readNumber(DESCR_AC_In_Frequency, v)) { s.gridHz = v; }
+    s.gridOff = s.gridV < 50.0f;
+    if (readNumber(DESCR_Battery_Percent, v)) { s.battPct = v; }
+    if (readNumber(DESCR_Battery_Voltage, v)) { s.battV = v; }
+    if (readNumber(DESCR_AC_Out_Watt, v)) { s.loadW = v; }
+    if (readNumber(DESCR_AC_Out_Percent, v)) { s.loadPct = v; }
+    if (readNumber(DESCR_AC_Out_Voltage, v)) { s.outV = v; }
+    if (readNumber(DESCR_AC_Out_Frequency, v)) { s.outHz = v; }
+    if (readNumber(DESCR_PV_Charging_Power, v)) { s.pvW = v; }
+    if (readNumber(DESCR_Inverter_Bus_Temperature, v)) { s.tempC = v; }
+    float current = 0;
+    if (readBatteryCurrent(current))
+    {
+        if (current > 0) { s.battChargeW = current * s.battV; }
+        else if (current < 0) { s.battDischargeW = -current * s.battV; }
+    }
+    const float eff = _settings.get.inverterEfficiencyPct() > 0 ? _settings.get.inverterEfficiencyPct() / 100.0f : 1.0f;
+    const float idle = _settings.get.inverterIdleW();
+    s.gridW = s.gridOff ? 0 : s.loadW + fmaxf(0.0f, s.battChargeW - s.pvW) / eff + idle;
+    s.fullPct = _settings.get.batteryFullPct() > 0 ? _settings.get.batteryFullPct() : 100;
+}
+
+// Header: page title, the four page dots, link letters and the clock.
+void DisplayService::drawHeader(const char *title, bool wifiConnected, bool apMode, bool inverterConnected)
+{
+    Impl &I = *_impl;
+    lgfx::LGFXBase &g = I.target();
+    g.setFont(&fonts::FreeSansBold18pt7b);
+    I.at(title, I.padX, I.hdrH / 2, textdatum_t::middle_left, I.W / 3, rgb(g, kInk));
+
+    const int dotY = I.hdrH / 2, dotR = 4, step = 18, x0 = I.W / 2 - ((kPages - 1) * step) / 2;
+    g.fillRect(I.W / 2 - 40, dotY - 6, 80, 12, TFT_BLACK);
+    for (int i = 0; i < kPages; ++i)
+    {
+        if (i == _page) { g.fillCircle(x0 + i * step, dotY, dotR, rgb(g, kInk)); }
+        else { g.drawCircle(x0 + i * step, dotY, dotR, rgb(g, kTrack)); }
+    }
+
+    g.setFont(&fonts::FreeSansBold12pt7b);
+    I.at("I", I.W - I.padX, dotY, textdatum_t::middle_right, 22, rgb(g, inverterConnected ? kGreen : kRed));
+    I.at(apMode ? String("AP") : String("W"), I.W - I.padX - 28, dotY, textdatum_t::middle_right, 36,
+         rgb(g, apMode ? kAmber : (wifiConnected ? kGreen : kRed)));
+    const time_t now = time(nullptr);
+    if (now > 1700000000)
+    {
+        struct tm tmv;
+        const time_t shifted = now + static_cast<time_t>(_settings.get.tzOffsetHours()) * 3600;
+        gmtime_r(&shifted, &tmv);
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
+        I.at(buf, I.W - I.padX - 74, dotY, textdatum_t::middle_right, 70, rgb(g, kMuted));
+    }
+    g.drawFastHLine(0, I.hdrH, I.W, rgb(g, kTrack));
+}
+
+void DisplayService::drawSummary(const Snap &s)
+{
+    Impl &I = *_impl;
+    lgfx::LGFXBase &g = I.target();
+    const int left = I.padX, colW = I.W / 2 - I.padX - 4, right = I.W / 2 + 4;
+    const int top = I.hdrH + 14, rowH = 40;
+    struct Row { const char *label; String value; uint32_t color; };
+    Row rows[8];
+    int n = 0;
+    rows[n].label = "Mode"; rows[n].value = s.link ? s.mode : String("--"); rows[n].color = modeColor(s.mode); ++n;
+    rows[n].label = "Grid"; rows[n].value = s.gridOff ? String("off") : String(s.gridV, 1) + " V  " + String(s.gridHz, 1) + " Hz";
+    rows[n].color = s.gridOff ? kRed : kGreen; ++n;
+    rows[n].label = "Battery"; rows[n].value = String(static_cast<int>(s.battPct + 0.5f)) + " %  " + String(s.battV, 1) + " V";
+    rows[n].color = kInk; ++n;
+    rows[n].label = "Estimated"; rows[n].value = s.leftS ? dur(s.leftS) : String("--"); rows[n].color = kAmber; ++n;
+    rows[n].label = "Load"; rows[n].value = kw(s.loadW) + "  " + String(static_cast<int>(s.loadPct + 0.5f)) + " %";
+    rows[n].color = kBlue; ++n;
+    rows[n].label = "Output"; rows[n].value = String(s.outV, 1) + " V  " + String(s.outHz, 1) + " Hz"; rows[n].color = kInk; ++n;
+    rows[n].label = "Temp"; rows[n].value = String(static_cast<int>(s.tempC + 0.5f)) + " C"; rows[n].color = kInk; ++n;
+    rows[n].label = "Uptime"; rows[n].value = dur(millis() / 1000); rows[n].color = kMuted; ++n;
+
+    for (int i = 0; i < n; ++i)
+    {
+        const int x = (i % 2 == 0) ? left : right;
+        const int y = top + (i / 2) * rowH;
+        g.setFont(&fonts::FreeSans9pt7b);
+        I.at(rows[i].label, x, y, textdatum_t::top_left, colW, rgb(g, kMuted));
+        g.setFont(&fonts::FreeSansBold18pt7b);
+        I.at(rows[i].value, x, y + 16, textdatum_t::top_left, colW, rgb(g, rows[i].color));
+    }
+    g.setFont(&fonts::FreeSans9pt7b);
+    I.at(String(STRVERSION) + (s.link ? "" : "   no inverter data"), I.padX, I.H - 14, textdatum_t::bottom_left,
+         I.W - 2 * I.padX, rgb(g, kMuted));
+}
+
+void DisplayService::drawFlow(const Snap &s)
+{
+    Impl &I = *_impl;
+    lgfx::LGFXBase &g = I.target();
+    const int gx = 100, gy = 105, hx = 380, hy = 105, bx = 240, by = 205, r = 44, br = 42;
+    const float t = s.ratingW > 0 ? s.ratingW : 6000.0f;
+    const uint32_t gridCol = scaleColor(g, 1.0f - (s.gridW - 500.0f) / 4500.0f);
+    const uint32_t battCol = scaleColor(g, (s.battPct - 25.0f) / 55.0f);
+    const uint32_t homeCol = s.gridOff ? scaleColor(g, 1.0f - (s.loadW - 500.0f) / 4500.0f) : rgb(g, kBlue);
+
+    auto ring = [&](int cx, int cy, int rad, float frac, uint32_t color) {
+        g.fillCircle(cx, cy, rad - 3, rgb(g, kPanel));
+        g.drawArc(cx, cy, rad - 4, rad, 0, 360, rgb(g, kTrack));
+        if (frac > 0.01f) { g.drawArc(cx, cy, rad - 4, rad, 270, 270 + static_cast<int>(360 * fminf(1.0f, frac)), color); }
+    };
+    auto line = [&](int x0, int y0, int x1, int y1, bool on, uint32_t color) {
+        g.drawLine(x0, y0, x1, y1, on ? color : rgb(g, kTrack));
+        if (on) { g.fillCircle((x0 + x1) / 2, (y0 + y1) / 2, 4, color); }
+    };
+
+    line(gx + r, gy, hx - r, hy, !s.gridOff && s.loadW > 0, rgb(g, kBlue));
+    line(gx + 32, gy + 34, bx - 40, by - 12, s.battChargeW >= 1 && !s.gridOff, rgb(g, kBlue));
+    line(bx + 40, by - 12, hx - 32, hy + 34, s.battDischargeW >= 1, rgb(g, kAmber));
+
+    ring(gx, gy, r, s.gridOff ? 0 : s.gridW / t, gridCol);
+    ring(hx, hy, r, s.gridOff ? s.loadW / t : 1.0f, homeCol);
+    ring(bx, by, br, s.fullPct > 0 ? s.battPct / s.fullPct : 0, battCol);
+
+    g.setFont(&fonts::FreeSansBold12pt7b);
+    I.at(s.gridOff ? String("off") : String("> ") + kw(s.gridW), gx, gy, textdatum_t::middle_center, 2 * r - 12,
+         s.gridOff ? rgb(g, kRed) : gridCol);
+    I.at(kw(s.loadW), hx, hy, textdatum_t::middle_center, 2 * r - 12, s.gridOff ? homeCol : rgb(g, kInk));
+    String bv = "idle";
+    uint32_t bc = kMuted;
+    if (s.battChargeW >= 1) { bv = String("v ") + kw(s.battChargeW); bc = kBlue; }
+    else if (s.battDischargeW >= 1) { bv = String("^ ") + kw(s.battDischargeW); bc = kAmber; }
+    I.at(bv, bx, by, textdatum_t::middle_center, 2 * br - 12, rgb(g, bc));
+
+    g.setFont(&fonts::FreeSans9pt7b);
+    I.at("Grid", gx, gy + r + 16, textdatum_t::top_center, 90, rgb(g, kMuted));
+    I.at("Home", hx, hy + r + 16, textdatum_t::top_center, 90, rgb(g, kMuted));
+    I.at(String("Battery ") + String(static_cast<int>(s.battPct + 0.5f)) + " %  " + String(s.battV, 1) + " V", bx,
+         by + br + 14, textdatum_t::top_center, 260, rgb(g, kMuted));
+
+    g.setFont(&fonts::FreeSansBold12pt7b);
+    if (s.gridOff && s.leftS)
+    {
+        I.at(String("Battery discharge time ") + dur(s.leftS), I.W / 2, I.H - 16, textdatum_t::bottom_center,
+             I.W - 2 * I.padX, rgb(g, kAmber));
+    }
+    else
+    {
+        g.setFont(&fonts::FreeSans9pt7b);
+        I.at(String(static_cast<int>(s.tempC + 0.5f)) + " C   " + String(s.outV, 1) + " V   " + dur(millis() / 1000),
+             I.W / 2, I.H - 16, textdatum_t::bottom_center, I.W - 2 * I.padX, rgb(g, kMuted));
+    }
+}
+
+void DisplayService::drawHistory(const Snap &s)
+{
+    Impl &I = *_impl;
+    lgfx::LGFXBase &g = I.target();
+    const int x0 = I.padX + 26, x1 = I.W - I.padX, y0 = I.hdrH + 18, y1 = I.H - 34;
+    const int h = y1 - y0, w = x1 - x0;
+    g.setFont(&fonts::FreeSans9pt7b);
+    for (int p = 0; p <= 100; p += 25)
+    {
+        const int y = y1 - h * p / 100;
+        g.drawFastHLine(x0, y, w, rgb(g, kTrack));
+        I.at(String(p), x0 - 6, y, textdatum_t::middle_right, 24, rgb(g, kMuted));
+    }
+    if (s.slots <= 0)
+    {
+        I.at("no history yet", I.W / 2, (y0 + y1) / 2, textdatum_t::middle_center, I.W / 2, rgb(g, kMuted));
+        return;
+    }
+    const int bw = w / s.slots;
+    for (int i = 0; i < s.slots; ++i)
+    {
+        const int x = x0 + i * bw;
+        const float loadW = s.load[i] * 25.0f;
+        const int bh = static_cast<int>(h * fminf(1.0f, loadW / (s.ratingW > 0 ? s.ratingW : 6000.0f)));
+        const uint32_t col = s.off[i] == 0 ? kGreen : (s.off[i] >= 15 ? kRed : kAmber);
+        if (bh > 0) { g.fillRect(x, y1 - bh, bw > 1 ? bw - 1 : 1, bh, rgb(g, col)); }
+    }
+    for (int i = 1; i < s.slots; ++i)
+    {
+        const int xa = x0 + (i - 1) * bw + bw / 2, xb = x0 + i * bw + bw / 2;
+        const int ya = y1 - h * s.batt[i - 1] / 100, yb = y1 - h * s.batt[i] / 100;
+        g.drawLine(xa, ya, xb, yb, rgb(g, kBlue));
+        g.drawLine(xa, ya - 1, xb, yb - 1, rgb(g, kBlue));
+    }
+    I.at("battery %", x0, I.H - 26, textdatum_t::top_left, 120, rgb(g, kBlue));
+    I.at("load, bars by grid state", x1, I.H - 26, textdatum_t::top_right, 260, rgb(g, kMuted));
+}
+
+void DisplayService::drawAlerts(const Snap &s)
+{
+    Impl &I = *_impl;
+    lgfx::LGFXBase &g = I.target();
+    const int top = I.hdrH + 12, rowH = 34;
+    if (s.alerts <= 0)
+    {
+        g.setFont(&fonts::FreeSans9pt7b);
+        I.at("no alerts", I.W / 2, I.H / 2, textdatum_t::middle_center, I.W / 2, rgb(g, kMuted));
+        return;
+    }
+    for (int i = 0; i < s.alerts && i < 7; ++i)
+    {
+        const int y = top + i * rowH;
+        String text;
+        uint32_t col = kBlue;
+        switch (s.aType[i])
+        {
+        case 'g': text = "Grid off"; break;
+        case 'G': text = "Grid on"; break;
+        case 'o': text = "Inverter offline"; col = kRed; break;
+        case 'r': text = "Unexpected restart"; col = kRed; break;
+        case 'i': text = "Inverter settings saved"; break;
+        case 'I': text = "Inverter change refused"; col = kAmber; break;
+        case 'b': text = String("Battery below ") + s.aValue[i] + " %"; col = kAmber; break;
+        default: text = String("Power ") + String(s.aValue[i] / 10.0f, 1) + " kW"; col = kAmber; break;
+        }
+        g.fillCircle(I.padX + 5, y + 9, 4, rgb(g, col));
+        g.setFont(&fonts::FreeSansBold12pt7b);
+        I.at(text, I.padX + 18, y, textdatum_t::top_left, I.W - I.padX - 120, rgb(g, kInk));
+        g.setFont(&fonts::FreeSans9pt7b);
+        const uint32_t m = s.aAgeMin[i];
+        I.at(m < 60 ? String(m) + "m ago" : (m < 1440 ? String(m / 60) + "h ago" : String(m / 1440) + "d ago"),
+             I.W - I.padX, y + 2, textdatum_t::top_right, 100, rgb(g, kMuted));
+    }
+}
+
 void DisplayService::renderDashboard(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress)
 {
     Impl &I = *_impl;
     lgfx::LGFXBase &g = I.target();
-    const int W = I.W;
-    const int H = I.H;
-    const int pad = I.padX;
-    const int gap = I.gap;
-    const int hdr = I.hdrH;
-    const int foot = I.footTop;
-    const int colX = I.colX;
-    const int rightW = W - pad - colX - gap;
+    (void)ipAddress;
+    Snap s;
+#if DISPLAY_DEMO
+    fillDemo(s);
+#else
+    fillLive(s, inverterConnected);
+#endif
+    static const char *const kTitles[kPages] = {"Summary", "Power flow", "Last 24 h", "Alerts"};
 
     g.startWrite();
     g.setTextSize(1);
-    if (!_drawnOnce || _forceRedraw)
+    if (!_drawnOnce || _forceRedraw || _impl->lastRenderedPage != _page)
     {
         g.fillScreen(TFT_BLACK);
-        g.drawFastHLine(0, hdr, W, TFT_DARKGREY);
-        g.drawFastHLine(0, foot, W, TFT_DARKGREY);
-        g.drawFastVLine(colX - gap, hdr + gap, foot - hdr - 2 * gap, TFT_DARKGREY);
+        _impl->lastRenderedPage = _page;
     }
-
-    // Header: what the inverter is doing, then the two link letters and the address.
-    const String mode = inverterConnected ? readText(DESCR_Inverter_Operation_Mode) : String();
-    String title = mode;
-    if (apMode) { title = "Setup AP"; }
-    else if (!inverterConnected) { title = "No inverter"; }
-    else if (!title.length()) { title = "?"; }
-    g.setFont(&fonts::FreeSansBold18pt7b);
-    I.at(title, pad, hdr / 2, textdatum_t::middle_left, colX - pad - gap,
-         apMode ? TFT_YELLOW : (inverterConnected ? modeColor(mode) : TFT_DARKGREY));
-    g.setFont(&fonts::FreeSansBold12pt7b);
-    I.at("I", W - pad, hdr / 2, textdatum_t::middle_right, 22, inverterConnected ? TFT_GREEN : TFT_RED);
-    I.at(apMode ? String("AP") : String("W"), W - pad - 28, hdr / 2, textdatum_t::middle_right, 36,
-         apMode ? TFT_YELLOW : (wifiConnected ? TFT_GREEN : TFT_RED));
-    g.setFont(&fonts::FreeSans9pt7b);
-    I.at(apMode ? String("192.168.4.1") : ipAddress, W - pad - 74, hdr / 2, textdatum_t::middle_right,
-         W / 3, TFT_LIGHTGREY);
-
-    // Left: battery percentage, bar, voltage and current.
-    int percent = -1;
-    float value = 0;
-    if (inverterConnected && readNumber(DESCR_Battery_Percent, value))
+    drawHeader(kTitles[_page], wifiConnected, apMode, inverterConnected);
+    switch (_page)
     {
-        percent = constrain(static_cast<int>(value + 0.5f), 0, 100);
+    case 1: drawFlow(s); break;
+    case 2: drawHistory(s); break;
+    case 3: drawAlerts(s); break;
+    default: drawSummary(s); break;
     }
-    const uint32_t color = inverterConnected ? levelColor(percent) : TFT_DARKGREY;
-    const int bigY = hdr + (foot - hdr) * 30 / 100;
-    const int split = colX - gap - 34;
-    g.setFont(&fonts::Font8);
-    I.at(percent < 0 ? String("--") : String(percent), split, bigY, textdatum_t::middle_right, split - pad, color);
-    g.setFont(&fonts::FreeSansBold18pt7b);
-    I.at("%", split + 6, bigY + g.fontHeight() / 3, textdatum_t::bottom_left, colX - gap - split - 6, color);
-
-    const int barX = pad;
-    const int barW = colX - gap - 2 * pad;
-    const int barH = (foot - hdr) / 9;
-    const int barY = hdr + (foot - hdr) * 62 / 100;
-    const int inset = 3;
-    g.drawRoundRect(barX, barY, barW, barH, 4, TFT_WHITE);
-    const int inner = barW - 2 * inset;
-    const int fullPct = _settings.get.batteryFullPct() > 0 ? _settings.get.batteryFullPct() : 100;
-    const int fill = percent >= 0 ? (inner * constrain(percent, 0, fullPct)) / fullPct : 0;
-    if (fill > 0) { g.fillRect(barX + inset, barY + inset, fill, barH - 2 * inset, color); }
-    if (fill < inner) { g.fillRect(barX + inset + fill, barY + inset, inner - fill, barH - 2 * inset, TFT_BLACK); }
-
-    String volts = inverterConnected ? fmtOrDash(DESCR_Battery_Voltage, 1, " V") : String("-- V");
-    String amps = "--";
-    float current = 0;
-    if (inverterConnected && readBatteryCurrent(current))
-    {
-        amps = String(current >= 0 ? "+" : "") + fmt(current, 0) + " A";
-    }
-    g.setFont(&fonts::FreeSansBold12pt7b);
-    const int underY = barY + barH + gap + 2;
-    I.at(volts, pad, underY, textdatum_t::top_left, barW / 2, TFT_WHITE);
-    I.at(amps, pad + barW, underY, textdatum_t::top_right, barW / 2,
-         current > 0.5f ? TFT_GREEN : (current < -0.5f ? TFT_ORANGE : TFT_LIGHTGREY));
-
-    // Right: one labelled row per reading.
-    struct Row
-    {
-        const char *label;
-        String value;
-        uint32_t color;
-    };
-    Row rows[5];
-    int n = 0;
-    float gridV = 0;
-    const bool haveGrid = inverterConnected && readNumber(DESCR_AC_In_Voltage, gridV) && gridV > 50.0f;
-    rows[n].label = "GRID";
-    rows[n].value = haveGrid ? fmtOrDash(DESCR_AC_In_Voltage, 1, " V") + "  " + fmtOrDash(DESCR_AC_In_Frequency, 1, " Hz")
-                             : String(inverterConnected ? "off" : "--");
-    rows[n].color = haveGrid ? TFT_GREEN : (inverterConnected ? TFT_RED : TFT_DARKGREY);
-    ++n;
-    rows[n].label = "LOAD";
-    rows[n].value = inverterConnected ? fmtOrDash(DESCR_AC_Out_Watt, 0, " W") + "  " + fmtOrDash(DESCR_AC_Out_Percent, 0, " %")
-                                      : String("--");
-    rows[n].color = inverterConnected ? TFT_ORANGE : TFT_DARKGREY;
-    ++n;
-    rows[n].label = "OUTPUT";
-    rows[n].value = inverterConnected ? fmtOrDash(DESCR_AC_Out_Voltage, 1, " V") + "  " + fmtOrDash(DESCR_AC_Out_Frequency, 1, " Hz")
-                                      : String("--");
-    rows[n].color = inverterConnected ? TFT_WHITE : TFT_DARKGREY;
-    ++n;
-    if (_settings.get.solarConnected())
-    {
-        rows[n].label = "SOLAR";
-        rows[n].value = inverterConnected ? fmtOrDash(DESCR_PV_Charging_Power, 0, " W") + "  " + fmtOrDash(DESCR_PV_Input_Voltage, 0, " V")
-                                          : String("--");
-        rows[n].color = inverterConnected ? TFT_YELLOW : TFT_DARKGREY;
-        ++n;
-    }
-    rows[n].label = "INVERTER";
-    rows[n].value = inverterConnected ? fmtOrDash(DESCR_Inverter_Bus_Temperature, 0, " C") : String("--");
-    rows[n].color = inverterConnected ? TFT_WHITE : TFT_DARKGREY;
-    ++n;
-
-    const int rowTop = hdr + gap * 2;
-    const int rowSpace = (foot - rowTop - gap) / n;
-    for (int i = 0; i < n; ++i)
-    {
-        const int y = rowTop + i * rowSpace;
-        g.setFont(&fonts::FreeSans9pt7b);
-        I.at(rows[i].label, colX + gap, y, textdatum_t::top_left, rightW, TFT_DARKGREY);
-        g.setFont(&fonts::FreeSansBold12pt7b);
-        I.at(rows[i].value, colX + gap, y + 17, textdatum_t::top_left, rightW, rows[i].color);
-    }
-
-    // Footer: how long it has been up, and which build this is.
-    g.setFont(&fonts::FreeSans9pt7b);
-    const int footY = (foot + H) / 2;
-    I.at(String("up ") + upTimeText(millis()), pad, footY, textdatum_t::middle_left, W / 3, TFT_DARKGREY);
-    I.at(STRVERSION, W - pad, footY, textdatum_t::middle_right, W / 3, TFT_DARKGREY);
     g.endWrite();
 }
 
@@ -1131,7 +1338,7 @@ void DisplayService::render(bool wifiConnected, bool apMode, bool inverterConnec
     }
 }
 
-#endif // TFT_SINGLE_PAGE
+#endif // TFT_DASH_PAGES
 
 #else // !HAS_TFT
 
