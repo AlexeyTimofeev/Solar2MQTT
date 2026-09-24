@@ -22,6 +22,11 @@ extern Settings _settings;
 #ifndef TFT_BUTTON_PREV
 #define TFT_BUTTON_PREV 0
 #endif
+// One screen with everything instead of pages you tap through. The paged layout is a 240x135
+// design scaled up, which looks soft on a big panel; the dashboard draws at native font size.
+#ifndef TFT_SINGLE_PAGE
+#define TFT_SINGLE_PAGE 0
+#endif
 
 namespace
 {
@@ -496,6 +501,12 @@ struct DisplayService::Impl
     int bigBottom = kBaseBigBottom;
     int rowAY = kBaseRowAY;
     int rowBY = kBaseRowBY;
+    // Single-screen geometry, in real pixels (no reference-layout scaling).
+    int padX = 8;
+    int gap = 8;
+    int hdrH = 40;
+    int footTop = 280;
+    int colX = 240;
 
     void computeGeometry()
     {
@@ -510,6 +521,11 @@ struct DisplayService::Impl
         bigBottom = static_cast<int>(kBaseBigBottom * sy);
         rowAY = static_cast<int>(kBaseRowAY * sy);
         rowBY = static_cast<int>(kBaseRowBY * sy);
+        padX = W / 40;
+        gap = W / 60;
+        hdrH = H * 7 / 50;
+        footTop = H - H * 7 / 50;
+        colX = W / 2;
     }
     int X(int baseX) const { return static_cast<int>(baseX * sx); }
 
@@ -523,6 +539,18 @@ struct DisplayService::Impl
         g.setTextDatum(datum);
         g.setTextPadding(padding);
         g.setTextSize(fs);
+        g.setTextColor(color, TFT_BLACK);
+        g.drawString(s, x, y);
+        g.setTextPadding(0);
+    }
+
+    // Same, but at the font's own size: no integer scaling, so glyph edges stay sharp.
+    void at(const String &s, int x, int y, textdatum_t datum, int padding, uint32_t color)
+    {
+        lgfx::LGFXBase &g = target();
+        g.setTextDatum(datum);
+        g.setTextPadding(padding);
+        g.setTextSize(1);
         g.setTextColor(color, TFT_BLACK);
         g.drawString(s, x, y);
         g.setTextPadding(0);
@@ -670,6 +698,7 @@ void DisplayService::loop(bool wifiConnected, bool apMode, bool inverterConnecte
     }
     const uint32_t now = millis();
 
+#if !TFT_SINGLE_PAGE
     const bool solarConnected = _settings.get.solarConnected();
     auto pageHidden = [solarConnected](uint8_t page) { return page == PageSolar && !solarConnected; };
     bool tapNext = false;
@@ -689,6 +718,7 @@ void DisplayService::loop(bool wifiConnected, bool apMode, bool inverterConnecte
         _page = PageBattery;
         _forceRedraw = true;
     }
+#endif // !TFT_SINGLE_PAGE
 
     if (!_forceRedraw && (now - _lastPollMs) < kPollIntervalMs)
     {
@@ -721,6 +751,19 @@ String DisplayService::buildSignature(bool wifiConnected, bool apMode, bool inve
     s += inverterConnected ? 'I' : 'i';
     s += ipAddress;
     s += '|';
+#if TFT_SINGLE_PAGE
+    if (inverterConnected)
+    {
+        s += readText(DESCR_Inverter_Operation_Mode);
+        s += fmtOrDash(DESCR_Battery_Percent, 0, "") + fmtOrDash(DESCR_Battery_Voltage, 1, "") +
+             fmtOrDash(DESCR_Battery_Charge_Current, 0, "") + fmtOrDash(DESCR_Battery_Discharge_Current, 0, "") +
+             fmtOrDash(DESCR_AC_In_Voltage, 1, "") + fmtOrDash(DESCR_AC_In_Frequency, 1, "") +
+             fmtOrDash(DESCR_AC_Out_Watt, 0, "") + fmtOrDash(DESCR_AC_Out_Percent, 0, "") +
+             fmtOrDash(DESCR_AC_Out_Voltage, 1, "") + fmtOrDash(DESCR_AC_Out_Frequency, 1, "") +
+             fmtOrDash(DESCR_PV_Charging_Power, 0, "") + fmtOrDash(DESCR_Inverter_Bus_Temperature, 0, "");
+    }
+    return s;
+#endif
     if (inverterConnected)
     {
         s += readText(DESCR_Inverter_Operation_Mode);
@@ -748,6 +791,175 @@ String DisplayService::buildSignature(bool wifiConnected, bool apMode, bool inve
     }
     return s;
 }
+
+#if TFT_SINGLE_PAGE
+
+namespace
+{
+String upTimeText(uint32_t ms)
+{
+    const uint32_t s = ms / 1000;
+    if (s < 3600) { return String(s / 60) + "m"; }
+    if (s < 86400) { return String(s / 3600) + "h " + String((s % 3600) / 60) + "m"; }
+    return String(s / 86400) + "d " + String((s % 86400) / 3600) + "h";
+}
+
+uint32_t modeColor(const String &mode)
+{
+    if (mode.equalsIgnoreCase("Line")) { return TFT_GREEN; }
+    if (mode.equalsIgnoreCase("Battery")) { return TFT_ORANGE; }
+    if (mode.equalsIgnoreCase("Fault")) { return TFT_RED; }
+    return TFT_CYAN;
+}
+} // namespace
+
+// Everything on one screen: mode and link state on top, battery on the left, the inverter's
+// numbers on the right, uptime and version at the bottom. Every string is drawn with
+// setTextSize(1) and a font that is already the right size, so nothing is scaled up.
+void DisplayService::renderDashboard(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress)
+{
+    Impl &I = *_impl;
+    lgfx::LGFXBase &g = I.target();
+    const int W = I.W;
+    const int H = I.H;
+    const int pad = I.padX;
+    const int gap = I.gap;
+    const int hdr = I.hdrH;
+    const int foot = I.footTop;
+    const int colX = I.colX;
+    const int rightW = W - pad - colX - gap;
+
+    g.startWrite();
+    g.setTextSize(1);
+    if (!_drawnOnce || _forceRedraw)
+    {
+        g.fillScreen(TFT_BLACK);
+        g.drawFastHLine(0, hdr, W, TFT_DARKGREY);
+        g.drawFastHLine(0, foot, W, TFT_DARKGREY);
+        g.drawFastVLine(colX - gap, hdr + gap, foot - hdr - 2 * gap, TFT_DARKGREY);
+    }
+
+    // Header: what the inverter is doing, then the two link letters and the address.
+    const String mode = inverterConnected ? readText(DESCR_Inverter_Operation_Mode) : String();
+    String title = mode;
+    if (apMode) { title = "Setup AP"; }
+    else if (!inverterConnected) { title = "No inverter"; }
+    else if (!title.length()) { title = "?"; }
+    g.setFont(&fonts::FreeSansBold18pt7b);
+    I.at(title, pad, hdr / 2, textdatum_t::middle_left, colX - pad - gap,
+         apMode ? TFT_YELLOW : (inverterConnected ? modeColor(mode) : TFT_DARKGREY));
+    g.setFont(&fonts::FreeSansBold12pt7b);
+    I.at("I", W - pad, hdr / 2, textdatum_t::middle_right, 22, inverterConnected ? TFT_GREEN : TFT_RED);
+    I.at(apMode ? String("AP") : String("W"), W - pad - 28, hdr / 2, textdatum_t::middle_right, 36,
+         apMode ? TFT_YELLOW : (wifiConnected ? TFT_GREEN : TFT_RED));
+    g.setFont(&fonts::FreeSans9pt7b);
+    I.at(apMode ? String("192.168.4.1") : ipAddress, W - pad - 74, hdr / 2, textdatum_t::middle_right,
+         W / 3, TFT_LIGHTGREY);
+
+    // Left: battery percentage, bar, voltage and current.
+    int percent = -1;
+    float value = 0;
+    if (inverterConnected && readNumber(DESCR_Battery_Percent, value))
+    {
+        percent = constrain(static_cast<int>(value + 0.5f), 0, 100);
+    }
+    const uint32_t color = inverterConnected ? levelColor(percent) : TFT_DARKGREY;
+    const int bigY = hdr + (foot - hdr) * 30 / 100;
+    const int split = colX - gap - 34;
+    g.setFont(&fonts::Font8);
+    I.at(percent < 0 ? String("--") : String(percent), split, bigY, textdatum_t::middle_right, split - pad, color);
+    g.setFont(&fonts::FreeSansBold18pt7b);
+    I.at("%", split + 6, bigY + g.fontHeight() / 3, textdatum_t::bottom_left, colX - gap - split - 6, color);
+
+    const int barX = pad;
+    const int barW = colX - gap - 2 * pad;
+    const int barH = (foot - hdr) / 9;
+    const int barY = hdr + (foot - hdr) * 62 / 100;
+    const int inset = 3;
+    g.drawRoundRect(barX, barY, barW, barH, 4, TFT_WHITE);
+    const int inner = barW - 2 * inset;
+    const int fullPct = _settings.get.batteryFullPct() > 0 ? _settings.get.batteryFullPct() : 100;
+    const int fill = percent >= 0 ? (inner * constrain(percent, 0, fullPct)) / fullPct : 0;
+    if (fill > 0) { g.fillRect(barX + inset, barY + inset, fill, barH - 2 * inset, color); }
+    if (fill < inner) { g.fillRect(barX + inset + fill, barY + inset, inner - fill, barH - 2 * inset, TFT_BLACK); }
+
+    String volts = inverterConnected ? fmtOrDash(DESCR_Battery_Voltage, 1, " V") : String("-- V");
+    String amps = "--";
+    float current = 0;
+    if (inverterConnected && readBatteryCurrent(current))
+    {
+        amps = String(current >= 0 ? "+" : "") + fmt(current, 0) + " A";
+    }
+    g.setFont(&fonts::FreeSansBold12pt7b);
+    const int underY = barY + barH + gap + 2;
+    I.at(volts, pad, underY, textdatum_t::top_left, barW / 2, TFT_WHITE);
+    I.at(amps, pad + barW, underY, textdatum_t::top_right, barW / 2,
+         current > 0.5f ? TFT_GREEN : (current < -0.5f ? TFT_ORANGE : TFT_LIGHTGREY));
+
+    // Right: one labelled row per reading.
+    struct Row
+    {
+        const char *label;
+        String value;
+        uint32_t color;
+    };
+    Row rows[5];
+    int n = 0;
+    float gridV = 0;
+    const bool haveGrid = inverterConnected && readNumber(DESCR_AC_In_Voltage, gridV) && gridV > 50.0f;
+    rows[n].label = "GRID";
+    rows[n].value = haveGrid ? fmtOrDash(DESCR_AC_In_Voltage, 1, " V") + "  " + fmtOrDash(DESCR_AC_In_Frequency, 1, " Hz")
+                             : String(inverterConnected ? "off" : "--");
+    rows[n].color = haveGrid ? TFT_GREEN : (inverterConnected ? TFT_RED : TFT_DARKGREY);
+    ++n;
+    rows[n].label = "LOAD";
+    rows[n].value = inverterConnected ? fmtOrDash(DESCR_AC_Out_Watt, 0, " W") + "  " + fmtOrDash(DESCR_AC_Out_Percent, 0, " %")
+                                      : String("--");
+    rows[n].color = inverterConnected ? TFT_ORANGE : TFT_DARKGREY;
+    ++n;
+    rows[n].label = "OUTPUT";
+    rows[n].value = inverterConnected ? fmtOrDash(DESCR_AC_Out_Voltage, 1, " V") + "  " + fmtOrDash(DESCR_AC_Out_Frequency, 1, " Hz")
+                                      : String("--");
+    rows[n].color = inverterConnected ? TFT_WHITE : TFT_DARKGREY;
+    ++n;
+    if (_settings.get.solarConnected())
+    {
+        rows[n].label = "SOLAR";
+        rows[n].value = inverterConnected ? fmtOrDash(DESCR_PV_Charging_Power, 0, " W") + "  " + fmtOrDash(DESCR_PV_Input_Voltage, 0, " V")
+                                          : String("--");
+        rows[n].color = inverterConnected ? TFT_YELLOW : TFT_DARKGREY;
+        ++n;
+    }
+    rows[n].label = "INVERTER";
+    rows[n].value = inverterConnected ? fmtOrDash(DESCR_Inverter_Bus_Temperature, 0, " C") : String("--");
+    rows[n].color = inverterConnected ? TFT_WHITE : TFT_DARKGREY;
+    ++n;
+
+    const int rowTop = hdr + gap * 2;
+    const int rowSpace = (foot - rowTop - gap) / n;
+    for (int i = 0; i < n; ++i)
+    {
+        const int y = rowTop + i * rowSpace;
+        g.setFont(&fonts::FreeSans9pt7b);
+        I.at(rows[i].label, colX + gap, y, textdatum_t::top_left, rightW, TFT_DARKGREY);
+        g.setFont(&fonts::FreeSansBold12pt7b);
+        I.at(rows[i].value, colX + gap, y + 17, textdatum_t::top_left, rightW, rows[i].color);
+    }
+
+    // Footer: how long it has been up, and which build this is.
+    g.setFont(&fonts::FreeSans9pt7b);
+    const int footY = (foot + H) / 2;
+    I.at(String("up ") + upTimeText(millis()), pad, footY, textdatum_t::middle_left, W / 3, TFT_DARKGREY);
+    I.at(STRVERSION, W - pad, footY, textdatum_t::middle_right, W / 3, TFT_DARKGREY);
+    g.endWrite();
+}
+
+void DisplayService::render(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress)
+{
+    renderDashboard(wifiConnected, apMode, inverterConnected, ipAddress);
+}
+
+#else // paged layout, used by the small T-Display
 
 void DisplayService::render(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress)
 {
@@ -918,6 +1130,8 @@ void DisplayService::render(bool wifiConnected, bool apMode, bool inverterConnec
         _impl->text(ipAddress, I.W - I.X(4), I.rowBY, textdatum_t::top_right, I.X(112), TFT_LIGHTGREY);
     }
 }
+
+#endif // TFT_SINGLE_PAGE
 
 #else // !HAS_TFT
 

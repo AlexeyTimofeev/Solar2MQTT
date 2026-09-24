@@ -56,6 +56,7 @@ private:
 
     bool pollButton(Button &button, uint32_t now);
     void render(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress);
+    void renderDashboard(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress);
     String buildSignature(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress) const;
 #endif
 };
