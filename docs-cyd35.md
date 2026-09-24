@@ -96,7 +96,7 @@ C — GT911 (I2C):
 
 ## 5. Connectors, free GPIOs, UART + DS18B20 plan
 
-All are JST 1.25 mm (macsbug/esp3d; rzeldent lists the I2C ones as JST 1.0 **[pitch unconfirmed — measure]**).
+All are **JST 1.25 mm, confirmed 2026-09-24**. macsbug's parts list buys "HC-1.25-4PWT, JST1.25, 10cm, single head, 4P" for P1/P3/CN1 and a 2P version for P4 (speaker). On Alex's R board the CN1 socket measures 0.75 mm between contacts, which with ~0.5 mm contacts is a 1.25 mm pitch, and its silkscreen reads GND / IO2x / IO2x / 3V3 — so rzeldent's "JST 1.0" note does not apply to these connectors. Mating cable: PicoBlade-style 1.25 mm 4P, no latch.
 
 | Connector | Pins (in order) | Notes |
 |---|---|---|
