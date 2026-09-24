@@ -27,7 +27,7 @@ extern Settings _settings;
 #ifndef TFT_DASH_PAGES
 #define TFT_DASH_PAGES 0
 #endif
-#define TFT_DASH_PAGE_COUNT 4
+#define TFT_DASH_PAGE_COUNT 5
 #ifndef DISPLAY_DEMO
 #define DISPLAY_DEMO 0
 #endif
@@ -1023,6 +1023,12 @@ void DisplayService::fillLive(Snap &s, bool inverterConnected)
     const float idle = _settings.get.inverterIdleW();
     s.gridW = s.gridOff ? 0 : s.loadW + fmaxf(0.0f, s.battChargeW - s.pvW) / eff + idle;
     s.fullPct = _settings.get.batteryFullPct() > 0 ? _settings.get.batteryFullPct() : 100;
+    const float wh = _settings.get.batteryCapacityWh();
+    const float reserve = _settings.get.batteryReservePct();
+    const float draw = s.loadW / eff + idle;
+    s.leftS = (wh > 0 && draw > 0 && s.battPct > reserve)
+                  ? static_cast<uint32_t>(wh * (s.battPct - reserve) / 100.0f / draw * 3600.0f)
+                  : 0;
 }
 
 // Header: page title, the four page dots, link letters and the clock.
@@ -1056,6 +1062,97 @@ void DisplayService::drawHeader(const char *title, bool wifiConnected, bool apMo
         I.at(buf, I.W - I.padX - 74, dotY, textdatum_t::middle_right, 70, rgb(g, kMuted));
     }
     g.drawFastHLine(0, I.hdrH, I.W, rgb(g, kTrack));
+}
+
+// Page 0: readable from across the room. One state colour carries the screen - green on grid,
+// amber on battery, red for a fault or a dead link - with the battery as a ring, the load as a bar,
+// and the time left in large type whenever the battery is carrying the house.
+void DisplayService::drawStatus(const Snap &s)
+{
+    Impl &I = *_impl;
+    lgfx::LGFXBase &g = I.target();
+    const int W = I.W, H = I.H, pad = I.padX;
+
+    const bool onBattery = s.link && (s.gridOff || s.mode.equalsIgnoreCase("Battery"));
+    uint32_t state = kGreen;
+    String label = "On grid";
+    if (!s.link) { state = kRed; label = "No inverter"; }
+    else if (s.mode.equalsIgnoreCase("Fault")) { state = kRed; label = "Fault"; }
+    else if (onBattery)
+    {
+        state = kAmber;
+        label = "On battery";
+        if (s.battPct > 0 && s.battPct <= 20) { state = kRed; }
+    }
+
+    // State band: the colour is the message, so it fills the width and the text sits on it.
+    const int band = 58;
+    g.fillRect(0, 0, W, band, rgb(g, state));
+    g.setFont(&fonts::FreeSansBold24pt7b);
+    g.setTextDatum(textdatum_t::middle_left);
+    g.setTextColor(TFT_BLACK, rgb(g, state));
+    g.drawString(label, pad, band / 2);
+    const time_t now = time(nullptr);
+    if (now > 1700000000)
+    {
+        struct tm tmv;
+        const time_t shifted = now + static_cast<time_t>(_settings.get.tzOffsetHours()) * 3600;
+        gmtime_r(&shifted, &tmv);
+        char clock[8];
+        snprintf(clock, sizeof(clock), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
+        g.setFont(&fonts::FreeSansBold18pt7b);
+        g.setTextDatum(textdatum_t::middle_right);
+        g.drawString(clock, W - pad, band / 2);
+    }
+    for (int i = 0; i < TFT_DASH_PAGE_COUNT; ++i)
+    {
+        const int x = W / 2 - ((TFT_DASH_PAGE_COUNT - 1) * 18) / 2 + i * 18;
+        if (i == _page) { g.fillCircle(x, band - 12, 4, TFT_BLACK); }
+        else { g.drawCircle(x, band - 12, 4, TFT_BLACK); }
+    }
+    g.setTextColor(rgb(g, kInk), TFT_BLACK);
+
+    // Battery ring, the biggest thing on the screen.
+    const int cx = 138, cy = band + (H - band) / 2 - 8, r = 84;
+    g.drawArc(cx, cy, r - 13, r, 0, 360, rgb(g, kTrack));
+    const float frac = s.fullPct > 0 ? fminf(1.0f, s.battPct / s.fullPct) : 0.0f;
+    if (frac > 0.01f) { g.drawArc(cx, cy, r - 13, r, 270, 270 + static_cast<int>(360 * frac), rgb(g, state)); }
+    const String pct = s.link ? String(static_cast<int>(s.battPct + 0.5f)) : String("--");
+    g.setFont(&fonts::Font8);
+    g.setTextColor(rgb(g, state), TFT_BLACK);
+    const int pctW = g.textWidth(pct); // place the % from the real width, so 100 % fits as well as 7 %
+    g.setTextDatum(textdatum_t::middle_center);
+    g.drawString(pct, cx - 16, cy - 4);
+    g.setFont(&fonts::FreeSansBold18pt7b);
+    g.setTextDatum(textdatum_t::middle_left);
+    g.drawString("%", cx - 16 + pctW / 2 + 8, cy + 12);
+    g.setFont(&fonts::FreeSans12pt7b);
+    String under = String(s.battV, 1) + " V";
+    if (s.battChargeW >= 1) { under += "   +" + kw(s.battChargeW); }
+    else if (s.battDischargeW >= 1) { under += "   -" + kw(s.battDischargeW); }
+    I.at(under, cx, cy + r + 6, textdatum_t::top_center, 240, rgb(g, kMuted));
+
+    // Load, as a number and a bar against the inverter's rating.
+    const int rx = 256, rw = W - pad - rx;
+    g.setFont(&fonts::FreeSans9pt7b);
+    I.at("LOAD", rx, band + 18, textdatum_t::top_left, rw, rgb(g, kMuted));
+    g.setFont(&fonts::FreeSansBold24pt7b);
+    I.at(s.link ? kw(s.loadW) : String("--"), rx, band + 34, textdatum_t::top_left, rw, rgb(g, kInk));
+    const int by = band + 86, bh = 26;
+    g.drawRoundRect(rx, by, rw, bh, 4, rgb(g, kTrack));
+    const int inner = rw - 6;
+    const int fill = static_cast<int>(inner * fminf(1.0f, s.loadW / (s.ratingW > 0 ? s.ratingW : 6000.0f)));
+    if (fill > 0) { g.fillRect(rx + 3, by + 3, fill, bh - 6, rgb(g, state)); }
+    if (fill < inner) { g.fillRect(rx + 3 + fill, by + 3, inner - fill, bh - 6, TFT_BLACK); }
+
+    // On battery the remaining time matters most; on grid, show the grid instead.
+    g.setFont(&fonts::FreeSans9pt7b);
+    I.at(onBattery ? "TIME LEFT" : "GRID", rx, by + 46, textdatum_t::top_left, rw, rgb(g, kMuted));
+    g.setFont(&fonts::FreeSansBold24pt7b);
+    String third = "--";
+    if (onBattery) { third = s.leftS ? dur(s.leftS) : String("--"); }
+    else if (s.link) { third = String(s.gridV, 0) + " V"; }
+    I.at(third, rx, by + 62, textdatum_t::top_left, rw, rgb(g, state));
 }
 
 void DisplayService::drawSummary(const Snap &s)
@@ -1243,7 +1340,7 @@ void DisplayService::renderDashboard(bool wifiConnected, bool apMode, bool inver
 #else
     fillLive(s, inverterConnected);
 #endif
-    static const char *const kTitles[kPages] = {"Summary", "Power flow", "Last 24 h", "Alerts"};
+    static const char *const kTitles[kPages] = {"Status", "Summary", "Power flow", "Last 24 h", "Alerts"};
 
     g.setTextSize(1);
     if (!_drawnOnce || _forceRedraw || _impl->lastRenderedPage != _page)
@@ -1251,14 +1348,15 @@ void DisplayService::renderDashboard(bool wifiConnected, bool apMode, bool inver
         g.fillScreen(TFT_BLACK);
         _impl->lastRenderedPage = _page;
     }
-    drawHeader(kTitles[_page], wifiConnected, apMode, inverterConnected);
+    if (_page != 0) { drawHeader(kTitles[_page], wifiConnected, apMode, inverterConnected); }
     latchTouch(millis());
     switch (_page)
     {
-    case 1: drawFlow(s); break;
-    case 2: drawHistory(s); break;
-    case 3: drawAlerts(s); break;
-    default: drawSummary(s); break;
+    case 1: drawSummary(s); break;
+    case 2: drawFlow(s); break;
+    case 3: drawHistory(s); break;
+    case 4: drawAlerts(s); break;
+    default: drawStatus(s); break; // page 0: the glance screen draws its own header band
     }
     latchTouch(millis());
 }
