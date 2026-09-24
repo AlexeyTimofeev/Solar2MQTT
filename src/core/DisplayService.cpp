@@ -625,7 +625,7 @@ void DisplayService::begin()
     static uint16_t kTouchCal[8] = {340, 3867, 3786, 3847, 350, 325, 3801, 297};
     _impl->tft.setTouchCalibrate(kTouchCal);
 #endif
-    _impl->tft.setBrightness(200);
+    _impl->tft.setBrightness(255); // full: the 3.5" backlight is dim at the old T-Display default of 200
     _impl->tft.fillScreen(TFT_BLACK);
     _impl->computeGeometry();
 
