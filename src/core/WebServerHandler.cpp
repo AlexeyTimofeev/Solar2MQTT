@@ -655,6 +655,7 @@ void WebServerHandler::registerRoutes()
         const int W = displayService.panelWidth();
         const int H = displayService.panelHeight();
         if (W <= 0 || H <= 0) { return request->send(503, "text/plain", "no panel"); }
+        displayService.setRedrawHold(true); // a read spans ~1.5 s: without this it mixes two frames
         const size_t rowBytes = static_cast<size_t>(W) * 3;
         const size_t total = 54 + rowBytes * H;
         static uint8_t header[54];
@@ -684,6 +685,7 @@ void WebServerHandler::registerRoutes()
                     if (cachedY != y) { displayService.readRow(y, row, W); cachedY = y; }
                     buf[made++] = row[within]; // already B, G, R per pixel
                 }
+                if (made == 0) { displayService.setRedrawHold(false); } // transfer finished
                 return made; });
         request->send(res); });
 

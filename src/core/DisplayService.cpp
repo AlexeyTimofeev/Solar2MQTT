@@ -731,6 +731,13 @@ bool DisplayService::calibrationValues(uint16_t *out) const
     return true;
 }
 
+void DisplayService::setRedrawHold(bool on)
+{
+    _holdRedraw = on;
+    _holdSinceMs = millis();
+    if (!on) { _forceRedraw = true; } // repaint once the reader is done
+}
+
 void DisplayService::setPage(uint8_t page)
 {
     _page = static_cast<uint8_t>(page % TFT_DASH_PAGE_COUNT);
@@ -813,6 +820,12 @@ void DisplayService::loop(bool wifiConnected, bool apMode, bool inverterConnecte
     }
 #endif // !TFT_DASH_PAGES
 
+    if (_holdRedraw)
+    {
+        if (now - _holdSinceMs < 15000) { return; } // a reader is copying the panel; never freeze for long
+        _holdRedraw = false;
+        _forceRedraw = true;
+    }
     if (!_forceRedraw && (now - _lastPollMs) < kPollIntervalMs)
     {
         return;
@@ -1210,7 +1223,7 @@ void DisplayService::drawAlerts(const Snap &s)
         }
         g.fillCircle(I.padX + 5, y + 9, 4, rgb(g, col));
         g.setFont(&fonts::FreeSansBold12pt7b);
-        I.at(text, I.padX + 18, y, textdatum_t::top_left, I.W - I.padX - 120, rgb(g, kInk));
+        I.at(text, I.padX + 18, y, textdatum_t::top_left, I.W - I.padX - 120, rgb(g, col));
         g.setFont(&fonts::FreeSans9pt7b);
         const uint32_t m = s.aAgeMin[i];
         I.at(m < 60 ? String(m) + "m ago" : (m < 1440 ? String(m / 60) + "h ago" : String(m / 1440) + "d ago"),
