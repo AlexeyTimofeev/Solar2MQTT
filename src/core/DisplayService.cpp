@@ -1146,7 +1146,7 @@ void DisplayService::drawStatus(const Snap &s)
     if (loadFrac > 0.01f) { g.fillArc(rx2, cy, rIn, rOut, 270, 270 + static_cast<int>(360 * loadFrac), rgb(g, state)); }
     g.setFont(&fonts::Font8);
     g.setTextDatum(textdatum_t::middle_center);
-    g.setTextColor(rgb(g, kInk), TFT_BLACK);
+    g.setTextColor(rgb(g, state), TFT_BLACK);
     // from the same fraction as the arc, so the number and the ring can never disagree
     g.drawString(s.link ? String(static_cast<int>(loadFrac * 100.0f + 0.5f)) : String("--"), rx2, cy);
     g.setFont(&fonts::FreeSansBold24pt7b);
