@@ -1115,22 +1115,19 @@ void DisplayService::drawHeader(const char *title, bool wifiConnected, bool apMo
     g.drawFastHLine(0, I.hdrH, I.W, rgb(g, kTrack));
 }
 
-// Page 0: readable from across the room. Two rings - battery and load - under a band whose colour
-// is the whole message, with the battery time left spelled out underneath.
+// Page 0: three things only - the battery as a ring with its percentage, the load as a ring with no
+// number, and the time left along the bottom. The state colour rides a thin accent, not a heavy band.
 void DisplayService::drawStatus(const Snap &s)
 {
     Impl &I = *_impl;
     lgfx::LGFXBase &g = I.target();
-    const int W = I.W, pad = I.padX;
+    const int W = I.W, H = I.H, pad = I.padX;
     String label;
     const uint32_t state = stateColor(s, &label);
 
-    const int band = 46;
-    g.fillRect(0, 0, W, band, rgb(g, state));
-    g.setFont(&fonts::FreeSansBold24pt7b);
-    g.setTextDatum(textdatum_t::middle_left);
-    g.setTextColor(TFT_BLACK, rgb(g, state));
-    g.drawString(label, pad, band / 2 - 1);
+    g.fillRect(0, 0, W, 6, rgb(g, state));
+    g.setFont(&fonts::FreeSansBold18pt7b);
+    I.at(label, pad, 30, textdatum_t::middle_left, W / 3, rgb(g, state));
     const time_t now = time(nullptr);
     if (now > 1700000000)
     {
@@ -1139,57 +1136,34 @@ void DisplayService::drawStatus(const Snap &s)
         gmtime_r(&shifted, &tmv);
         char clock[8];
         snprintf(clock, sizeof(clock), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
-        g.setFont(&fonts::FreeSansBold18pt7b);
-        g.setTextDatum(textdatum_t::middle_right);
-        g.drawString(clock, W - pad, band / 2 - 1);
+        g.setFont(&fonts::FreeSans12pt7b);
+        I.at(clock, W - pad, 30, textdatum_t::middle_right, 90, rgb(g, kMuted));
     }
     for (int i = 0; i < TFT_DASH_PAGE_COUNT; ++i)
     {
-        const int x = W / 2 - ((TFT_DASH_PAGE_COUNT - 1) * 18) / 2 + i * 18;
-        if (i == _page) { g.fillCircle(x, band - 10, 4, TFT_BLACK); }
-        else { g.drawCircle(x, band - 10, 4, TFT_BLACK); }
+        const int x = W / 2 - ((TFT_DASH_PAGE_COUNT - 1) * 16) / 2 + i * 16;
+        if (i == _page) { g.fillCircle(x, 30, 4, rgb(g, kMuted)); }
+        else { g.drawCircle(x, 30, 4, rgb(g, kTrack)); }
     }
-    g.setTextColor(rgb(g, kInk), TFT_BLACK);
 
-    const int cy = 160, rOut = 88, rIn = 70, lx = 126, rx2 = 354;
+    const int cy = 168, rOut = 96, rIn = 74, lx = 124, rx2 = 356;
 
-    // Battery ring
     g.fillArc(lx, cy, rIn, rOut, 0, 360, rgb(g, kTrack));
     const float frac = s.fullPct > 0 ? fminf(1.0f, s.battPct / s.fullPct) : 0.0f;
     if (frac > 0.01f) { g.fillArc(lx, cy, rIn, rOut, 270, 270 + static_cast<int>(360 * frac), rgb(g, state)); }
-    const int pctValue = static_cast<int>(s.battPct + 0.5f);
-    const String pct = s.link ? String(pctValue) : String("--");
     g.setFont(&fonts::Font8);
-    g.setTextColor(rgb(g, state), TFT_BLACK);
-    const int pctW = g.textWidth(pct);
-    const bool roomForSign = pct.length() <= 2; // "100" fills the ring on its own
     g.setTextDatum(textdatum_t::middle_center);
-    g.drawString(pct, roomForSign ? lx - 14 : lx, cy - 2);
-    if (roomForSign)
-    {
-        g.setFont(&fonts::FreeSansBold18pt7b);
-        g.setTextDatum(textdatum_t::middle_left);
-        g.drawString("%", lx - 14 + pctW / 2 + 8, cy + 12);
-    }
+    g.setTextColor(rgb(g, state), TFT_BLACK);
+    g.drawString(s.link ? String(static_cast<int>(s.battPct + 0.5f)) : String("--"), lx, cy);
 
-    // Load ring
     g.fillArc(rx2, cy, rIn, rOut, 0, 360, rgb(g, kTrack));
     const float loadFrac = fminf(1.0f, s.loadW / (s.ratingW > 0 ? s.ratingW : 6000.0f));
     if (loadFrac > 0.01f) { g.fillArc(rx2, cy, rIn, rOut, 270, 270 + static_cast<int>(360 * loadFrac), rgb(g, state)); }
-    const String load = s.link ? kw(s.loadW) : String("--");
-    g.setFont(&fonts::FreeSansBold24pt7b);
-    if (g.textWidth(load) > 2 * rIn - 10) { g.setFont(&fonts::FreeSansBold18pt7b); }
-    g.setTextDatum(textdatum_t::middle_center);
-    g.setTextColor(rgb(g, kInk), TFT_BLACK);
-    g.drawString(load, rx2, cy - 6);
-    g.setFont(&fonts::FreeSans9pt7b);
-    I.at("load", rx2, cy + 30, textdatum_t::top_center, 120, rgb(g, kMuted));
+    g.setFont(&fonts::FreeSans12pt7b);
+    I.at("load", rx2, cy, textdatum_t::middle_center, 2 * rIn - 20, rgb(g, kMuted));
 
-    // Battery time left, spelled out
-    g.setFont(&fonts::FreeSans9pt7b);
-    I.at("battery time left", W / 2, cy + rOut + 12, textdatum_t::top_center, 300, rgb(g, kMuted));
     g.setFont(&fonts::FreeSansBold24pt7b);
-    I.at(s.leftS ? dur(s.leftS) : String("--"), W / 2, cy + rOut + 30, textdatum_t::top_center, 360, rgb(g, state));
+    I.at(s.leftS ? dur(s.leftS) : String("--"), W / 2, H - 8, textdatum_t::bottom_center, W, rgb(g, state));
 }
 
 void DisplayService::drawSummary(const Snap &s)
