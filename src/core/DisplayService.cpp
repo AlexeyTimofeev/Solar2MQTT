@@ -945,7 +945,8 @@ String dur(uint32_t s)
 uint32_t stateColor(const DisplayService::Snap &s, String *label);
 
 #if TFT_BOARD_CYD35
-// On-board RGB LED beside the screen: R 4, G 16, B 17, active low (docs-cyd35.md).
+// On-board RGB LED beside the screen: R 4, G 17, B 16, active low. Confirmed on the board:
+// with green on 16 it glowed blue, so macsbug's pin order is the right one for this unit.
 void setBoardLed(uint32_t state)
 {
     static int last = -1;
@@ -958,11 +959,11 @@ void setBoardLed(uint32_t state)
         pinMode(4, OUTPUT);
         pinMode(16, OUTPUT);
         pinMode(17, OUTPUT);
-        digitalWrite(17, HIGH); // blue stays off
+        digitalWrite(16, HIGH); // blue stays off: on this board green is 17 and blue is 16
         ready = true;
     }
     digitalWrite(4, (want == 2 || want == 3) ? LOW : HIGH);  // red channel: on for yellow and for red
-    digitalWrite(16, (want == 1 || want == 2) ? LOW : HIGH); // green channel: on for green and for yellow
+    digitalWrite(17, (want == 1 || want == 2) ? LOW : HIGH); // green channel: on for green and for yellow
 }
 #endif
 
@@ -1092,6 +1093,7 @@ void DisplayService::drawHeader(const char *title, bool wifiConnected, bool apMo
 {
     Impl &I = *_impl;
     lgfx::LGFXBase &g = I.target();
+    g.fillRect(0, 0, I.W, I.hdrH, TFT_BLACK); // clear the strip: padding alone leaves tails of longer titles
     g.setFont(&fonts::FreeSansBold18pt7b);
     I.at(title, I.padX, I.hdrH / 2, textdatum_t::middle_left, I.W / 3, rgb(g, kInk));
 
@@ -1126,30 +1128,8 @@ void DisplayService::drawStatus(const Snap &s)
 {
     Impl &I = *_impl;
     lgfx::LGFXBase &g = I.target();
-    const int W = I.W, H = I.H, pad = I.padX;
-    String label;
-    const uint32_t state = stateColor(s, &label);
-
-    g.fillRect(0, 0, W, 6, rgb(g, state));
-    g.setFont(&fonts::FreeSansBold18pt7b);
-    I.at(label, pad, 30, textdatum_t::middle_left, W / 3, rgb(g, state));
-    const time_t now = time(nullptr);
-    if (now > 1700000000)
-    {
-        struct tm tmv;
-        const time_t shifted = now + static_cast<time_t>(_settings.get.tzOffsetHours()) * 3600;
-        gmtime_r(&shifted, &tmv);
-        char clock[8];
-        snprintf(clock, sizeof(clock), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
-        g.setFont(&fonts::FreeSans12pt7b);
-        I.at(clock, W - pad, 30, textdatum_t::middle_right, 90, rgb(g, kMuted));
-    }
-    for (int i = 0; i < TFT_DASH_PAGE_COUNT; ++i)
-    {
-        const int x = W / 2 - ((TFT_DASH_PAGE_COUNT - 1) * 16) / 2 + i * 16;
-        if (i == _page) { g.fillCircle(x, 30, 4, rgb(g, kMuted)); }
-        else { g.drawCircle(x, 30, 4, rgb(g, kTrack)); }
-    }
+    const int W = I.W, H = I.H;
+    const uint32_t state = stateColor(s, nullptr);
 
     const int cy = 168, rOut = 96, rIn = 74, lx = 124, rx2 = 356;
 
@@ -1164,6 +1144,11 @@ void DisplayService::drawStatus(const Snap &s)
     g.fillArc(rx2, cy, rIn, rOut, 0, 360, rgb(g, kTrack));
     const float loadFrac = fminf(1.0f, s.loadW / (s.ratingW > 0 ? s.ratingW : 6000.0f));
     if (loadFrac > 0.01f) { g.fillArc(rx2, cy, rIn, rOut, 270, 270 + static_cast<int>(360 * loadFrac), rgb(g, state)); }
+    g.setFont(&fonts::Font8);
+    g.setTextDatum(textdatum_t::middle_center);
+    g.setTextColor(rgb(g, kInk), TFT_BLACK);
+    // from the same fraction as the arc, so the number and the ring can never disagree
+    g.drawString(s.link ? String(static_cast<int>(loadFrac * 100.0f + 0.5f)) : String("--"), rx2, cy);
     g.setFont(&fonts::FreeSansBold24pt7b);
     I.at(s.leftS ? dur(s.leftS) : String("--"), W / 2, H - 8, textdatum_t::bottom_center, W, rgb(g, state));
 }
@@ -1364,7 +1349,7 @@ void DisplayService::renderDashboard(bool wifiConnected, bool apMode, bool inver
 #if TFT_BOARD_CYD35
     setBoardLed(stateColor(s, nullptr));
 #endif
-    if (_page != 0) { drawHeader(kTitles[_page], wifiConnected, apMode, inverterConnected); }
+    drawHeader(kTitles[_page], wifiConnected, apMode, inverterConnected);
     latchTouch(millis());
     switch (_page)
     {
