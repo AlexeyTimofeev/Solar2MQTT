@@ -5,6 +5,7 @@
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
 #include <math.h>
+#include <driver/gpio.h>
 
 #include "../descriptors.h"
 #include "SettingsPrefs.h"
@@ -960,27 +961,55 @@ void setBoardLed(uint32_t state, int mode, int yellowGreen)
 {
     static int lastRed = -1, lastGreen = -1;
     static bool ready = false;
-    int red = 0, green = 0; // 0..255 brightness
+    static bool greenPwm = false;
+    int red = 0, green = 0, blue = 0; // 0..255 brightness
     switch (mode != 0 ? mode : (state == kGreen ? 1 : (state == kAmber ? 2 : (state == kRed ? 3 : 4))))
     {
     case 1: green = 255; break;
     case 2: red = 255; green = yellowGreen; break;
     case 3: red = 255; break;
+    case 5: blue = 255; break;              // for comparing brightness by eye
+    case 6: red = 255; blue = 255; break;   // magenta: a brighter stand-in for a weak red
     default: break;
     }
-    if (red == lastRed && green == lastGreen) { return; }
+    static int lastBlue = -1;
+    if (red == lastRed && green == lastGreen && blue == lastBlue) { return; }
     lastRed = red;
     lastGreen = green;
+    lastBlue = blue;
     if (!ready)
     {
-        ledcAttach(4, 5000, 8);
-        ledcAttach(17, 5000, 8);
+        pinMode(4, OUTPUT);
         pinMode(16, OUTPUT);
+        pinMode(17, OUTPUT);
+        // Ask for the strongest drive on the red pin, in case the dim red is the pin and not a resistor.
+        gpio_set_drive_capability(GPIO_NUM_4, GPIO_DRIVE_CAP_3);
         digitalWrite(16, HIGH); // blue off
         ready = true;
     }
-    ledcWrite(4, 255 - red);    // active low
-    ledcWrite(17, 255 - green);
+    // Full on and full off go through plain pins; only the partial green of the yellow mix needs PWM,
+    // and the pin is handed back to GPIO afterwards so a later full-on is really full on.
+    digitalWrite(4, red > 0 ? LOW : HIGH);
+    digitalWrite(16, blue > 0 ? LOW : HIGH);
+    if (green > 0 && green < 255)
+    {
+        if (!greenPwm)
+        {
+            ledcAttach(17, 5000, 8);
+            greenPwm = true;
+        }
+        ledcWrite(17, 255 - green); // active low
+    }
+    else
+    {
+        if (greenPwm)
+        {
+            ledcDetach(17);
+            pinMode(17, OUTPUT);
+            greenPwm = false;
+        }
+        digitalWrite(17, green > 0 ? LOW : HIGH);
+    }
 }
 #endif
 

@@ -713,7 +713,8 @@ void WebServerHandler::registerRoutes()
         String state = "auto";
         if (request->hasParam("state", true)) { state = request->getParam("state", true)->value(); }
         else if (request->hasParam("state")) { state = request->getParam("state")->value(); }
-        const int mode = state == "green" ? 1 : state == "yellow" ? 2 : state == "red" ? 3 : state == "off" ? 4 : 0;
+        const int mode = state == "green" ? 1 : state == "yellow" ? 2 : state == "red" ? 3
+                       : state == "off" ? 4 : state == "blue" ? 5 : state == "magenta" ? 6 : 0;
         displayService.setLedOverride(mode, static_cast<int>(value("green", -1)));
         request->send(200, "application/json", "{\"success\":true}"); });
 
