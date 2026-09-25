@@ -950,7 +950,7 @@ void setBoardLed(uint32_t state)
 {
     static int last = -1;
     static bool ready = false;
-    const int want = state == kGreen ? 1 : (state == kAmber || state == kRed ? 2 : 0);
+    const int want = state == kGreen ? 1 : (state == kAmber ? 2 : (state == kRed ? 3 : 0));
     if (want == last) { return; }
     last = want;
     if (!ready)
@@ -961,8 +961,8 @@ void setBoardLed(uint32_t state)
         digitalWrite(17, HIGH); // blue stays off
         ready = true;
     }
-    digitalWrite(4, want == 2 ? LOW : HIGH);  // red while the battery carries the house
-    digitalWrite(16, want == 1 ? LOW : HIGH); // green while the grid does
+    digitalWrite(4, (want == 2 || want == 3) ? LOW : HIGH);  // red channel: on for yellow and for red
+    digitalWrite(16, (want == 1 || want == 2) ? LOW : HIGH); // green channel: on for green and for yellow
 }
 #endif
 
@@ -1072,10 +1072,15 @@ uint32_t stateColor(const DisplayService::Snap &s, String *label)
         if (label != nullptr) { *label = "Fault"; }
         return kRed;
     }
+    if (s.battPct > 0 && s.battPct < 30) // a low battery outranks everything else
+    {
+        if (label != nullptr) { *label = "Battery low"; }
+        return kRed;
+    }
     if (onBattery)
     {
         if (label != nullptr) { *label = "On battery"; }
-        return (s.battPct > 0 && s.battPct <= 20) ? kRed : kAmber;
+        return kAmber;
     }
     if (label != nullptr) { *label = "On grid"; }
     return kGreen;
@@ -1159,9 +1164,6 @@ void DisplayService::drawStatus(const Snap &s)
     g.fillArc(rx2, cy, rIn, rOut, 0, 360, rgb(g, kTrack));
     const float loadFrac = fminf(1.0f, s.loadW / (s.ratingW > 0 ? s.ratingW : 6000.0f));
     if (loadFrac > 0.01f) { g.fillArc(rx2, cy, rIn, rOut, 270, 270 + static_cast<int>(360 * loadFrac), rgb(g, state)); }
-    g.setFont(&fonts::FreeSans12pt7b);
-    I.at("load", rx2, cy, textdatum_t::middle_center, 2 * rIn - 20, rgb(g, kMuted));
-
     g.setFont(&fonts::FreeSansBold24pt7b);
     I.at(s.leftS ? dur(s.leftS) : String("--"), W / 2, H - 8, textdatum_t::bottom_center, W, rgb(g, state));
 }
