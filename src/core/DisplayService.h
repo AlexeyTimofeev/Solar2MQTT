@@ -17,6 +17,7 @@ public:
     bool readRow(int y, uint8_t *bgr, int width);
     void setPage(uint8_t page);
     void setRedrawHold(bool on); // freeze the panel while it is being read back
+    void setLedOverride(int mode, int yellowGreen); // 0 auto, 1 green, 2 yellow, 3 red, 4 off
     void requestTouchCalibration();
     bool calibrationValues(uint16_t *out) const;
 
@@ -70,6 +71,8 @@ private:
     void latchTouch(uint32_t now);
     volatile bool _calibRequested = false;
     volatile bool _holdRedraw = false;
+    volatile int _ledOverride = 0;
+    volatile int _yellowGreen = 45; // green is far brighter than red, so yellow needs it turned well down
     uint32_t _holdSinceMs = 0;
     bool _calibDone = false;
     uint16_t _calib[8] = {0, 0, 0, 0, 0, 0, 0, 0}; // sample the touch and remember the step, including mid-redraw

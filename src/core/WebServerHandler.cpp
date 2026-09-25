@@ -703,6 +703,20 @@ void WebServerHandler::registerRoutes()
         out += "]}";
         request->send(200, "application/json", out); });
 
+    _server.on("/api/display/led", HTTP_POST, [](AsyncWebServerRequest *request)
+               {
+        auto value = [request](const char *name, int fallback) {
+            if (request->hasParam(name, true)) { return request->getParam(name, true)->value().toInt(); }
+            if (request->hasParam(name)) { return request->getParam(name)->value().toInt(); }
+            return static_cast<long>(fallback);
+        };
+        String state = "auto";
+        if (request->hasParam("state", true)) { state = request->getParam("state", true)->value(); }
+        else if (request->hasParam("state")) { state = request->getParam("state")->value(); }
+        const int mode = state == "green" ? 1 : state == "yellow" ? 2 : state == "red" ? 3 : state == "off" ? 4 : 0;
+        displayService.setLedOverride(mode, static_cast<int>(value("green", -1)));
+        request->send(200, "application/json", "{\"success\":true}"); });
+
     _server.on("/api/display/page", HTTP_POST, [](AsyncWebServerRequest *request)
                {
         int page = 0;

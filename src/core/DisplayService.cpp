@@ -738,6 +738,13 @@ void DisplayService::setRedrawHold(bool on)
     if (!on) { _forceRedraw = true; } // repaint once the reader is done
 }
 
+void DisplayService::setLedOverride(int mode, int yellowGreen)
+{
+    _ledOverride = mode;
+    if (yellowGreen >= 0) { _yellowGreen = yellowGreen; }
+    _forceRedraw = true; // the LED is refreshed from the render
+}
+
 void DisplayService::setPage(uint8_t page)
 {
     _page = static_cast<uint8_t>(page % TFT_DASH_PAGE_COUNT);
@@ -947,23 +954,33 @@ uint32_t stateColor(const DisplayService::Snap &s, String *label);
 #if TFT_BOARD_CYD35
 // On-board RGB LED beside the screen: R 4, G 17, B 16, active low. Confirmed on the board:
 // with green on 16 it glowed blue, so macsbug's pin order is the right one for this unit.
-void setBoardLed(uint32_t state)
+// Both channels run on PWM: the green die is much brighter than the red one, so a flat-out mix
+// reads as green rather than yellow.
+void setBoardLed(uint32_t state, int mode, int yellowGreen)
 {
-    static int last = -1;
+    static int lastRed = -1, lastGreen = -1;
     static bool ready = false;
-    const int want = state == kGreen ? 1 : (state == kAmber ? 2 : (state == kRed ? 3 : 0));
-    if (want == last) { return; }
-    last = want;
+    int red = 0, green = 0; // 0..255 brightness
+    switch (mode != 0 ? mode : (state == kGreen ? 1 : (state == kAmber ? 2 : (state == kRed ? 3 : 4))))
+    {
+    case 1: green = 255; break;
+    case 2: red = 255; green = yellowGreen; break;
+    case 3: red = 255; break;
+    default: break;
+    }
+    if (red == lastRed && green == lastGreen) { return; }
+    lastRed = red;
+    lastGreen = green;
     if (!ready)
     {
-        pinMode(4, OUTPUT);
+        ledcAttach(4, 5000, 8);
+        ledcAttach(17, 5000, 8);
         pinMode(16, OUTPUT);
-        pinMode(17, OUTPUT);
-        digitalWrite(16, HIGH); // blue stays off: on this board green is 17 and blue is 16
+        digitalWrite(16, HIGH); // blue off
         ready = true;
     }
-    digitalWrite(4, (want == 2 || want == 3) ? LOW : HIGH);  // red channel: on for yellow and for red
-    digitalWrite(17, (want == 1 || want == 2) ? LOW : HIGH); // green channel: on for green and for yellow
+    ledcWrite(4, 255 - red);    // active low
+    ledcWrite(17, 255 - green);
 }
 #endif
 
@@ -1105,10 +1122,9 @@ void DisplayService::drawHeader(const char *title, bool wifiConnected, bool apMo
         else { g.drawCircle(x0 + i * step, dotY, dotR, rgb(g, kTrack)); }
     }
 
-    g.setFont(&fonts::FreeSansBold12pt7b);
-    I.at("I", I.W - I.padX, dotY, textdatum_t::middle_right, 22, rgb(g, inverterConnected ? kGreen : kRed));
-    I.at(apMode ? String("AP") : String("W"), I.W - I.padX - 28, dotY, textdatum_t::middle_right, 36,
-         rgb(g, apMode ? kAmber : (wifiConnected ? kGreen : kRed)));
+    (void)wifiConnected;
+    (void)apMode;
+    (void)inverterConnected;
     const time_t now = time(nullptr);
     if (now > 1700000000)
     {
@@ -1117,7 +1133,7 @@ void DisplayService::drawHeader(const char *title, bool wifiConnected, bool apMo
         gmtime_r(&shifted, &tmv);
         char buf[8];
         snprintf(buf, sizeof(buf), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
-        I.at(buf, I.W - I.padX - 74, dotY, textdatum_t::middle_right, 70, rgb(g, kMuted));
+        I.at(buf, I.W - I.padX, dotY, textdatum_t::middle_right, 90, rgb(g, kMuted));
     }
     g.drawFastHLine(0, I.hdrH, I.W, rgb(g, kTrack));
 }
@@ -1347,7 +1363,7 @@ void DisplayService::renderDashboard(bool wifiConnected, bool apMode, bool inver
         _impl->lastRenderedPage = _page;
     }
 #if TFT_BOARD_CYD35
-    setBoardLed(stateColor(s, nullptr));
+    setBoardLed(stateColor(s, nullptr), _ledOverride, _yellowGreen);
 #endif
     drawHeader(kTitles[_page], wifiConnected, apMode, inverterConnected);
     latchTouch(millis());
