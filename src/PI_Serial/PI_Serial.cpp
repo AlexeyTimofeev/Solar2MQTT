@@ -330,6 +330,34 @@ String metricLogValue(JsonObjectConst object, std::initializer_list<const char *
 //  Public Functions
 //----------------------------------------------------------------------
 
+void PI_Serial::drainInput()
+{
+    // A floating or chattering RX line never goes quiet, so this cannot be an open-ended loop:
+    // the main loop hung right here the first time the RS232 converter was wired to the inverter.
+    constexpr uint32_t kMaxMs = 20;
+    constexpr int kMaxBytes = 1024;
+    if (this->my_serialIntf == nullptr)
+    {
+        return;
+    }
+    const uint32_t start = millis();
+    int dropped = 0;
+    while (this->my_serialIntf->available() > 0 && dropped < kMaxBytes && (millis() - start) < kMaxMs)
+    {
+        this->my_serialIntf->read();
+        ++dropped;
+    }
+    if (dropped >= kMaxBytes || (millis() - start) >= kMaxMs)
+    {
+        static uint32_t lastWarn = 0;
+        if (millis() - lastWarn > 10000)
+        {
+            lastWarn = millis();
+            writeLog("[PI][WARN] input line will not go quiet: dropped %d bytes, check the RS232 wiring", dropped);
+        }
+    }
+}
+
 PI_Serial::PI_Serial(HardwareSerial &serialPort, int rx, int tx)
 {
     this->my_serialIntf = &serialPort;
@@ -419,10 +447,7 @@ bool PI_Serial::loop()
             return false; // keep the line idle so the inverter's command parser can reset
         }
         backoffUntil = 0;
-        while (this->my_serialIntf != nullptr && this->my_serialIntf->available() > 0)
-        {
-            this->my_serialIntf->read();
-        }
+        drainInput();
     }
 
     if (protocol == NoD)
@@ -900,10 +925,7 @@ bool PI_Serial::loopbackTest(String &details)
     this->my_serialIntf->begin(baud, SERIAL_8N1, _rxPin, _txPin);
     this->my_serialIntf->setTimeout(200);
 
-    while (this->my_serialIntf->available() > 0)
-    {
-        this->my_serialIntf->read();
-    }
+    drainInput();
 
     const char *pattern = "S2MQT";
     const size_t patternLen = strlen(pattern);
@@ -1368,10 +1390,7 @@ String PI_Serial::requestDataOnce(String command)
     uint16_t crcRecive = 0;
 
     busyCount.fetch_add(1, std::memory_order_relaxed);
-    while (this->my_serialIntf->available() > 0)
-    {
-        this->my_serialIntf->read();
-    }
+    drainInput();
     this->my_serialIntf->write(command.c_str());
     this->my_serialIntf->write(highByte(getCRC(command)));
     this->my_serialIntf->write(lowByte(getCRC(command)));

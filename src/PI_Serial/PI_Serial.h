@@ -306,6 +306,11 @@ private:
     String requestData(String command);
 
     /**
+     * @brief Drop whatever is waiting on the input, bounded in bytes and in time
+     */
+    void drainInput();
+
+    /**
      * @brief accept a achar and get back the operation mode as string
      */
     char *getModeDesc(char mode);

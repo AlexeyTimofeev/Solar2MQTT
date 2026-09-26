@@ -1087,6 +1087,8 @@ void DisplayService::fillLive(Snap &s, bool inverterConnected)
     if (readNumber(DESCR_PV_Charging_Power, v)) { s.pvW = v; }
     if (readNumber(DESCR_Inverter_Bus_Temperature, v)) { s.tempC = v; }
     float current = 0;
+    s.battChargeW = 0; // zero current must clear these, not leave the previous fill's value standing
+    s.battDischargeW = 0;
     if (readBatteryCurrent(current))
     {
         if (current > 0) { s.battChargeW = current * s.battV; }
@@ -1140,10 +1142,12 @@ void DisplayService::drawHeader(const char *title, bool wifiConnected, bool apMo
     Impl &I = *_impl;
     lgfx::LGFXBase &g = I.target();
     g.fillRect(0, 0, I.W, I.hdrH, TFT_BLACK); // clear the strip: padding alone leaves tails of longer titles
-    g.setFont(&fonts::FreeSansBold18pt7b);
-    I.at(title, I.padX, I.hdrH / 2, textdatum_t::middle_left, I.W / 3, rgb(g, kInk));
-
     const int dotY = I.hdrH / 2, dotR = 4, step = 18, x0 = I.W / 2 - ((kPages - 1) * step) / 2;
+    const int titleMax = x0 - dotR - 10 - I.padX;
+    g.setFont(&fonts::FreeSansBold18pt7b);
+    if (g.textWidth(title) > titleMax) { g.setFont(&fonts::FreeSansBold12pt7b); } // "Power flow" ran into the dots
+    I.at(title, I.padX, I.hdrH / 2, textdatum_t::middle_left, titleMax, rgb(g, kInk));
+
     g.fillRect(I.W / 2 - 40, dotY - 6, 80, 12, TFT_BLACK);
     for (int i = 0; i < kPages; ++i)
     {
