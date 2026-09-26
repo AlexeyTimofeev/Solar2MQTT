@@ -187,6 +187,14 @@ void setup()
         webServerHandler.setInverterConnected(inverterService.isConnected());
         webServerHandler.notifyStatusBar(); });
     inverterService.setTransportPaused(wifiManager.isInApMode());
+#if TFT_BOARD_CYD35
+    // The MAX3232 is fed from IO21 on the P3 connector, so the whole converter needs one 4-pin cable:
+    // GND, RX 35, TX 22 and this pin as its 3.3 V rail. The chip draws well under a milliamp idle and
+    // a couple of milliamps while transmitting, against the ~20 mA a GPIO will source. Driven before
+    // the UART starts so the converter is alive by the first poll.
+    pinMode(21, OUTPUT);
+    digitalWrite(21, HIGH);
+#endif
     inverterService.begin();
 
     ds18b20Service.setCallback([](uint8_t, float)
