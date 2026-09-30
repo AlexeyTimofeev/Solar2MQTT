@@ -16,6 +16,10 @@ public:
     int panelHeight() const;
     bool readRow(int y, uint8_t *bgr, int width);
     String touchDebug() const; // tap and repaint counters, for chasing missed taps
+    // Sample the touch controller outside DisplayService::loop's own once-per-iteration poll.
+    // The XPT2046 only registers about 44% of polls during a press, so the cure for a missed
+    // tap is more samples spread across the loop, not a longer press.
+    void pumpTouch();
     void setPage(uint8_t page);
     void setRedrawHold(bool on); // freeze the panel while it is being read back
     void setLedOverride(int mode, int yellowGreen); // 0 auto, 1 green, 2 yellow, 3 red, 4 off
@@ -90,8 +94,7 @@ private:
     void drawFlowPaths(const int *wx = nullptr, const int *wy = nullptr, int wn = 0, float rad = 0.0f);
     // Repaint one ring's stroke band, so a dot that ran under it comes out behind it again.
     void strokeRing(int idx);
-    // Poll touch from inside a long repaint: a tap is otherwise dropped for the whole redraw.
-    void pumpTouch();
+
     void animateFlow(uint32_t now);
 
     // Power-flow link animation: which links carry power, their colour, how long a dot takes to

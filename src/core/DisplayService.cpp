@@ -1367,7 +1367,7 @@ void DisplayService::pumpTouch()
 #if TFT_TOUCH && TFT_DASH_PAGES
     if (_impl == nullptr || _holdRedraw) { return; }
     const uint32_t now = millis();
-    if (now - _lastPumpMs < 15) { return; }
+    if (now - _lastPumpMs < 3) { return; }
     _lastPumpMs = now;
     latchTouch(now);
 #endif
