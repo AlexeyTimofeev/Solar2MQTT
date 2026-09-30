@@ -3778,22 +3778,53 @@ void TelegramService::resume()
 
 // Oldest slot first, which is the order the history screen walks. Slots the board never filled
 // (kDashNone) are skipped, so a fresh boot shows a short graph rather than a wall of zeroes.
-int TelegramService::historySnapshot(uint8_t *batt, uint8_t *load, uint8_t *off, int maxSlots) const
+int TelegramService::historySnapshot(uint8_t *batt, uint8_t *load, uint8_t *off, int maxSlots,
+                                     uint32_t *lastSlotEnd) const
 {
     if (batt == nullptr || load == nullptr || off == nullptr || maxSlots <= 0) { return 0; }
+    if (lastSlotEnd != nullptr) { *lastSlotEnd = dashHist.lastSlotEnd; }
     if (dashHist.magic != kDashMagic) { return 0; } // RTC lost, e.g. after a power cut
     const int have = static_cast<int>(dashHist.count < kDashSlots ? dashHist.count : kDashSlots);
     int n = 0;
+    // Empty slots are kept as kDashNone. Dropping them closed the gaps up and left the x axis
+    // meaning nothing, which is the one thing the Mini App's chart gets right and this did not.
     for (int i = 0; i < have && n < maxSlots; ++i)
     {
         const size_t idx = (dashHist.head + kDashSlots - have + i) % kDashSlots;
-        if (dashHist.batt[idx] == kDashNone) { continue; }
         batt[n] = dashHist.batt[idx];
         load[n] = dashHist.load[idx];
         off[n] = dashHist.off[idx];
         ++n;
     }
     return n;
+}
+
+String TelegramService::dashDebug() const
+{
+    String o = "{\"magic_ok\":" + String(dashHist.magic == kDashMagic ? 1 : 0);
+    o += ",\"head\":" + String((unsigned)dashHist.head);
+    o += ",\"count\":" + String((unsigned)dashHist.count);
+    o += ",\"lastSlotEnd\":" + String((unsigned long)dashHist.lastSlotEnd);
+    o += ",\"slotAgeMs\":" + String((unsigned long)(millis() - _impl->slotStartMs));
+    o += ",\"slotSamples\":" + String((unsigned)_impl->slotSamples);
+    o += ",\"slotSeconds\":" + String((unsigned)kDashSlotSeconds);
+    const int have = (int)(dashHist.count < kDashSlots ? dashHist.count : kDashSlots);
+    int none = 0;
+    for (int i = 0; i < have; ++i)
+    {
+        const size_t idx = (dashHist.head + kDashSlots - have + i) % kDashSlots;
+        if (dashHist.batt[idx] == kDashNone) { ++none; }
+    }
+    o += ",\"stored\":" + String(have) + ",\"empty\":" + String(none);
+    o += ",\"newest\":[";
+    const int show = have < 16 ? have : 16;
+    for (int i = have - show; i < have; ++i)
+    {
+        const size_t idx = (dashHist.head + kDashSlots - have + i) % kDashSlots;
+        if (i > have - show) { o += ","; }
+        o += "[" + String((int)dashHist.batt[idx]) + "," + String((int)dashHist.load[idx]) + "," + String((int)dashHist.off[idx]) + "]";
+    }
+    return o + "]}";
 }
 
 // Newest first, with the age in minutes. Raised on both tasks, so it is copied under the lock.
@@ -3874,7 +3905,8 @@ bool TelegramService::pause(uint32_t) { return true; }
 void TelegramService::resume() {}
 bool TelegramService::isReady() const { return false; }
 String TelegramService::statusJson() const { return String("{\"supported\":false}"); }
-int TelegramService::historySnapshot(uint8_t *, uint8_t *, uint8_t *, int) const { return 0; }
+int TelegramService::historySnapshot(uint8_t *, uint8_t *, uint8_t *, int, uint32_t *) const { return 0; }
 int TelegramService::alertSnapshot(char *, uint16_t *, uint32_t *, int) const { return 0; }
+String TelegramService::dashDebug() const { return String("{}"); }
 
 #endif

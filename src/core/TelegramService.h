@@ -30,8 +30,10 @@ public:
 
     // The board's own screens read the same two records the Mini App does: the 24 h history kept in
     // RTC and the alert log kept in flash. Both return how many entries were written.
-    int historySnapshot(uint8_t *batt, uint8_t *load, uint8_t *off, int maxSlots) const;
+    int historySnapshot(uint8_t *batt, uint8_t *load, uint8_t *off, int maxSlots,
+                        uint32_t *lastSlotEnd = nullptr) const; // empty slots come back as 255
     int alertSnapshot(char *type, uint16_t *value, uint32_t *ageMin, int maxAlerts) const;
+    String dashDebug() const; // raw RTC history, to compare the board against the Mini App
 
 private:
 #if HAS_TELEGRAM

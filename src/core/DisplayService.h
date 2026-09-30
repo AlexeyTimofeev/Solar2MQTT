@@ -15,6 +15,7 @@ public:
     int panelWidth() const;
     int panelHeight() const;
     bool readRow(int y, uint8_t *bgr, int width);
+    String touchDebug() const; // tap and repaint counters, for chasing missed taps
     void setPage(uint8_t page);
     void setRedrawHold(bool on); // freeze the panel while it is being read back
     void setLedOverride(int mode, int yellowGreen); // 0 auto, 1 green, 2 yellow, 3 red, 4 off
@@ -107,6 +108,8 @@ private:
     bool _ringShow[3] = {false, false, false};
     uint32_t _ringTrackCol = 0;
     uint32_t _lastPumpMs = 0;
+    uint32_t _dgPollLastMs = 0, _dgMaxPollGap = 0, _dgMaxRenderMs = 0, _dgLastRenderMs = 0;
+    uint32_t _dgContacts = 0, _dgRising = 0, _dgAccepted = 0, _dgLockedOut = 0, _dgPolls = 0;
     void drawHistory(const Snap &s);
     void drawAlerts(const Snap &s);
     String buildSignature(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress) const;

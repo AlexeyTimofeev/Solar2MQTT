@@ -684,16 +684,26 @@ bool DisplayService::pollTouch(uint32_t now, bool &next)
     int32_t tx = 0;
     int32_t ty = 0;
     const bool down = _impl->tft.getTouch(&tx, &ty) != 0;
+    ++_dgPolls;
+    if (_dgPollLastMs != 0 && (now - _dgPollLastMs) > _dgMaxPollGap) { _dgMaxPollGap = now - _dgPollLastMs; }
+    _dgPollLastMs = now;
     if (down)
     {
+        ++_dgContacts;
         _touchLastSeenMs = now;
         const bool rising = !_touchWasDown;
         _touchWasDown = true; // latch every contact, accepted or not
-        if (rising && (now - _touchDownMs) > kTouchLockoutMs)
+        if (rising)
         {
-            _touchDownMs = now;
-            next = tx >= _impl->W / 2;
-            return true;
+            ++_dgRising;
+            if ((now - _touchDownMs) > kTouchLockoutMs)
+            {
+                ++_dgAccepted;
+                _touchDownMs = now;
+                next = tx >= _impl->W / 2;
+                return true;
+            }
+            ++_dgLockedOut;
         }
     }
     else if (_touchWasDown && (now - _touchLastSeenMs) > kTouchReleaseMs) // release must be stable
@@ -863,7 +873,10 @@ void DisplayService::loop(bool wifiConnected, bool apMode, bool inverterConnecte
         return;
     }
 
+    const uint32_t renderStart = millis();
     render(wifiConnected, apMode, inverterConnected, ipAddress);
+    _dgLastRenderMs = millis() - renderStart;
+    if (_dgLastRenderMs > _dgMaxRenderMs) { _dgMaxRenderMs = _dgLastRenderMs; }
     _lastSignature = signature;
     _lastDrawMs = now;
     _forceRedraw = false;
@@ -981,6 +994,7 @@ constexpr float kLinkKeepOut = kRingStroke / 2 + 1.0f;
 // Two frames of the panel's 60 Hz scan-out. There is no tearing-effect line on this board
 // (pin_busy = -1), so this cannot be a true vsync - it just keeps the step even and small.
 constexpr uint32_t kFlowTickMs = 33;
+constexpr int kHistorySlotSeconds = 900; // must match kDashSlotSeconds in TelegramService
 
 // The dashboard's animateMotion duration: the more power flows, the faster the dot runs.
 inline float flowDur(float watts) { return fmaxf(0.8f, 4.0f - watts / 1500.0f); }
@@ -1106,6 +1120,7 @@ struct DisplayService::Snap
     uint32_t leftS = 0;
     uint8_t batt[96], load[96], off[96];
     int slots = 0;
+    uint32_t lastSlotEnd = 0;
     char aType[8];
     uint16_t aValue[8];
     uint32_t aAgeMin[8];
@@ -1119,7 +1134,8 @@ void DisplayService::fillLive(Snap &s, bool inverterConnected)
     // down - the history is in RTC and the alert log in flash, so they are filled before the
     // early return below.
 #if HAS_TELEGRAM
-    s.slots = telegramService.historySnapshot(s.batt, s.load, s.off, static_cast<int>(sizeof(s.batt)));
+    s.slots = telegramService.historySnapshot(s.batt, s.load, s.off, static_cast<int>(sizeof(s.batt)),
+                                              &s.lastSlotEnd);
     s.alerts = telegramService.alertSnapshot(s.aType, s.aValue, s.aAgeMin, static_cast<int>(sizeof(s.aType)));
 #endif
     if (!inverterConnected) { return; }
@@ -1329,6 +1345,20 @@ void DisplayService::strokeRing(int idx)
     }
 }
 
+String DisplayService::touchDebug() const
+{
+    String o = "{\"polls\":" + String((unsigned long)_dgPolls);
+    o += ",\"contacts\":" + String((unsigned long)_dgContacts);
+    o += ",\"rising\":" + String((unsigned long)_dgRising);
+    o += ",\"accepted\":" + String((unsigned long)_dgAccepted);
+    o += ",\"lockedOut\":" + String((unsigned long)_dgLockedOut);
+    o += ",\"maxPollGapMs\":" + String((unsigned long)_dgMaxPollGap);
+    o += ",\"lastRenderMs\":" + String((unsigned long)_dgLastRenderMs);
+    o += ",\"maxRenderMs\":" + String((unsigned long)_dgMaxRenderMs);
+    o += ",\"page\":" + String((int)_page);
+    return o + "}";
+}
+
 // A full page repaint takes long enough to swallow a whole tap, which made switching pages work
 // about every other try. Touch sits on the same task, so polling between draw calls is safe -
 // latchTouch only adds to _tapSteps, and the page change is applied at the top of the next loop.
@@ -1522,7 +1552,7 @@ void DisplayService::drawHistory(const Snap &s)
 {
     Impl &I = *_impl;
     lgfx::LGFXBase &g = I.target();
-    const int x0 = I.padX + 26, x1 = I.W - I.padX, y0 = I.hdrH + 18, y1 = I.H - 46;
+    const int x0 = I.padX + 26, x1 = I.W - I.padX, y0 = I.hdrH + 18, y1 = I.H - 62;
     const int h = y1 - y0, w = x1 - x0;
     g.setFont(&fonts::FreeSans9pt7b);
     for (int p = 0; p <= 100; p += 25)
@@ -1536,24 +1566,61 @@ void DisplayService::drawHistory(const Snap &s)
         I.at("no history yet", I.W / 2, (y0 + y1) / 2, textdatum_t::middle_center, I.W / 2, rgb(g, kMuted));
         return;
     }
-    const int bw = w / s.slots;
+
+    // Place every bar by its edges. A single truncated width (w / slots) threw away w % slots
+    // pixels, which with 92 slots left the newest 62 px of the chart permanently blank - it read
+    // as a chart that had stopped updating.
+    auto edge = [&](int i) { return x0 + static_cast<int>(static_cast<int64_t>(w) * i / s.slots); };
+
     for (int i = 0; i < s.slots; ++i)
     {
-        const int x = x0 + i * bw;
+        const int xa = edge(i), xb = edge(i + 1);
+        const int bwi = (xb - xa) > 1 ? (xb - xa - 1) : 1;
+        if (s.batt[i] == 255) // no data for this slot - a stub, so the gap is visible
+        {
+            g.fillRect(xa, y1 - 3, bwi, 3, rgb(g, kTrack));
+            continue;
+        }
         const float loadW = s.load[i] * 25.0f;
         const int bh = static_cast<int>(h * fminf(1.0f, loadW / (s.ratingW > 0 ? s.ratingW : 6000.0f)));
         const uint32_t col = s.off[i] == 0 ? kGreen : (s.off[i] >= 15 ? kRed : kAmber);
-        if (bh > 0) { g.fillRect(x, y1 - bh, bw > 1 ? bw - 1 : 1, bh, rgb(g, col)); }
+        if (bh > 0) { g.fillRect(xa, y1 - bh, bwi, bh, rgb(g, col)); }
     }
     for (int i = 1; i < s.slots; ++i)
     {
-        const int xa = x0 + (i - 1) * bw + bw / 2, xb = x0 + i * bw + bw / 2;
+        if (s.batt[i] == 255 || s.batt[i - 1] == 255) { continue; } // never bridge a gap
+        const int xa = (edge(i - 1) + edge(i)) / 2, xb = (edge(i) + edge(i + 1)) / 2;
         const int ya = y1 - h * s.batt[i - 1] / 100, yb = y1 - h * s.batt[i] / 100;
         g.drawLine(xa, ya, xb, yb, rgb(g, kBlue));
         g.drawLine(xa, ya - 1, xb, yb - 1, rgb(g, kBlue));
     }
-    I.at("battery %", x0, I.H - 42, textdatum_t::top_left, 120, rgb(g, kBlue));
-    I.at("load, bars by grid state", x1, I.H - 42, textdatum_t::top_right, 260, rgb(g, kMuted));
+
+    // Hours under the slot each one starts in, thinned until the labels stop colliding.
+    if (s.lastSlotEnd > 1700000000)
+    {
+        const int perHour = 3600 / kHistorySlotSeconds;
+        float pxPerHour = static_cast<float>(w) * perHour / s.slots;
+        int step = 1;
+        while (pxPerHour * step < 30.0f && step < 12) { ++step; }
+        for (int i = 0; i < s.slots; ++i)
+        {
+            const time_t slotEnd = static_cast<time_t>(s.lastSlotEnd) -
+                                   static_cast<time_t>(s.slots - 1 - i) * kHistorySlotSeconds;
+            const time_t shifted = slotEnd + static_cast<time_t>(_settings.get.tzOffsetHours()) * 3600;
+            struct tm tmv;
+            gmtime_r(&shifted, &tmv);
+            if (tmv.tm_min >= kHistorySlotSeconds / 60) { continue; } // not the slot the hour starts in
+            if (tmv.tm_hour % step != 0) { continue; }
+            const int x = edge(i);
+            if (x < x0 + 8 || x > x1 - 8) { continue; }
+            g.drawFastVLine(x, y1, 3, rgb(g, kTrack));
+            char lbl[4];
+            snprintf(lbl, sizeof(lbl), "%02d", tmv.tm_hour);
+            I.at(lbl, x, y1 + 5, textdatum_t::top_center, 28, rgb(g, kMuted));
+        }
+    }
+    I.at("battery %", x0, I.H - 24, textdatum_t::top_left, 120, rgb(g, kBlue));
+    I.at("load, bars by grid state", x1, I.H - 24, textdatum_t::top_right, 260, rgb(g, kMuted));
 }
 
 void DisplayService::drawAlerts(const Snap &s)
@@ -1810,6 +1877,7 @@ void DisplayService::loop(bool, bool, bool, bool, const String &) {}
 int DisplayService::panelWidth() const { return 0; }
 int DisplayService::panelHeight() const { return 0; }
 bool DisplayService::readRow(int, uint8_t *, int) { return false; }
+String DisplayService::touchDebug() const { return String("{}"); }
 void DisplayService::setPage(uint8_t) {}
 
 #endif

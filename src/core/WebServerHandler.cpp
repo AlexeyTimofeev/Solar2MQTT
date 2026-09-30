@@ -18,6 +18,9 @@
 
 extern Settings _settings;
 extern DisplayService displayService;
+#if HAS_TELEGRAM
+extern TelegramService telegramService;
+#endif
 
 namespace
 {
@@ -695,6 +698,14 @@ void WebServerHandler::registerRoutes()
                 else { displayService.setRedrawHold(true); }
                 return made; });
         request->send(res); });
+
+    _server.on("/api/display/diag", HTTP_GET, [](AsyncWebServerRequest *request)
+               {
+        String out = "{\"touch\":" + displayService.touchDebug();
+#if HAS_TELEGRAM
+        out += ",\"dash\":" + telegramService.dashDebug();
+#endif
+        request->send(200, "application/json", out + "}"); });
 
     _server.on("/api/display/calibrate", HTTP_POST, [](AsyncWebServerRequest *request)
                {
