@@ -83,7 +83,7 @@ private:
     void fillDemo(Snap &s);
     void fillLive(Snap &s, bool inverterConnected);
     void drawHeader(const char *title, bool wifiConnected, bool apMode, bool inverterConnected);
-    void drawStatus(const Snap &s);
+    void drawSummary(const Snap &s);
     void drawFlow(const Snap &s);
     void drawFlowPaths();
     void animateFlow(uint32_t now);

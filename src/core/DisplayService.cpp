@@ -29,7 +29,7 @@ extern Settings _settings;
 #define TFT_DASH_PAGES 0
 #endif
 #define TFT_DASH_PAGE_COUNT 4
-#define TFT_DASH_FLOW_PAGE 1    // Power flow: the default screen, and the one on the dashboard's palette
+#define TFT_DASH_FLOW_PAGE 0    // Power flow: first, default, and the one on the dashboard's palette
 #ifndef DISPLAY_DEMO
 #define DISPLAY_DEMO 0
 #endif
@@ -1239,33 +1239,40 @@ void DisplayService::drawHeader(const char *title, bool wifiConnected, bool apMo
 
 // Page 0: three things only - the battery as a ring with its percentage, the load as a ring with no
 // number, and the time left along the bottom. The state colour rides a thin accent, not a heavy band.
-void DisplayService::drawStatus(const Snap &s)
+void DisplayService::drawSummary(const Snap &s)
 {
     Impl &I = *_impl;
     lgfx::LGFXBase &g = I.target();
-    const int W = I.W, H = I.H;
-    const uint32_t state = stateColor(s, nullptr);
+    const int left = I.padX, right = I.W / 2 + 4;
+    const int colW = I.W / 2 - I.padX - 10;
+    const int top = I.hdrH + 12, rowH = 46;
+    struct Row { const char *label; String value; uint32_t color; };
+    Row rows[8];
+    int n = 0;
+    rows[n].label = "Mode"; rows[n].value = s.link ? s.mode : String("--"); rows[n].color = modeColor(s.mode); ++n;
+    rows[n].label = "Grid"; rows[n].value = s.gridOff ? String("off") : String(s.gridV, 1) + " V  " + String(s.gridHz, 1) + " Hz";
+    rows[n].color = s.gridOff ? kRed : kGreen; ++n;
+    rows[n].label = "Battery"; rows[n].value = String(static_cast<int>(s.battPct + 0.5f)) + " %  " + String(s.battV, 1) + " V";
+    rows[n].color = kInk; ++n;
+    rows[n].label = "Estimated"; rows[n].value = s.leftS ? dur(s.leftS) : String("--"); rows[n].color = kAmber; ++n;
+    rows[n].label = "Load"; rows[n].value = kw(s.loadW) + "  " + String(static_cast<int>(s.loadPct + 0.5f)) + " %";
+    rows[n].color = kBlue; ++n;
+    rows[n].label = "Output"; rows[n].value = String(s.outV, 1) + " V  " + String(s.outHz, 1) + " Hz"; rows[n].color = kInk; ++n;
+    rows[n].label = "Temp"; rows[n].value = String(static_cast<int>(s.tempC + 0.5f)) + " C"; rows[n].color = kInk; ++n;
+    rows[n].label = "Uptime"; rows[n].value = dur(millis() / 1000); rows[n].color = kMuted; ++n;
 
-    const int cy = 168, rOut = 96, rIn = 74, lx = 124, rx2 = 356;
-
-    g.fillArc(lx, cy, rIn, rOut, 0, 360, rgb(g, kTrack));
-    const float frac = s.fullPct > 0 ? fminf(1.0f, s.battPct / s.fullPct) : 0.0f;
-    if (frac > 0.01f) { g.fillArc(lx, cy, rIn, rOut, 270, 270 + static_cast<int>(360 * frac), rgb(g, state)); }
-    g.setFont(&fonts::Font8);
-    g.setTextDatum(textdatum_t::middle_center);
-    g.setTextColor(rgb(g, state), TFT_BLACK);
-    g.drawString(s.link ? String(static_cast<int>(s.battPct + 0.5f)) : String("--"), lx, cy);
-
-    g.fillArc(rx2, cy, rIn, rOut, 0, 360, rgb(g, kTrack));
-    const float loadFrac = fminf(1.0f, s.loadW / (s.ratingW > 0 ? s.ratingW : 6000.0f));
-    if (loadFrac > 0.01f) { g.fillArc(rx2, cy, rIn, rOut, 270, 270 + static_cast<int>(360 * loadFrac), rgb(g, state)); }
-    g.setFont(&fonts::Font8);
-    g.setTextDatum(textdatum_t::middle_center);
-    g.setTextColor(rgb(g, state), TFT_BLACK);
-    // from the same fraction as the arc, so the number and the ring can never disagree
-    g.drawString(s.link ? String(static_cast<int>(loadFrac * 100.0f + 0.5f)) : String("--"), rx2, cy);
-    g.setFont(&fonts::FreeSansBold24pt7b);
-    I.at(s.leftS ? dur(s.leftS) : String("--"), W / 2, H - 8, textdatum_t::bottom_center, W, rgb(g, state));
+    for (int i = 0; i < n; ++i)
+    {
+        const int x = (i % 2 == 0) ? left : right;
+        const int y = top + (i / 2) * rowH;
+        g.setFont(&fonts::FreeSans9pt7b);
+        I.at(rows[i].label, x, y, textdatum_t::top_left, colW, rgb(g, kMuted));
+        g.setFont(&fonts::FreeSansBold12pt7b);
+        I.at(rows[i].value, x, y + 17, textdatum_t::top_left, colW, rgb(g, rows[i].color));
+    }
+    g.setFont(&fonts::FreeSans9pt7b);
+    I.at(String(STRVERSION) + (s.link ? "" : "   no inverter data"), I.padX, I.H - 26, textdatum_t::bottom_left,
+         I.W - 2 * I.padX, rgb(g, kMuted));
 }
 
 void DisplayService::drawFlowPaths()
@@ -1529,7 +1536,7 @@ void DisplayService::renderDashboard(bool wifiConnected, bool apMode, bool inver
 #else
     fillLive(s, inverterConnected);
 #endif
-    static const char *const kTitles[kPages] = {"Status", "Power flow", "Last 24 h", "Alerts"};
+    static const char *const kTitles[kPages] = {"Power flow", "Summary", "Last 24 h", "Alerts"};
 
     g.setTextSize(1);
     I.bg = (_page == TFT_DASH_FLOW_PAGE) ? rgb(g, kPanel) : TFT_BLACK; // flow page matches the dashboard
@@ -1545,10 +1552,10 @@ void DisplayService::renderDashboard(bool wifiConnected, bool apMode, bool inver
     latchTouch(millis());
     switch (_page)
     {
-    case 1: drawFlow(s); break;
+    case 1: drawSummary(s); break;
     case 2: drawHistory(s); break;
     case 3: drawAlerts(s); break;
-    default: drawStatus(s); break; // page 0: the glance screen draws its own header band
+    default: drawFlow(s); break; // page 0
     }
     latchTouch(millis());
 }
