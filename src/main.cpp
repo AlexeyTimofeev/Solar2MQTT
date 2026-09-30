@@ -156,6 +156,8 @@ void setup()
     solarState.begin();
 #if HAS_TFT
     displayService.begin();
+    // Keep touch alive through the inverter exchange: it blocks the loop for 200-600 ms at a time.
+    PI_Serial::setIdleHook([]() { displayService.pumpTouch(); });
 #endif
     statusLedService.begin(_settings.get.statusLedPin(),
                            static_cast<uint8_t>(_settings.get.statusLedBrightness()));
@@ -250,9 +252,6 @@ void loop()
         wifiManager.reconfigure();
         webServerHandler.notifyStatusBar();
     }
-#if HAS_TFT
-    displayService.pumpTouch(); // the inverter exchange below owns most of the loop's ~20 ms
-#endif
     inverterService.setTransportPaused(wifiManager.isInApMode());
     inverterService.loop();
 #if HAS_TFT

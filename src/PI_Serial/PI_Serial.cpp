@@ -330,6 +330,42 @@ String metricLogValue(JsonObjectConst object, std::initializer_list<const char *
 //  Public Functions
 //----------------------------------------------------------------------
 
+void (*PI_Serial::idleHook)() = nullptr;
+
+// Same contract as Stream::readStringUntil: the terminator is consumed and not returned, and a
+// timeout yields whatever arrived. The difference is that this one lets the caller do something
+// useful while the bytes trickle in.
+String PI_Serial::readLineCR(uint32_t timeoutMs)
+{
+    String out;
+    const uint32_t start = millis();
+    while ((millis() - start) < timeoutMs)
+    {
+        bool got = false;
+        while (this->my_serialIntf->available() > 0)
+        {
+            const int c = this->my_serialIntf->read();
+            if (c < 0) { break; }
+            if (c == '\r') { return out; }
+            out += static_cast<char>(c);
+            got = true;
+        }
+        if (idleHook != nullptr) { idleHook(); }
+        if (!got) { delay(1); }
+    }
+    return out;
+}
+
+void PI_Serial::idleDelay(uint32_t ms)
+{
+    const uint32_t start = millis();
+    while ((millis() - start) < ms)
+    {
+        if (idleHook != nullptr) { idleHook(); }
+        delay(1);
+    }
+}
+
 void PI_Serial::drainInput()
 {
     // A floating or chattering RX line never goes quiet, so this cannot be an open-ended loop:
@@ -1397,8 +1433,8 @@ String PI_Serial::requestDataOnce(String command)
     this->my_serialIntf->write(0x0D);
     this->my_serialIntf->flush();
 
-    delay(20);
-    commandBuffer = this->my_serialIntf->readStringUntil('\r');
+    idleDelay(20);
+    commandBuffer = readLineCR(500);
 
     const size_t cbLen = commandBuffer.length();
     const char *cbBuf = commandBuffer.c_str();

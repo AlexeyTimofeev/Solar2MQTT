@@ -122,6 +122,12 @@ static inline void pi_clear_json_field_pairs(JsonObject object, const char *cons
 class PI_Serial
 {
 public:
+    // Called repeatedly while a reply is being waited for. At 2400 baud a QPIGS answer takes
+    // ~460 ms, and readStringUntil only yields to other FreeRTOS tasks - nothing in the main
+    // loop runs, so the display's touch polling stopped dead for the whole exchange.
+    static void setIdleHook(void (*fn)()) { idleHook = fn; }
+    static void (*idleHook)();
+
     const char *startChar = "(";
     const char *delimiter = " ";
     bool requestStaticData = true;
@@ -309,6 +315,8 @@ private:
      * @brief Drop whatever is waiting on the input, bounded in bytes and in time
      */
     void drainInput();
+    String readLineCR(uint32_t timeoutMs); // readStringUntil('\r') that runs idleHook while it waits
+    void idleDelay(uint32_t ms);
 
     /**
      * @brief accept a achar and get back the operation mode as string

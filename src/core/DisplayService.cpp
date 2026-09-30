@@ -685,7 +685,18 @@ bool DisplayService::pollTouch(uint32_t now, bool &next)
     int32_t ty = 0;
     const bool down = _impl->tft.getTouch(&tx, &ty) != 0;
     ++_dgPolls;
-    if (_dgPollLastMs != 0 && (now - _dgPollLastMs) > _dgMaxPollGap) { _dgMaxPollGap = now - _dgPollLastMs; }
+    if (_dgPollLastMs != 0)
+    {
+        const uint32_t gap = now - _dgPollLastMs;
+        if (gap > _dgMaxPollGap) { _dgMaxPollGap = gap; }
+        if (gap >= 150)
+        {
+            ++_dgLongGaps;
+            _dgGapMs[_dgGapHead] = gap;
+            _dgGapAt[_dgGapHead] = now;
+            _dgGapHead = static_cast<uint8_t>((_dgGapHead + 1) % kGapLog);
+        }
+    }
     _dgPollLastMs = now;
     if (down)
     {
@@ -1356,6 +1367,18 @@ String DisplayService::touchDebug() const
     o += ",\"lastRenderMs\":" + String((unsigned long)_dgLastRenderMs);
     o += ",\"maxRenderMs\":" + String((unsigned long)_dgMaxRenderMs);
     o += ",\"page\":" + String((int)_page);
+    o += ",\"hold\":" + String(_holdRedraw ? 1 : 0);
+    o += ",\"nowMs\":" + String((unsigned long)millis());
+    o += ",\"longGaps\":" + String((unsigned long)_dgLongGaps);
+    o += ",\"gaps\":[";
+    for (int i = 0; i < kGapLog; ++i)
+    {
+        const int k = (_dgGapHead + i) % kGapLog;
+        if (_dgGapMs[k] == 0) { continue; }
+        if (o.endsWith("[") == false) { o += ","; }
+        o += "[" + String((unsigned long)_dgGapAt[k]) + "," + String((unsigned long)_dgGapMs[k]) + "]";
+    }
+    o += "]";
     return o + "}";
 }
 

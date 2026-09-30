@@ -113,6 +113,12 @@ private:
     uint32_t _lastPumpMs = 0;
     uint32_t _dgPollLastMs = 0, _dgMaxPollGap = 0, _dgMaxRenderMs = 0, _dgLastRenderMs = 0;
     uint32_t _dgContacts = 0, _dgRising = 0, _dgAccepted = 0, _dgLockedOut = 0, _dgPolls = 0;
+    // A single max hides a stall that repeats. Keep the last long gaps with their timestamps.
+    static constexpr int kGapLog = 12;
+    uint32_t _dgGapMs[kGapLog] = {0};
+    uint32_t _dgGapAt[kGapLog] = {0};
+    uint8_t _dgGapHead = 0;
+    uint32_t _dgLongGaps = 0;
     void drawHistory(const Snap &s);
     void drawAlerts(const Snap &s);
     String buildSignature(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress) const;
