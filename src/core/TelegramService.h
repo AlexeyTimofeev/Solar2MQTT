@@ -28,6 +28,11 @@ public:
     void setInverterCommandHook(std::function<void(const String &)> hook);
     String statusJson() const;
 
+    // The board's own screens read the same two records the Mini App does: the 24 h history kept in
+    // RTC and the alert log kept in flash. Both return how many entries were written.
+    int historySnapshot(uint8_t *batt, uint8_t *load, uint8_t *off, int maxSlots) const;
+    int alertSnapshot(char *type, uint16_t *value, uint32_t *ageMin, int maxAlerts) const;
+
 private:
 #if HAS_TELEGRAM
     struct Impl;

@@ -3776,6 +3776,51 @@ void TelegramService::resume()
     }
 }
 
+// Oldest slot first, which is the order the history screen walks. Slots the board never filled
+// (kDashNone) are skipped, so a fresh boot shows a short graph rather than a wall of zeroes.
+int TelegramService::historySnapshot(uint8_t *batt, uint8_t *load, uint8_t *off, int maxSlots) const
+{
+    if (batt == nullptr || load == nullptr || off == nullptr || maxSlots <= 0) { return 0; }
+    if (dashHist.magic != kDashMagic) { return 0; } // RTC lost, e.g. after a power cut
+    const int have = static_cast<int>(dashHist.count < kDashSlots ? dashHist.count : kDashSlots);
+    int n = 0;
+    for (int i = 0; i < have && n < maxSlots; ++i)
+    {
+        const size_t idx = (dashHist.head + kDashSlots - have + i) % kDashSlots;
+        if (dashHist.batt[idx] == kDashNone) { continue; }
+        batt[n] = dashHist.batt[idx];
+        load[n] = dashHist.load[idx];
+        off[n] = dashHist.off[idx];
+        ++n;
+    }
+    return n;
+}
+
+// Newest first, with the age in minutes. Raised on both tasks, so it is copied under the lock.
+int TelegramService::alertSnapshot(char *type, uint16_t *value, uint32_t *ageMin, int maxAlerts) const
+{
+    if (type == nullptr || value == nullptr || ageMin == nullptr || maxAlerts <= 0 || _impl == nullptr) { return 0; }
+    AlertLog copy;
+    _impl->lockTake();
+    copy = _impl->alertLog;
+    _impl->lockGive();
+    const int have = static_cast<int>(copy.count < kAlertLog ? copy.count : kAlertLog);
+    const int64_t now = unixNow();
+    int n = 0;
+    for (int i = 0; i < have && n < maxAlerts; ++i)
+    {
+        const size_t idx = (copy.head + kAlertLog - 1 - i) % kAlertLog;
+        if (copy.type[idx] == 0) { continue; }
+        type[n] = static_cast<char>(copy.type[idx]);
+        value[n] = copy.value[idx];
+        ageMin[n] = (now > 0 && copy.at[idx] > 0 && now >= copy.at[idx])
+                        ? static_cast<uint32_t>((now - copy.at[idx]) / 60)
+                        : 0;
+        ++n;
+    }
+    return n;
+}
+
 bool TelegramService::isReady() const
 {
     return _impl != nullptr && _impl->ready.load();
@@ -3829,5 +3874,7 @@ bool TelegramService::pause(uint32_t) { return true; }
 void TelegramService::resume() {}
 bool TelegramService::isReady() const { return false; }
 String TelegramService::statusJson() const { return String("{\"supported\":false}"); }
+int TelegramService::historySnapshot(uint8_t *, uint8_t *, uint8_t *, int) const { return 0; }
+int TelegramService::alertSnapshot(char *, uint16_t *, uint32_t *, int) const { return 0; }
 
 #endif

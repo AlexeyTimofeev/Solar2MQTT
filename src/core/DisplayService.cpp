@@ -10,6 +10,10 @@
 #include "../descriptors.h"
 #include "SettingsPrefs.h"
 #include "SolarState.h"
+#if HAS_TELEGRAM
+#include "TelegramService.h"
+extern TelegramService telegramService; // owns the RTC history and the flash alert log
+#endif
 
 extern Settings _settings;
 
@@ -30,9 +34,6 @@ extern Settings _settings;
 #endif
 #define TFT_DASH_PAGE_COUNT 4
 #define TFT_DASH_FLOW_PAGE 0    // Power flow: first, default, and the one on the dashboard's palette
-#ifndef DISPLAY_DEMO
-#define DISPLAY_DEMO 0
-#endif
 
 namespace
 {
@@ -1109,35 +1110,16 @@ struct DisplayService::Snap
     int alerts = 0;
 };
 
-#if DISPLAY_DEMO
-void DisplayService::fillDemo(Snap &s)
-{
-    s.link = true;
-    s.mode = "Line";
-    s.gridV = 223.7f; s.gridHz = 50.0f; s.gridW = 1640.0f;
-    s.battPct = 88; s.battV = 53.4f; s.battChargeW = 400.0f;
-    s.loadW = 1240.0f; s.loadPct = 31; s.outV = 230.1f; s.outHz = 50.0f;
-    s.tempC = 48; s.fullPct = 90; s.leftS = 37080;
-    s.slots = 96;
-    for (int i = 0; i < 96; ++i)
-    {
-        const float ph = i / 95.0f;
-        s.batt[i] = static_cast<uint8_t>(62 + 26 * sinf(ph * 3.1f + 1.2f));
-        const float lw = 900.0f + 800.0f * sinf(ph * 9.0f) + 300.0f * sinf(ph * 21.0f);
-        s.load[i] = static_cast<uint8_t>(fmaxf(0.0f, fminf(240.0f, lw / 25.0f)));
-        s.off[i] = (i >= 40 && i <= 46) ? (i == 40 || i == 46 ? 7 : 15) : 0;
-    }
-    const char t[] = {'G', 'g', 'b', 'p', 'r', 'i'};
-    const uint16_t v[] = {0, 0, 25, 55, 0, 3};
-    const uint32_t a[] = {143, 218, 260, 611, 1455, 2880};
-    for (int i = 0; i < 6; ++i) { s.aType[i] = t[i]; s.aValue[i] = v[i]; s.aAgeMin[i] = a[i]; }
-    s.alerts = 6;
-}
-#endif
-
 void DisplayService::fillLive(Snap &s, bool inverterConnected)
 {
     s.link = inverterConnected;
+    // Both come from the same records the Mini App shows, and both stay valid with the inverter
+    // down - the history is in RTC and the alert log in flash, so they are filled before the
+    // early return below.
+#if HAS_TELEGRAM
+    s.slots = telegramService.historySnapshot(s.batt, s.load, s.off, static_cast<int>(sizeof(s.batt)));
+    s.alerts = telegramService.alertSnapshot(s.aType, s.aValue, s.aAgeMin, static_cast<int>(sizeof(s.aType)));
+#endif
     if (!inverterConnected) { return; }
     s.mode = readText(DESCR_Inverter_Operation_Mode);
     float v = 0;
@@ -1312,7 +1294,7 @@ void DisplayService::animateFlow(uint32_t now)
     if (!_flowOn[0] && !_flowOn[1] && !_flowOn[2]) { return; }
 
     lgfx::LGFXBase &g = _impl->target();
-    const uint32_t bg = rgb(g, kPanel);
+    const uint32_t bg = _impl->bg;
     for (int i = 0; i < 3; ++i)
     {
         if (_flowDotX[i] >= 0) { g.fillSmoothCircle(_flowDotX[i], _flowDotY[i], 7, bg); _flowDotX[i] = -1; }
@@ -1336,7 +1318,7 @@ void DisplayService::drawFlow(const Snap &s)
 {
     Impl &I = *_impl;
     lgfx::LGFXBase &g = I.target();
-    const uint32_t bg = rgb(g, kPanel), track = rgb(g, kTrack), muted = rgb(g, kMuted);
+    const uint32_t bg = I.bg, track = rgb(g, kTrack), muted = rgb(g, kMuted);
     const float limit = s.ratingW > 0 ? s.ratingW : 6000.0f;
     const uint32_t gridCol = scaleColor(g, 1.0f - (s.gridW - 500.0f) / 4500.0f);
     const uint32_t battCol = scaleColor(g, (s.battPct - 25.0f) / 55.0f);
@@ -1530,16 +1512,11 @@ void DisplayService::renderDashboard(bool wifiConnected, bool apMode, bool inver
     lgfx::LGFXBase &g = I.target();
     (void)ipAddress;
     Snap s;
-#if DISPLAY_DEMO
-    fillDemo(s);                                  // history and alert arrays, which have no live source yet
-    if (inverterConnected) { fillLive(s, true); } // real (or simulated) values win for everything else
-#else
     fillLive(s, inverterConnected);
-#endif
     static const char *const kTitles[kPages] = {"Power flow", "Summary", "Last 24 h", "Alerts"};
 
     g.setTextSize(1);
-    I.bg = (_page == TFT_DASH_FLOW_PAGE) ? rgb(g, kPanel) : TFT_BLACK; // flow page matches the dashboard
+    I.bg = TFT_BLACK; // one background for every page
     if (!_drawnOnce || _forceRedraw || _impl->lastRenderedPage != _page)
     {
         g.fillScreen(I.bg);
