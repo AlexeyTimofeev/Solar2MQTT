@@ -1,15 +1,19 @@
-name: T-Display firmware
+name: Firmware
 
 on:
   push:
-    branches: [ttgo]
+    branches: [cyd35, ttgo]
     tags: ['v*']
   pull_request:
-    branches: [ttgo]
+    branches: [cyd35, ttgo]
   workflow_dispatch:
 
 permissions:
   contents: write
+
+env:
+  # Every board variant that ships in a release
+  ENVS: cyd35r_telegram ttgo_tdisplay_telegram
 
 jobs:
   build:
@@ -43,18 +47,24 @@ jobs:
           fi
 
       - name: Build
-        run: pio run -e ttgo_tdisplay_telegram
+        run: |
+          for e in ${ENVS}; do
+            pio run -e "$e"
+          done
 
       - name: Collect firmware files
         run: |
           # upload-artifact skips hidden directories such as .firmware, so publish from dist/
           mkdir -p dist
           cp .firmware/* dist/
-          # Debug symbols, to decode the backtrace in a crash report from the board
           version=$(sed -nE 's/^custom_source_version[[:space:]]*=[[:space:]]*([^[:space:]]+).*/\1/p' platformio.ini | tr -d '\r')
-          gzip -c .pio/build/ttgo_tdisplay_telegram/firmware.elf > "dist/Solar2MQTT_ttgo_tdisplay_telegram_V${version}.elf.gz"
+          for e in ${ENVS}; do
+            # Debug symbols, to decode the backtrace in a crash report from the board
+            gzip -c ".pio/build/$e/firmware.elf" > "dist/Solar2MQTT_${e}_V${version}.elf.gz"
+            # One .bin.ota per variant, or the boards find no matching release asset
+            test -f "dist/Solar2MQTT_${e}_V${version}.bin.ota"
+          done
           ls -l dist
-          ls dist/*.bin.ota > /dev/null
 
       - name: Upload build output
         uses: actions/upload-artifact@v4
