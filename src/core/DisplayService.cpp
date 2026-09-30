@@ -1356,46 +1356,6 @@ void DisplayService::strokeRing(int idx)
     }
 }
 
-String DisplayService::touchDebug() const
-{
-    String o = "{\"polls\":" + String((unsigned long)_dgPolls);
-    o += ",\"contacts\":" + String((unsigned long)_dgContacts);
-    o += ",\"rising\":" + String((unsigned long)_dgRising);
-    o += ",\"accepted\":" + String((unsigned long)_dgAccepted);
-    o += ",\"lockedOut\":" + String((unsigned long)_dgLockedOut);
-    o += ",\"maxPollGapMs\":" + String((unsigned long)_dgMaxPollGap);
-    o += ",\"lastRenderMs\":" + String((unsigned long)_dgLastRenderMs);
-    o += ",\"maxRenderMs\":" + String((unsigned long)_dgMaxRenderMs);
-    o += ",\"page\":" + String((int)_page);
-    o += ",\"hold\":" + String(_holdRedraw ? 1 : 0);
-    o += ",\"nowMs\":" + String((unsigned long)millis());
-    o += ",\"longGaps\":" + String((unsigned long)_dgLongGaps);
-    o += ",\"gaps\":[";
-    for (int i = 0; i < kGapLog; ++i)
-    {
-        const int k = (_dgGapHead + i) % kGapLog;
-        if (_dgGapMs[k] == 0) { continue; }
-        if (o.endsWith("[") == false) { o += ","; }
-        o += "[" + String((unsigned long)_dgGapAt[k]) + "," + String((unsigned long)_dgGapMs[k]) + "]";
-    }
-    o += "]";
-    return o + "}";
-}
-
-// A full page repaint takes long enough to swallow a whole tap, which made switching pages work
-// about every other try. Touch sits on the same task, so polling between draw calls is safe -
-// latchTouch only adds to _tapSteps, and the page change is applied at the top of the next loop.
-void DisplayService::pumpTouch()
-{
-#if TFT_TOUCH && TFT_DASH_PAGES
-    if (_impl == nullptr || _holdRedraw) { return; }
-    const uint32_t now = millis();
-    if (now - _lastPumpMs < 3) { return; }
-    _lastPumpMs = now;
-    latchTouch(now);
-#endif
-}
-
 void DisplayService::animateFlow(uint32_t now)
 {
     if (_impl == nullptr || (now - _flowLastMs) < kFlowTickMs) { return; }
@@ -1892,6 +1852,49 @@ void DisplayService::render(bool wifiConnected, bool apMode, bool inverterConnec
 }
 
 #endif // TFT_DASH_PAGES
+
+// Both of these are called from main.cpp and from the web handler whatever the layout is,
+// so they live outside the paged/dash split. Their bodies guard themselves.
+// A full page repaint takes long enough to swallow a whole tap, which made switching pages work
+// about every other try. Touch sits on the same task, so polling between draw calls is safe -
+// latchTouch only adds to _tapSteps, and the page change is applied at the top of the next loop.
+void DisplayService::pumpTouch()
+{
+#if TFT_TOUCH && TFT_DASH_PAGES
+    if (_impl == nullptr || _holdRedraw) { return; }
+    const uint32_t now = millis();
+    if (now - _lastPumpMs < 3) { return; }
+    _lastPumpMs = now;
+    latchTouch(now);
+#endif
+}
+
+String DisplayService::touchDebug() const
+{
+    String o = "{\"polls\":" + String((unsigned long)_dgPolls);
+    o += ",\"contacts\":" + String((unsigned long)_dgContacts);
+    o += ",\"rising\":" + String((unsigned long)_dgRising);
+    o += ",\"accepted\":" + String((unsigned long)_dgAccepted);
+    o += ",\"lockedOut\":" + String((unsigned long)_dgLockedOut);
+    o += ",\"maxPollGapMs\":" + String((unsigned long)_dgMaxPollGap);
+    o += ",\"lastRenderMs\":" + String((unsigned long)_dgLastRenderMs);
+    o += ",\"maxRenderMs\":" + String((unsigned long)_dgMaxRenderMs);
+    o += ",\"page\":" + String((int)_page);
+    o += ",\"hold\":" + String(_holdRedraw ? 1 : 0);
+    o += ",\"nowMs\":" + String((unsigned long)millis());
+    o += ",\"longGaps\":" + String((unsigned long)_dgLongGaps);
+    o += ",\"gaps\":[";
+    for (int i = 0; i < kGapLog; ++i)
+    {
+        const int k = (_dgGapHead + i) % kGapLog;
+        if (_dgGapMs[k] == 0) { continue; }
+        if (o.endsWith("[") == false) { o += ","; }
+        o += "[" + String((unsigned long)_dgGapAt[k]) + "," + String((unsigned long)_dgGapMs[k]) + "]";
+    }
+    o += "]";
+    return o + "}";
+}
+
 
 #else // !HAS_TFT
 
