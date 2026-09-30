@@ -84,7 +84,9 @@ private:
     void drawHeader(const char *title, bool wifiConnected, bool apMode, bool inverterConnected);
     void drawSummary(const Snap &s);
     void drawFlow(const Snap &s);
-    void drawFlowPaths();
+    // With wn > 0 only the segments under those wipe discs are repainted: redrawing all three
+    // paths costs 136 anti-aliased lines, far too much for a 70 ms animation tick.
+    void drawFlowPaths(const int *wx = nullptr, const int *wy = nullptr, int wn = 0, float rad = 0.0f);
     void animateFlow(uint32_t now);
 
     // Power-flow link animation: which links carry power, their colour, how long a dot takes to

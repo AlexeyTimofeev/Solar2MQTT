@@ -661,7 +661,9 @@ void WebServerHandler::registerRoutes()
         static uint8_t header[54];
         memset(header, 0, sizeof(header));
         header[0] = 'B'; header[1] = 'M';
-        const uint32_t fileSize = total, pixOffset = 54, dibSize = 40, planesBits = (1u << 16) | 24u;
+        // biPlanes is the low half of this word and biBitCount the high half - the other way round
+        // writes a 1-bpp header, which decoders honour: the pixels are fine but the image reads as black.
+        const uint32_t fileSize = total, pixOffset = 54, dibSize = 40, planesBits = (24u << 16) | 1u;
         memcpy(header + 2, &fileSize, 4);
         memcpy(header + 10, &pixOffset, 4);
         memcpy(header + 14, &dibSize, 4);

@@ -140,7 +140,7 @@ public:
             cfg.spi_host = SPI2_HOST;
             cfg.spi_mode = 0;
             cfg.freq_write = 40000000;
-            cfg.freq_read = 16000000;
+            cfg.freq_read = 16000000; // 4 MHz misaligns readRect: mid-tones come back bit-shifted
             cfg.spi_3wire = false;
             cfg.use_lock = true;
             cfg.dma_channel = SPI_DMA_CH_AUTO;
@@ -1257,10 +1257,25 @@ void DisplayService::drawSummary(const Snap &s)
          I.W - 2 * I.padX, rgb(g, kMuted));
 }
 
-void DisplayService::drawFlowPaths()
+void DisplayService::drawFlowPaths(const int *wx, const int *wy, int wn, float rad)
 {
     lgfx::LGFXBase &g = _impl->target();
     const uint32_t offCol = rgb(g, kTrack);
+    const float rad2 = rad * rad;
+    // Only the segments a wipe disc touched need repainting. Without this every animation tick
+    // redrew all 136 anti-aliased segments, which does not fit in the 70 ms tick on a panel with
+    // no framebuffer - the dots moved in visible jerks.
+    auto touched = [&](float ax, float ay, float bx, float by) {
+        if (wn <= 0) { return true; }
+        for (int w = 0; w < wn; ++w)
+        {
+            const float dax = ax - wx[w], day = ay - wy[w];
+            if (dax * dax + day * day <= rad2) { return true; }
+            const float dbx = bx - wx[w], dby = by - wy[w];
+            if (dbx * dbx + dby * dby <= rad2) { return true; }
+        }
+        return false;
+    };
     for (int i = 0; i < 3; ++i)
     {
         const uint32_t c = _flowOn[i] ? _flowCol[i] : offCol;
@@ -1273,7 +1288,8 @@ void DisplayService::drawFlowPaths()
             float qx = 0, qy = 0;
             flowPointAt(i, static_cast<float>(k) / steps, qx, qy);
             // stroke-width 2 in the SVG; drawWideLine takes the half-width and rounds the ends
-            if (!nearRing(px, py, kLinkKeepOut) && !nearRing(qx, qy, kLinkKeepOut))
+            if (touched(px, py, qx, qy)
+                && !nearRing(px, py, kLinkKeepOut) && !nearRing(qx, qy, kLinkKeepOut))
             {
                 g.drawWideLine(static_cast<int>(px), static_cast<int>(py),
                                static_cast<int>(qx), static_cast<int>(qy), 1.2f, c);
@@ -1291,15 +1307,26 @@ void DisplayService::animateFlow(uint32_t now)
     if (_impl == nullptr || (now - _flowLastMs) < 70) { return; }
     const float dt = (now - _flowLastMs) / 1000.0f;
     _flowLastMs = now;
-    if (!_flowOn[0] && !_flowOn[1] && !_flowOn[2]) { return; }
 
     lgfx::LGFXBase &g = _impl->target();
     const uint32_t bg = _impl->bg;
+    // Wipe first, and before any early return: when the last flow stops, the dot still on screen
+    // has to go, or it sits there as a leftover until the next full repaint.
+    int wx[3], wy[3], wn = 0;
     for (int i = 0; i < 3; ++i)
     {
-        if (_flowDotX[i] >= 0) { g.fillSmoothCircle(_flowDotX[i], _flowDotY[i], 7, bg); _flowDotX[i] = -1; }
+        if (_flowDotX[i] >= 0)
+        {
+            g.fillSmoothCircle(_flowDotX[i], _flowDotY[i], 7, bg);
+            wx[wn] = _flowDotX[i];
+            wy[wn] = _flowDotY[i];
+            ++wn;
+            _flowDotX[i] = -1;
+        }
     }
-    drawFlowPaths();
+    // 7 px wipe + the 1.2 px half-width of the line, plus a little for the sampling step
+    if (wn > 0) { drawFlowPaths(wx, wy, wn, 11.0f); }
+    if (!_flowOn[0] && !_flowOn[1] && !_flowOn[2]) { return; }
     for (int i = 0; i < 3; ++i)
     {
         if (!_flowOn[i]) { continue; }
