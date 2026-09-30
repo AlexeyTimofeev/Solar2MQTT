@@ -87,6 +87,10 @@ private:
     // With wn > 0 only the segments under those wipe discs are repainted: redrawing all three
     // paths costs 136 anti-aliased lines, far too much for a 70 ms animation tick.
     void drawFlowPaths(const int *wx = nullptr, const int *wy = nullptr, int wn = 0, float rad = 0.0f);
+    // Repaint one ring's stroke band, so a dot that ran under it comes out behind it again.
+    void strokeRing(int idx);
+    // Poll touch from inside a long repaint: a tap is otherwise dropped for the whole redraw.
+    void pumpTouch();
     void animateFlow(uint32_t now);
 
     // Power-flow link animation: which links carry power, their colour, how long a dot takes to
@@ -98,6 +102,11 @@ private:
     int _flowDotX[3] = {-1, -1, -1};
     int _flowDotY[3] = {-1, -1, -1};
     uint32_t _flowLastMs = 0;
+    float _ringFrac[3] = {0.0f, 0.0f, 0.0f};
+    uint32_t _ringCol[3] = {0, 0, 0};
+    bool _ringShow[3] = {false, false, false};
+    uint32_t _ringTrackCol = 0;
+    uint32_t _lastPumpMs = 0;
     void drawHistory(const Snap &s);
     void drawAlerts(const Snap &s);
     String buildSignature(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress) const;

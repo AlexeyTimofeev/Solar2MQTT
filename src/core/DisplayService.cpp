@@ -978,7 +978,9 @@ bool nearRing(float x, float y, float margin)
     return false;
 }
 constexpr float kLinkKeepOut = kRingStroke / 2 + 1.0f;
-constexpr float kDotKeepOut = kLinkKeepOut + 7.0f; // also clears the rubber used to wipe a dot
+// Two frames of the panel's 60 Hz scan-out. There is no tearing-effect line on this board
+// (pin_busy = -1), so this cannot be a true vsync - it just keeps the step even and small.
+constexpr uint32_t kFlowTickMs = 33;
 
 // The dashboard's animateMotion duration: the more power flows, the faster the dot runs.
 inline float flowDur(float watts) { return fmaxf(0.8f, 4.0f - watts / 1500.0f); }
@@ -1296,20 +1298,73 @@ void DisplayService::drawFlowPaths(const int *wx, const int *wy, int wn, float r
             }
             px = qx;
             py = qy;
+            // Only on a full redraw - a local repaint is a handful of segments and needs no break.
+            if (wn <= 0 && (k & 15) == 0) { pumpTouch(); }
         }
     }
 }
 
 // Runs between full redraws so the dots move without repainting the page: rub out the old dots,
 // lay the three links back down, then draw the dots at their new positions.
+// The stroke band only - never the interior, so the icon and the value inside stay put.
+void DisplayService::strokeRing(int idx)
+{
+    if (_impl == nullptr || idx < 0 || idx > 2) { return; }
+    lgfx::LGFXBase &g = _impl->target();
+    const FlowRing &R = kFlowRings[idx];
+    const int cx = static_cast<int>(R.cx + 0.5f), cy = static_cast<int>(R.cy + 0.5f);
+    const float hw = kRingStroke / 2;
+    const int r0 = static_cast<int>(R.r - hw), r1 = static_cast<int>(R.r + hw);
+    g.fillArc(cx, cy, r0, r1, 0.0f, 360.0f, _ringTrackCol);
+    if (!_ringShow[idx] || _ringFrac[idx] <= 0.002f) { return; }
+    const float sweep = 360.0f * fminf(1.0f, _ringFrac[idx]);
+    g.fillArc(cx, cy, r0, r1, 270.0f, 270.0f + sweep, _ringCol[idx]);
+    const float ends[2] = {270.0f, 270.0f + sweep}; // stroke-linecap="round"
+    for (int e = 0; e < 2; ++e)
+    {
+        const float rad = ends[e] * 3.14159265f / 180.0f;
+        g.fillSmoothCircle(static_cast<int>(R.cx + R.r * cosf(rad) + 0.5f),
+                           static_cast<int>(R.cy + R.r * sinf(rad) + 0.5f),
+                           static_cast<int>(hw + 0.5f), _ringCol[idx]);
+    }
+}
+
+// A full page repaint takes long enough to swallow a whole tap, which made switching pages work
+// about every other try. Touch sits on the same task, so polling between draw calls is safe -
+// latchTouch only adds to _tapSteps, and the page change is applied at the top of the next loop.
+void DisplayService::pumpTouch()
+{
+#if TFT_TOUCH && TFT_DASH_PAGES
+    if (_impl == nullptr || _holdRedraw) { return; }
+    const uint32_t now = millis();
+    if (now - _lastPumpMs < 15) { return; }
+    _lastPumpMs = now;
+    latchTouch(now);
+#endif
+}
+
 void DisplayService::animateFlow(uint32_t now)
 {
-    if (_impl == nullptr || (now - _flowLastMs) < 70) { return; }
+    if (_impl == nullptr || (now - _flowLastMs) < kFlowTickMs) { return; }
     const float dt = (now - _flowLastMs) / 1000.0f;
     _flowLastMs = now;
 
     lgfx::LGFXBase &g = _impl->target();
     const uint32_t bg = _impl->bg;
+    const float hw = kRingStroke / 2;
+    // Any ring a wipe or a dot lands on is restored afterwards, so the dot passes behind it
+    // the way the dashboard's SVG paints its circles over the line.
+    bool ringDirty[3] = {false, false, false};
+    auto mark = [&](float px, float py, float discR) {
+        for (int i = 0; i < 3; ++i)
+        {
+            const FlowRing &R = kFlowRings[i];
+            const float dx = px - R.cx, dy = py - R.cy;
+            const float D = sqrtf(dx * dx + dy * dy);
+            if (D + discR >= R.r - hw && D - discR <= R.r + hw) { ringDirty[i] = true; }
+        }
+    };
+
     // Wipe first, and before any early return: when the last flow stops, the dot still on screen
     // has to go, or it sits there as a leftover until the next full repaint.
     int wx[3], wy[3], wn = 0;
@@ -1318,6 +1373,7 @@ void DisplayService::animateFlow(uint32_t now)
         if (_flowDotX[i] >= 0)
         {
             g.fillSmoothCircle(_flowDotX[i], _flowDotY[i], 7, bg);
+            mark(_flowDotX[i], _flowDotY[i], 7.5f);
             wx[wn] = _flowDotX[i];
             wy[wn] = _flowDotY[i];
             ++wn;
@@ -1326,18 +1382,25 @@ void DisplayService::animateFlow(uint32_t now)
     }
     // 7 px wipe + the 1.2 px half-width of the line, plus a little for the sampling step
     if (wn > 0) { drawFlowPaths(wx, wy, wn, 11.0f); }
-    if (!_flowOn[0] && !_flowOn[1] && !_flowOn[2]) { return; }
+    if (_flowOn[0] || _flowOn[1] || _flowOn[2])
+    {
+        for (int i = 0; i < 3; ++i)
+        {
+            if (!_flowOn[i]) { continue; }
+            _flowPhase[i] += dt / _flowDur[i];
+            while (_flowPhase[i] >= 1.0f) { _flowPhase[i] -= 1.0f; }
+            float x = 0, y = 0;
+            flowPointAt(i, _flowPhase[i], x, y);
+            _flowDotX[i] = static_cast<int>(x + 0.5f);
+            _flowDotY[i] = static_cast<int>(y + 0.5f);
+            g.fillSmoothCircle(_flowDotX[i], _flowDotY[i], 5, _flowCol[i]); // SVG dot r=4, scaled
+            mark(x, y, 5.5f);
+        }
+    }
+    // Last, so the ring ends up on top of whatever just ran under it.
     for (int i = 0; i < 3; ++i)
     {
-        if (!_flowOn[i]) { continue; }
-        _flowPhase[i] += dt / _flowDur[i];
-        while (_flowPhase[i] >= 1.0f) { _flowPhase[i] -= 1.0f; }
-        float x = 0, y = 0;
-        flowPointAt(i, _flowPhase[i], x, y);
-        if (nearRing(x, y, kDotKeepOut)) { continue; } // it would be under the ring anyway
-        _flowDotX[i] = static_cast<int>(x + 0.5f);
-        _flowDotY[i] = static_cast<int>(y + 0.5f);
-        g.fillSmoothCircle(_flowDotX[i], _flowDotY[i], 5, _flowCol[i]); // SVG dot r=4, scaled
+        if (ringDirty[i]) { strokeRing(i); }
     }
 }
 
@@ -1370,27 +1433,23 @@ void DisplayService::drawFlow(const Snap &s)
     drawFlowPaths();
 
     // A ring is the SVG's grey circle with the value arc stroked over it from 12 o'clock.
+    _ringTrackCol = track;
     auto ring = [&](int idx, float frac, uint32_t color, bool showArc) {
         const FlowRing &R = kFlowRings[idx];
-        const int cx = static_cast<int>(R.cx + 0.5f), cy = static_cast<int>(R.cy + 0.5f);
         const float hw = kRingStroke / 2;
-        g.fillSmoothCircle(cx, cy, static_cast<int>(R.r - hw), bg);
-        g.fillArc(cx, cy, static_cast<int>(R.r - hw), static_cast<int>(R.r + hw), 0.0f, 360.0f, track);
-        if (!showArc || frac <= 0.002f) { return; }
-        const float sweep = 360.0f * fminf(1.0f, frac);
-        g.fillArc(cx, cy, static_cast<int>(R.r - hw), static_cast<int>(R.r + hw), 270.0f, 270.0f + sweep, color);
-        const float ends[2] = {270.0f, 270.0f + sweep}; // stroke-linecap="round"
-        for (int e = 0; e < 2; ++e)
-        {
-            const float rad = ends[e] * 3.14159265f / 180.0f;
-            g.fillSmoothCircle(static_cast<int>(R.cx + R.r * cosf(rad) + 0.5f),
-                               static_cast<int>(R.cy + R.r * sinf(rad) + 0.5f),
-                               static_cast<int>(hw + 0.5f), color);
-        }
+        g.fillSmoothCircle(static_cast<int>(R.cx + 0.5f), static_cast<int>(R.cy + 0.5f),
+                           static_cast<int>(R.r - hw), bg);
+        _ringFrac[idx] = frac;
+        _ringCol[idx] = color;
+        _ringShow[idx] = showArc;
+        strokeRing(idx);
     };
     ring(0, s.gridOff ? 0.0f : s.gridW / limit, gridCol, !s.gridOff);
+    pumpTouch();
     ring(1, s.gridOff ? s.loadW / limit : 1.0f, homeCol, true);
+    pumpTouch();
     ring(2, s.fullPct > 0 ? s.battPct / s.fullPct : 0.0f, battCol, true);
+    pumpTouch();
 
     // The dashboard puts an emoji in each ring; the board's fonts are Latin-1, so these are drawn.
     auto icon = [&](int idx) {
@@ -1415,6 +1474,7 @@ void DisplayService::drawFlow(const Snap &s)
     icon(0);
     icon(1);
     icon(2);
+    pumpTouch();
 
     // Value inside each ring, with the dashboard's arrow glyph drawn as a triangle.
     auto value = [&](int idx, int dir, const String &txt, uint32_t col) {
