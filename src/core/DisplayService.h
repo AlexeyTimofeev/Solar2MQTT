@@ -86,6 +86,18 @@ private:
     void drawStatus(const Snap &s);
     void drawSummary(const Snap &s);
     void drawFlow(const Snap &s);
+    void drawFlowPaths();
+    void animateFlow(uint32_t now);
+
+    // Power-flow link animation: which links carry power, their colour, how long a dot takes to
+    // cross, and where each dot is now so the next frame can rub it out.
+    bool _flowOn[3] = {false, false, false};
+    uint32_t _flowCol[3] = {0, 0, 0};
+    float _flowDur[3] = {2.0f, 2.0f, 2.0f};
+    float _flowPhase[3] = {0.0f, 0.33f, 0.66f};
+    int _flowDotX[3] = {-1, -1, -1};
+    int _flowDotY[3] = {-1, -1, -1};
+    uint32_t _flowLastMs = 0;
     void drawHistory(const Snap &s);
     void drawAlerts(const Snap &s);
     String buildSignature(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress) const;
