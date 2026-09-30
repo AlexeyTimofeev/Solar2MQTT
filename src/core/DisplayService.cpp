@@ -957,6 +957,26 @@ void flowPointAt(int i, float t, float &x, float &y)
     y = a * f.p[1] + b * f.p[3] + c * f.p[5] + d * f.p[7];
 }
 
+// Every path endpoint lies on a ring's stroke centre-line: the SVG hides them by painting the
+// circles after the paths. The dots animate, so the links get repainted between full redraws and
+// that paint order cannot hold. Instead the links stop just outside each ring, which looks the
+// same - those ends were always covered - and can never scribble on a ring.
+struct FlowRing { float cx, cy, r; };
+constexpr FlowRing kFlowRings[3] = {{60, 60, 44}, {280, 60, 44}, {170, 158, 42}};
+
+bool nearRing(float x, float y, float margin)
+{
+    for (int i = 0; i < 3; ++i)
+    {
+        const float dx = x - kFlowRings[i].cx, dy = y - kFlowRings[i].cy;
+        const float keep = kFlowRings[i].r + margin;
+        if (dx * dx + dy * dy <= keep * keep) { return true; }
+    }
+    return false;
+}
+constexpr float kLinkKeepOut = 2.5f; // half the 4-wide stroke, plus a whisker
+constexpr float kDotKeepOut = 8.5f;  // also clears the 7 px rubber used to wipe a dot
+
 // The dashboard's animateMotion duration: the more power flows, the faster the dot runs.
 inline float flowDur(float watts) { return fmaxf(0.8f, 4.0f - watts / 1500.0f); }
 constexpr int kPages = TFT_DASH_PAGE_COUNT;
@@ -1253,7 +1273,8 @@ void DisplayService::drawFlowPaths()
     for (int i = 0; i < 3; ++i)
     {
         const uint32_t c = _flowOn[i] ? _flowCol[i] : offCol;
-        const int steps = kFlowPaths[i].curved ? 20 : 1;
+        // A segment is dropped whole, so the step has to be small or the trim leaves a visible gap.
+        const int steps = kFlowPaths[i].curved ? 36 : 64;
         float px = 0, py = 0;
         flowPointAt(i, 0.0f, px, py);
         for (int k = 1; k <= steps; ++k)
@@ -1261,7 +1282,10 @@ void DisplayService::drawFlowPaths()
             float qx = 0, qy = 0;
             flowPointAt(i, static_cast<float>(k) / steps, qx, qy);
             // stroke-width 2 in the SVG; drawWideLine takes the half-width and rounds the ends
-            g.drawWideLine(fxi(px), fyi(py), fxi(qx), fyi(qy), 1.0f * kFlowK, c);
+            if (!nearRing(px, py, kLinkKeepOut) && !nearRing(qx, qy, kLinkKeepOut))
+            {
+                g.drawWideLine(fxi(px), fyi(py), fxi(qx), fyi(qy), 1.0f * kFlowK, c);
+            }
             px = qx;
             py = qy;
         }
@@ -1291,6 +1315,7 @@ void DisplayService::animateFlow(uint32_t now)
         while (_flowPhase[i] >= 1.0f) { _flowPhase[i] -= 1.0f; }
         float x = 0, y = 0;
         flowPointAt(i, _flowPhase[i], x, y);
+        if (nearRing(x, y, kDotKeepOut)) { continue; } // it would be under the ring anyway
         _flowDotX[i] = fxi(x);
         _flowDotY[i] = fyi(y);
         g.fillSmoothCircle(_flowDotX[i], _flowDotY[i], 5, _flowCol[i]); // SVG dot r=4, scaled
