@@ -48,9 +48,11 @@ jobs:
 
       - name: Build
         run: |
-          for e in ${ENVS}; do
-            pio run -e "$e"
-          done
+          # One invocation on purpose: pio run wipes .pio/build for every env
+          # outside its -e list, so building them in turn loses the first elf
+          args=""
+          for e in ${ENVS}; do args="$args -e $e"; done
+          pio run $args
 
       - name: Collect firmware files
         run: |
