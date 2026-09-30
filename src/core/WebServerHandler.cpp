@@ -685,7 +685,12 @@ void WebServerHandler::registerRoutes()
                     if (cachedY != y) { displayService.readRow(y, row, W); cachedY = y; }
                     buf[made++] = row[within]; // already B, G, R per pixel
                 }
+                // Refresh the hold on every chunk. It self-releases after 15 s so a reader that dies
+                // cannot freeze the panel, but a full 480x320 read takes far longer than that, and
+                // letting the redraw back in mid-read corrupts the rows still to come: the reader and
+                // the display would be on the shared SPI bus at once.
                 if (made == 0) { displayService.setRedrawHold(false); } // transfer finished
+                else { displayService.setRedrawHold(true); }
                 return made; });
         request->send(res); });
 

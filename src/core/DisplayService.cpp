@@ -803,7 +803,10 @@ void DisplayService::loop(bool wifiConnected, bool apMode, bool inverterConnecte
     }
 #endif
 #if TFT_DASH_PAGES
-    latchTouch(now);
+    // Not while a reader is copying the panel: the touch controller sits on the same SPI bus, and
+    // polling it from this task while the web task reads rows corrupts the rows still to come.
+    // A capture drops taps for its duration; the hold self-releases if the reader dies.
+    if (!_holdRedraw) { latchTouch(now); }
     const int steps = _tapSteps.exchange(0, std::memory_order_relaxed);
     if (steps != 0)
     {
@@ -928,19 +931,25 @@ namespace
 constexpr uint32_t kBlue = 0x58B8FF, kGreen = 0x30C977, kAmber = 0xF6C549, kRed = 0xFF8A78;
 constexpr uint32_t kMuted = 0x8AA0B5, kInk = 0xEEF6FF, kTrack = 0x2A3A48, kPanel = 0x08131D;
 
-// The Telegram dashboard draws the power flow in an SVG viewBox of 340x228. We map that box
-// straight onto the area under the header, so the two read as the same picture: same centres,
-// same radii, same link curves, same palette. 1.2105 is 276/228, the tallest uniform fit.
-constexpr float kFlowK = 1.2105f, kFlowOX = 34.2f, kFlowOY = 44.0f;
-inline int fxi(float x) { return static_cast<int>(kFlowOX + x * kFlowK + 0.5f); }
-inline int fyi(float y) { return static_cast<int>(kFlowOY + y * kFlowK + 0.5f); }
+// The flow began as a 1:1 copy of the dashboard's 340x228 SVG, scaled to fit under the header.
+// The panel is wider than that box is tall, so a uniform fit left the rings small: at the line
+// where the value sits there were only 96 px of clear width for text up to 93 px wide, and a
+// reading like "12.4 kW" would not have fitted at all. The layout is now in panel pixels and keeps
+// the dashboard's shape - two rings above, one below, S-curved links - with bigger rings spread
+// across the full width.
+struct FlowRing { float cx, cy, r; };
+constexpr FlowRing kFlowRings[3] = {{96, 116, 62}, {384, 116, 62}, {240, 230, 58}};
+constexpr float kRingStroke = 5.0f;                  // the SVG's 4, grown with the rings
+constexpr float kValueDrop = 18.0f;                  // value sits below centre, as in the SVG
+constexpr float kIconRise = 16.0f;
 
-// The three link paths, verbatim from the dashboard's <path d="..."> attributes.
+// Endpoints sit on the ring circles; the links are trimmed clear of them so repainting a link
+// during the dot animation can never scribble on a ring.
 struct FlowPath { bool curved; float p[8]; };
 constexpr FlowPath kFlowPaths[3] = {
-    {false, {104, 60, 0, 0, 0, 0, 236, 60}},          // grid -> home
-    {true, {100, 78, 150, 78, 160, 95, 160, 117}},    // grid -> battery
-    {true, {180, 117, 180, 95, 190, 78, 240, 78}},    // battery -> home
+    {false, {158, 116, 0, 0, 0, 0, 322, 116}},                                 // grid -> home
+    {true, {152.6f, 141.2f, 207.6f, 141.2f, 226.0f, 147.7f, 226.0f, 173.7f}},  // grid -> battery
+    {true, {254.0f, 173.7f, 254.0f, 147.7f, 272.4f, 141.2f, 327.4f, 141.2f}},  // battery -> home
 };
 
 void flowPointAt(int i, float t, float &x, float &y)
@@ -957,13 +966,6 @@ void flowPointAt(int i, float t, float &x, float &y)
     y = a * f.p[1] + b * f.p[3] + c * f.p[5] + d * f.p[7];
 }
 
-// Every path endpoint lies on a ring's stroke centre-line: the SVG hides them by painting the
-// circles after the paths. The dots animate, so the links get repainted between full redraws and
-// that paint order cannot hold. Instead the links stop just outside each ring, which looks the
-// same - those ends were always covered - and can never scribble on a ring.
-struct FlowRing { float cx, cy, r; };
-constexpr FlowRing kFlowRings[3] = {{60, 60, 44}, {280, 60, 44}, {170, 158, 42}};
-
 bool nearRing(float x, float y, float margin)
 {
     for (int i = 0; i < 3; ++i)
@@ -974,8 +976,8 @@ bool nearRing(float x, float y, float margin)
     }
     return false;
 }
-constexpr float kLinkKeepOut = 2.5f; // half the 4-wide stroke, plus a whisker
-constexpr float kDotKeepOut = 8.5f;  // also clears the 7 px rubber used to wipe a dot
+constexpr float kLinkKeepOut = kRingStroke / 2 + 1.0f;
+constexpr float kDotKeepOut = kLinkKeepOut + 7.0f; // also clears the rubber used to wipe a dot
 
 // The dashboard's animateMotion duration: the more power flows, the faster the dot runs.
 inline float flowDur(float watts) { return fmaxf(0.8f, 4.0f - watts / 1500.0f); }
@@ -1284,7 +1286,8 @@ void DisplayService::drawFlowPaths()
             // stroke-width 2 in the SVG; drawWideLine takes the half-width and rounds the ends
             if (!nearRing(px, py, kLinkKeepOut) && !nearRing(qx, qy, kLinkKeepOut))
             {
-                g.drawWideLine(fxi(px), fyi(py), fxi(qx), fyi(qy), 1.0f * kFlowK, c);
+                g.drawWideLine(static_cast<int>(px), static_cast<int>(py),
+                               static_cast<int>(qx), static_cast<int>(qy), 1.2f, c);
             }
             px = qx;
             py = qy;
@@ -1316,8 +1319,8 @@ void DisplayService::animateFlow(uint32_t now)
         float x = 0, y = 0;
         flowPointAt(i, _flowPhase[i], x, y);
         if (nearRing(x, y, kDotKeepOut)) { continue; } // it would be under the ring anyway
-        _flowDotX[i] = fxi(x);
-        _flowDotY[i] = fyi(y);
+        _flowDotX[i] = static_cast<int>(x + 0.5f);
+        _flowDotY[i] = static_cast<int>(y + 0.5f);
         g.fillSmoothCircle(_flowDotX[i], _flowDotY[i], 5, _flowCol[i]); // SVG dot r=4, scaled
     }
 }
@@ -1350,71 +1353,92 @@ void DisplayService::drawFlow(const Snap &s)
     }
     drawFlowPaths();
 
-    // A ring is the SVG's grey 4-wide circle with the value arc stroked over it from 12 o'clock.
-    auto ring = [&](float cxd, float cyd, float rd, float frac, uint32_t color, bool showArc) {
-        const int cx = fxi(cxd), cy = fyi(cyd);
-        const float R = rd * kFlowK, hw = 2.0f * kFlowK;
-        g.fillSmoothCircle(cx, cy, static_cast<int>(R - hw), bg);
-        g.fillArc(cx, cy, static_cast<int>(R - hw), static_cast<int>(R + hw), 0.0f, 360.0f, track);
+    // A ring is the SVG's grey circle with the value arc stroked over it from 12 o'clock.
+    auto ring = [&](int idx, float frac, uint32_t color, bool showArc) {
+        const FlowRing &R = kFlowRings[idx];
+        const int cx = static_cast<int>(R.cx + 0.5f), cy = static_cast<int>(R.cy + 0.5f);
+        const float hw = kRingStroke / 2;
+        g.fillSmoothCircle(cx, cy, static_cast<int>(R.r - hw), bg);
+        g.fillArc(cx, cy, static_cast<int>(R.r - hw), static_cast<int>(R.r + hw), 0.0f, 360.0f, track);
         if (!showArc || frac <= 0.002f) { return; }
         const float sweep = 360.0f * fminf(1.0f, frac);
-        g.fillArc(cx, cy, static_cast<int>(R - hw), static_cast<int>(R + hw), 270.0f, 270.0f + sweep, color);
+        g.fillArc(cx, cy, static_cast<int>(R.r - hw), static_cast<int>(R.r + hw), 270.0f, 270.0f + sweep, color);
         const float ends[2] = {270.0f, 270.0f + sweep}; // stroke-linecap="round"
         for (int e = 0; e < 2; ++e)
         {
-            const float a = ends[e] * 3.14159265f / 180.0f;
-            g.fillSmoothCircle(static_cast<int>(cx + R * cosf(a) + 0.5f),
-                               static_cast<int>(cy + R * sinf(a) + 0.5f), static_cast<int>(hw + 0.5f), color);
+            const float rad = ends[e] * 3.14159265f / 180.0f;
+            g.fillSmoothCircle(static_cast<int>(R.cx + R.r * cosf(rad) + 0.5f),
+                               static_cast<int>(R.cy + R.r * sinf(rad) + 0.5f),
+                               static_cast<int>(hw + 0.5f), color);
         }
     };
-    ring(60, 60, 44, s.gridOff ? 0.0f : s.gridW / limit, gridCol, !s.gridOff);
-    ring(280, 60, 44, s.gridOff ? s.loadW / limit : 1.0f, homeCol, true);
-    ring(170, 158, 42, s.fullPct > 0 ? s.battPct / s.fullPct : 0.0f, battCol, true);
+    ring(0, s.gridOff ? 0.0f : s.gridW / limit, gridCol, !s.gridOff);
+    ring(1, s.gridOff ? s.loadW / limit : 1.0f, homeCol, true);
+    ring(2, s.fullPct > 0 ? s.battPct / s.fullPct : 0.0f, battCol, true);
 
     // The dashboard puts an emoji in each ring; the board's fonts are Latin-1, so these are drawn.
-    auto bolt = [&](float cx, float cy, uint32_t c) {
-        g.fillTriangle(fxi(cx + 3), fyi(cy - 9), fxi(cx - 6), fyi(cy + 4), fxi(cx - 1), fyi(cy + 4), c);
-        g.fillTriangle(fxi(cx - 3), fyi(cy + 13), fxi(cx + 6), fyi(cy), fxi(cx + 1), fyi(cy), c);
+    auto icon = [&](int idx) {
+        const int cx = static_cast<int>(kFlowRings[idx].cx + 0.5f);
+        const int cy = static_cast<int>(kFlowRings[idx].cy - kIconRise + 0.5f);
+        if (idx == 0) // lightning
+        {
+            g.fillTriangle(cx + 4, cy - 11, cx - 7, cy + 4, cx - 1, cy + 4, muted);
+            g.fillTriangle(cx - 4, cy + 14, cx + 7, cy - 1, cx + 1, cy - 1, muted);
+        }
+        else if (idx == 1) // house
+        {
+            g.fillTriangle(cx, cy - 11, cx - 13, cy + 1, cx + 13, cy + 1, muted);
+            g.fillRect(cx - 9, cy + 1, 18, 11, muted);
+        }
+        else // battery
+        {
+            g.fillRect(cx - 12, cy - 7, 21, 14, muted);
+            g.fillRect(cx + 9, cy - 3, 4, 6, muted);
+        }
     };
-    auto house = [&](float cx, float cy, uint32_t c) {
-        g.fillTriangle(fxi(cx), fyi(cy - 8), fxi(cx - 10), fyi(cy + 1), fxi(cx + 10), fyi(cy + 1), c);
-        g.fillRect(fxi(cx - 7), fyi(cy + 1), fxi(cx + 7) - fxi(cx - 7), fyi(cy + 9) - fyi(cy + 1), c);
-    };
-    auto battIcon = [&](float cx, float cy, uint32_t c) {
-        g.fillRect(fxi(cx - 9), fyi(cy - 5), fxi(cx + 7) - fxi(cx - 9), fyi(cy + 5) - fyi(cy - 5), c);
-        g.fillRect(fxi(cx + 7), fyi(cy - 2), fxi(cx + 10) - fxi(cx + 7), fyi(cy + 2) - fyi(cy - 2), c);
-    };
-    bolt(60, 48, muted);
-    house(280, 48, muted);
-    battIcon(170, 146, muted);
+    icon(0);
+    icon(1);
+    icon(2);
 
     // Value inside each ring, with the dashboard's arrow glyph drawn as a triangle.
-    auto value = [&](float cxd, float cyd, int dir, const String &txt, uint32_t col) {
+    auto value = [&](int idx, int dir, const String &txt, uint32_t col) {
+        const FlowRing &R = kFlowRings[idx];
         g.setFont(&fonts::FreeSansBold12pt7b);
         g.setTextDatum(textdatum_t::middle_left);
         g.setTextColor(col, bg);
-        const int tw = g.textWidth(txt), aw = dir ? 18 : 0, y = fyi(cyd); // 9 wide glyph + 9 gap
-        int x = fxi(cxd) - (tw + aw) / 2;
+        const int tw = g.textWidth(txt), aw = dir ? 18 : 0;
+        const int y = static_cast<int>(R.cy + kValueDrop + 0.5f);
+        int x = static_cast<int>(R.cx + 0.5f) - (tw + aw) / 2;
         if (dir == 1) { g.fillTriangle(x, y - 5, x, y + 5, x + 9, y, col); }
         else if (dir == 2) { g.fillTriangle(x, y - 5, x + 9, y - 5, x + 4, y + 5, col); }
         else if (dir == 3) { g.fillTriangle(x, y + 5, x + 9, y + 5, x + 4, y - 5, col); }
         g.drawString(txt, x + aw, y);
     };
-    value(60, 74, s.gridOff ? 0 : 1, s.gridOff ? String("off") : kw(s.gridW), s.gridOff ? rgb(g, kRed) : gridCol);
-    value(280, 74, 0, kw(s.loadW), s.gridOff ? homeCol : rgb(g, kInk));
-    if (s.battChargeW >= 1) { value(170, 172, 2, kw(s.battChargeW), rgb(g, kBlue)); }
-    else if (s.battDischargeW >= 1) { value(170, 172, 3, kw(s.battDischargeW), rgb(g, kAmber)); }
-    else { value(170, 172, 0, String("idle"), muted); }
+    value(0, s.gridOff ? 0 : 1, s.gridOff ? String("off") : kw(s.gridW), s.gridOff ? rgb(g, kRed) : gridCol);
+    value(1, 0, kw(s.loadW), s.gridOff ? homeCol : rgb(g, kInk));
+    if (s.battChargeW >= 1) { value(2, 2, kw(s.battChargeW), rgb(g, kBlue)); }
+    else if (s.battDischargeW >= 1) { value(2, 3, kw(s.battDischargeW), rgb(g, kAmber)); }
+    else { value(2, 0, String("idle"), muted); }
 
     g.setFont(&fonts::FreeSans12pt7b);
-    I.at("Grid", fxi(60), fyi(119), textdatum_t::middle_center, 80, muted);
-    I.at("Home", fxi(280), fyi(119), textdatum_t::middle_center, 80, muted);
-    I.at("Battery", fxi(170), fyi(215), textdatum_t::middle_center, 100, muted);
+    for (int i = 0; i < 2; ++i)
+    {
+        I.at(i == 0 ? "Grid" : "Home", static_cast<int>(kFlowRings[i].cx + 0.5f),
+             static_cast<int>(kFlowRings[i].cy + kFlowRings[i].r + 18), textdatum_t::middle_center, 90, muted);
+    }
 
+    // The dashboard hangs its discharge line below the box; here the box already fills the screen,
+    // so the line takes the "Battery" label's slot - it names the battery itself. Both are drawn in
+    // the same band at full width, so whichever appears wipes out the other.
+    const int bottomY = 306;
     if (s.gridOff && s.leftS)
     {
-        I.at(String("Battery discharge time ") + dur(s.leftS), I.W / 2, I.H - 10,
-             textdatum_t::bottom_center, I.W - 2 * I.padX, rgb(g, kAmber));
+        I.at(String("Battery discharge time ") + dur(s.leftS), I.W / 2, bottomY,
+             textdatum_t::middle_center, I.W - 2 * I.padX, rgb(g, kAmber));
+    }
+    else
+    {
+        I.at("Battery", I.W / 2, bottomY, textdatum_t::middle_center, I.W - 2 * I.padX, muted);
     }
 }
 
