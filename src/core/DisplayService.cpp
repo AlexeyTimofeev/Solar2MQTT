@@ -888,6 +888,8 @@ void DisplayService::loop(bool wifiConnected, bool apMode, bool inverterConnecte
     render(wifiConnected, apMode, inverterConnected, ipAddress);
     _dgLastRenderMs = millis() - renderStart;
     if (_dgLastRenderMs > _dgMaxRenderMs) { _dgMaxRenderMs = _dgLastRenderMs; }
+    ++_dgRenders;
+    _dgRenderMsTotal += _dgLastRenderMs;
     _lastSignature = signature;
     _lastDrawMs = now;
     _forceRedraw = false;
@@ -1936,6 +1938,8 @@ String DisplayService::touchDebug() const
     o += ",\"maxPollGapMs\":" + String((unsigned long)_dgMaxPollGap);
     o += ",\"lastRenderMs\":" + String((unsigned long)_dgLastRenderMs);
     o += ",\"maxRenderMs\":" + String((unsigned long)_dgMaxRenderMs);
+    o += ",\"renders\":" + String((unsigned long)_dgRenders);
+    o += ",\"renderMsTotal\":" + String((unsigned long)_dgRenderMsTotal);
     o += ",\"page\":" + String((int)_page);
     o += ",\"hold\":" + String(_holdRedraw ? 1 : 0);
     o += ",\"nowMs\":" + String((unsigned long)millis());

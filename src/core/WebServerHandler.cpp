@@ -4,6 +4,7 @@
 #include <Update.h>
 #include <WiFi.h>
 
+#include "core/DiagLog.h"
 #include "core/DisplayService.h"
 #include "core/GitHubOtaUpdater.h"
 #include "core/LogSerial.h"
@@ -706,7 +707,12 @@ void WebServerHandler::registerRoutes()
 
     _server.on("/api/display/diag", HTTP_GET, [](AsyncWebServerRequest *request)
                {
-        String out = "{\"touch\":" + displayService.touchDebug();
+        String out = "{\"restart\":{\"reason\":\"" + String(DiagLog::resetReasonText()) + "\"";
+        out += ",\"boots\":" + String(DiagLog::bootsSincePowerOn());
+        out += ",\"crashes\":" + String(DiagLog::crashesSincePowerOn());
+        out += ",\"wifiDrops\":" + String(DiagLog::wifiDrops());
+        out += ",\"lastWifiDrop\":\"" + DiagLog::lastWifiDrop() + "\"}";
+        out += ",\"touch\":" + displayService.touchDebug();
 #if HAS_TELEGRAM
         out += ",\"dash\":" + telegramService.dashDebug();
 #endif

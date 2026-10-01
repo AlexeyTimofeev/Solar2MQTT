@@ -2,18 +2,20 @@ name: Firmware
 
 on:
   push:
-    branches: [cyd35, ttgo]
+    branches: [cyd35]
     tags: ['v*']
   pull_request:
-    branches: [cyd35, ttgo]
+    branches: [cyd35]
   workflow_dispatch:
 
 permissions:
   contents: write
 
 env:
-  # Every board variant that ships in a release
-  ENVS: cyd35r_telegram ttgo_tdisplay_telegram
+  # Every board variant that ships in a release. The T-Display is retired, so releases carry the
+  # CYD firmware only; its env is still in platformio.ini and the ttgo branch still holds the
+  # firmware that was released for it.
+  ENVS: cyd35r_telegram
 
 jobs:
   build:

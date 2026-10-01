@@ -18,3 +18,4 @@ webserver/reportdevice/private/lib/config.local.php
 
 # CI output
 dist/
+.elf-archive/
