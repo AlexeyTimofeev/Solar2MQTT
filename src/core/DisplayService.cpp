@@ -963,7 +963,7 @@ constexpr uint32_t kMuted = 0x8AA0B5, kInk = 0xEEF6FF, kTrack = 0x2A3A48, kPanel
 // the dashboard's shape - two rings above, one below, S-curved links - with bigger rings spread
 // across the full width.
 struct FlowRing { float cx, cy, r; };
-constexpr FlowRing kFlowRings[3] = {{96, 116, 62}, {384, 116, 62}, {240, 230, 58}};
+constexpr FlowRing kFlowRings[3] = {{80, 116, 62}, {400, 116, 62}, {240, 216, 58}};
 constexpr float kRingStroke = 5.0f;                  // the SVG's 4, grown with the rings
 constexpr float kValueDrop = 18.0f;                  // value sits below centre, as in the SVG
 constexpr float kIconRise = 16.0f;
@@ -971,11 +971,34 @@ constexpr float kIconRise = 16.0f;
 // Endpoints sit on the ring circles; the links are trimmed clear of them so repainting a link
 // during the dot animation can never scribble on a ring.
 struct FlowPath { bool curved; float p[8]; };
-constexpr FlowPath kFlowPaths[3] = {
-    {false, {158, 116, 0, 0, 0, 0, 322, 116}},                                 // grid -> home
-    {true, {152.6f, 141.2f, 207.6f, 141.2f, 226.0f, 147.7f, 226.0f, 173.7f}},  // grid -> battery
-    {true, {254.0f, 173.7f, 254.0f, 147.7f, 272.4f, 141.2f, 327.4f, 141.2f}},  // battery -> home
-};
+FlowPath kFlowPaths[3];
+
+// Derived from kFlowRings rather than written out, so moving a circle moves its links with it.
+void buildFlowPaths()
+{
+    static bool done = false;
+    if (done) { return; }
+    done = true;
+    const FlowRing &G = kFlowRings[0], &H = kFlowRings[1], &B = kFlowRings[2];
+
+    // Each link runs straight along the line joining the two ring centres, so the three circles
+    // sit on the corners of a triangle. The SVG's curves came from a layout where the battery
+    // hung below the other two; with the circles spread out, straight sides read as the triangle
+    // the flow actually is.
+    auto edge = [](const FlowRing &from, const FlowRing &to, float &x, float &y) {
+        const float dx = to.cx - from.cx, dy = to.cy - from.cy;
+        const float L = sqrtf(dx * dx + dy * dy);
+        x = from.cx + from.r * dx / L;
+        y = from.cy + from.r * dy / L;
+    };
+    float sx = 0, sy = 0, ex = 0, ey = 0;
+
+    kFlowPaths[0] = {false, {G.cx + G.r, G.cy, 0, 0, 0, 0, H.cx - H.r, H.cy}};
+    edge(G, B, sx, sy); edge(B, G, ex, ey);
+    kFlowPaths[1] = {false, {sx, sy, 0, 0, 0, 0, ex, ey}};
+    edge(B, H, sx, sy); edge(H, B, ex, ey);
+    kFlowPaths[2] = {false, {sx, sy, 0, 0, 0, 0, ex, ey}};
+}
 
 void flowPointAt(int i, float t, float &x, float &y)
 {
@@ -1295,6 +1318,7 @@ void DisplayService::drawSummary(const Snap &s)
 
 void DisplayService::drawFlowPaths(const int *wx, const int *wy, int wn, float rad)
 {
+    buildFlowPaths();
     lgfx::LGFXBase &g = _impl->target();
     const uint32_t offCol = rgb(g, kTrack);
     const float rad2 = rad * rad;
@@ -1548,14 +1572,16 @@ void DisplayService::drawFlow(const Snap &s)
     // leftS comes from the present load (loadW / efficiency + idle), not from the discharge
     // current, so it is just as meaningful on grid - it is how long the battery would carry this
     // load if the grid went. Amber only while it is actually carrying it.
+    // Left aligned at the margin. The text padding is measured from the datum, so a left datum at
+    // padX still clears the whole band the centred version used - no stale text behind it.
     if (s.leftS)
     {
-        I.at(String("Battery runtime ") + dur(s.leftS), I.W / 2, bottomY, textdatum_t::middle_center,
+        I.at(String("Battery runtime: ") + dur(s.leftS), I.padX, bottomY, textdatum_t::middle_left,
              I.W - 2 * I.padX, s.gridOff ? rgb(g, kAmber) : muted);
     }
     else
     {
-        I.at("", I.W / 2, bottomY, textdatum_t::middle_center, I.W - 2 * I.padX, muted);
+        I.at("", I.padX, bottomY, textdatum_t::middle_left, I.W - 2 * I.padX, muted);
     }
 }
 
