@@ -659,6 +659,11 @@ void WebServerHandler::registerRoutes()
         const int H = displayService.panelHeight();
         if (W <= 0 || H <= 0) { return request->send(503, "text/plain", "no panel"); }
         displayService.setRedrawHold(true); // a read spans ~1.5 s: without this it mixes two frames
+        // The hold stops the main loop *starting* another touch read, but one may already be on
+        // the bus - touch and panel share SPI2. Since touch is now polled every ~3.5 ms that race
+        // is six times likelier than it was, and it shows up as a full-width colour band at an
+        // arbitrary row. A transaction is well under a millisecond, so waiting clears it.
+        delay(20);
         const size_t rowBytes = static_cast<size_t>(W) * 3;
         const size_t total = 54 + rowBytes * H;
         static uint8_t header[54];

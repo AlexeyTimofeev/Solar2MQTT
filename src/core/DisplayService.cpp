@@ -1346,6 +1346,14 @@ void DisplayService::strokeRing(int idx)
     if (!_ringShow[idx] || _ringFrac[idx] <= 0.002f) { return; }
     const float sweep = 360.0f * fminf(1.0f, _ringFrac[idx]);
     g.fillArc(cx, cy, r0, r1, 270.0f, 270.0f + sweep, _ringCol[idx]);
+    // The cap has to stay inside the band fillArc just painted. It used to sit at R.r with radius
+    // int(hw + 0.5) = 3, so it reached r = 65 while the band only covers 59..64 - and fillArc
+    // never repaints 65. Every time the value moved the end cap, the old one left a crumb out
+    // there in whatever colour the arc was at the time, which is the speckle that collected
+    // around the Grid circle. Only fillScreen on a full page repaint ever cleared them, which is
+    // exactly why swapping pages made them vanish.
+    const float capMid = (r0 + r1) * 0.5f;
+    const int capR = (r1 - r0) / 2;
     const float ends[2] = {270.0f, 270.0f + sweep}; // stroke-linecap="round"
     for (int e = 0; e < 2; ++e)
     {
@@ -1354,9 +1362,9 @@ void DisplayService::strokeRing(int idx)
         // this ring, and an anti-aliased cap blends with what is already there, so the edge drifts
         // a little further every time. fillArc is not anti-aliased, which is what makes the rest
         // of this function safe to repeat.
-        g.fillCircle(static_cast<int>(R.cx + R.r * cosf(rad) + 0.5f),
-                     static_cast<int>(R.cy + R.r * sinf(rad) + 0.5f),
-                     static_cast<int>(hw + 0.5f), _ringCol[idx]);
+        g.fillCircle(static_cast<int>(R.cx + capMid * cosf(rad) + 0.5f),
+                     static_cast<int>(R.cy + capMid * sinf(rad) + 0.5f),
+                     capR, _ringCol[idx]);
     }
 }
 
