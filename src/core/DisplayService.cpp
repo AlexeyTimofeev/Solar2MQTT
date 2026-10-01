@@ -1514,7 +1514,10 @@ void DisplayService::drawFlow(const Snap &s)
     pumpTouch();
     ring(1, s.gridOff ? s.loadW / limit : 1.0f, homeCol, true);
     pumpTouch();
-    ring(2, s.fullPct > 0 ? s.battPct / s.fullPct : 0.0f, battCol, true);
+    // Straight percentage, not battPct / batteryFullPct. That setting is 90 here, so the arc
+    // closed at 90% while the number inside the same circle still read 87 - a ring disagreeing
+    // with its own label. The sweep and the figure now mean the same thing.
+    ring(2, s.battPct / 100.0f, battCol, true);
     pumpTouch();
 
     // The dashboard puts an emoji in each ring; the board's fonts are Latin-1, so these are drawn.
