@@ -1035,6 +1035,13 @@ String kw(float w)
     return w >= 1000.0f ? String(w / 1000.0f, 1) + " kW" : String(static_cast<long>(w + 0.5f)) + " W";
 }
 
+// The flow page always reads in kW, so the two circles keep the same shape as the value moves
+// across 1 kW instead of jumping between "950 W" and "1.0 kW". kw() still serves the Summary page.
+String kwFixed(float w)
+{
+    return String(w / 1000.0f, 1) + " kW";
+}
+
 String dur(uint32_t s)
 {
     const uint32_t d = s / 86400, h = (s % 86400) / 3600, m = (s % 3600) / 60;
@@ -1525,8 +1532,8 @@ void DisplayService::drawFlow(const Snap &s)
         else if (dir == 3) { g.fillTriangle(x, y + 5, x + 9, y + 5, x + 4, y - 5, col); }
         g.drawString(txt, x + aw, y);
     };
-    value(0, s.gridOff ? 0 : 1, s.gridOff ? String("off") : kw(s.gridW), s.gridOff ? rgb(g, kRed) : gridCol);
-    value(1, 0, kw(s.loadW), s.gridOff ? homeCol : rgb(g, kInk));
+    value(0, 0, s.gridOff ? String("off") : kwFixed(s.gridW), s.gridOff ? rgb(g, kRed) : gridCol);
+    value(1, 0, kwFixed(s.loadW), s.gridOff ? homeCol : rgb(g, kInk));
     // State of charge rather than the power in or out: the ring's own sweep already encodes the
     // percentage, and the arrow still says which way the battery is going.
     const String battPctText = String(static_cast<int>(s.battPct + 0.5f)) + "%";
@@ -1534,25 +1541,21 @@ void DisplayService::drawFlow(const Snap &s)
     else if (s.battDischargeW >= 1) { value(2, 3, battPctText, rgb(g, kAmber)); }
     else { value(2, 0, battPctText, muted); }
 
+    // No "Grid"/"Home"/"Battery" captions: the icon in each ring already says which is which, and
+    // the space below is worth more as the runtime figure.
     g.setFont(&fonts::FreeSans12pt7b);
-    for (int i = 0; i < 2; ++i)
-    {
-        I.at(i == 0 ? "Grid" : "Home", static_cast<int>(kFlowRings[i].cx + 0.5f),
-             static_cast<int>(kFlowRings[i].cy + kFlowRings[i].r + 18), textdatum_t::middle_center, 90, muted);
-    }
-
-    // The dashboard hangs its discharge line below the box; here the box already fills the screen,
-    // so the line takes the "Battery" label's slot - it names the battery itself. Both are drawn in
-    // the same band at full width, so whichever appears wipes out the other.
     const int bottomY = 306;
-    if (s.gridOff && s.leftS)
+    // leftS comes from the present load (loadW / efficiency + idle), not from the discharge
+    // current, so it is just as meaningful on grid - it is how long the battery would carry this
+    // load if the grid went. Amber only while it is actually carrying it.
+    if (s.leftS)
     {
-        I.at(String("Battery discharge time ") + dur(s.leftS), I.W / 2, bottomY,
-             textdatum_t::middle_center, I.W - 2 * I.padX, rgb(g, kAmber));
+        I.at(String("Battery runtime ") + dur(s.leftS), I.W / 2, bottomY, textdatum_t::middle_center,
+             I.W - 2 * I.padX, s.gridOff ? rgb(g, kAmber) : muted);
     }
     else
     {
-        I.at("Battery", I.W / 2, bottomY, textdatum_t::middle_center, I.W - 2 * I.padX, muted);
+        I.at("", I.W / 2, bottomY, textdatum_t::middle_center, I.W - 2 * I.padX, muted);
     }
 }
 
