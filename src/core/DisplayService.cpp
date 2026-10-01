@@ -1527,9 +1527,12 @@ void DisplayService::drawFlow(const Snap &s)
     };
     value(0, s.gridOff ? 0 : 1, s.gridOff ? String("off") : kw(s.gridW), s.gridOff ? rgb(g, kRed) : gridCol);
     value(1, 0, kw(s.loadW), s.gridOff ? homeCol : rgb(g, kInk));
-    if (s.battChargeW >= 1) { value(2, 2, kw(s.battChargeW), rgb(g, kBlue)); }
-    else if (s.battDischargeW >= 1) { value(2, 3, kw(s.battDischargeW), rgb(g, kAmber)); }
-    else { value(2, 0, String("idle"), muted); }
+    // State of charge rather than the power in or out: the ring's own sweep already encodes the
+    // percentage, and the arrow still says which way the battery is going.
+    const String battPctText = String(static_cast<int>(s.battPct + 0.5f)) + "%";
+    if (s.battChargeW >= 1) { value(2, 2, battPctText, rgb(g, kBlue)); }
+    else if (s.battDischargeW >= 1) { value(2, 3, battPctText, rgb(g, kAmber)); }
+    else { value(2, 0, battPctText, muted); }
 
     g.setFont(&fonts::FreeSans12pt7b);
     for (int i = 0; i < 2; ++i)
