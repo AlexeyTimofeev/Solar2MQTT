@@ -1350,9 +1350,13 @@ void DisplayService::strokeRing(int idx)
     for (int e = 0; e < 2; ++e)
     {
         const float rad = ends[e] * 3.14159265f / 180.0f;
-        g.fillSmoothCircle(static_cast<int>(R.cx + R.r * cosf(rad) + 0.5f),
-                           static_cast<int>(R.cy + R.r * sinf(rad) + 0.5f),
-                           static_cast<int>(hw + 0.5f), _ringCol[idx]);
+        // fillCircle, not fillSmoothCircle: strokeRing runs on every animation tick that touches
+        // this ring, and an anti-aliased cap blends with what is already there, so the edge drifts
+        // a little further every time. fillArc is not anti-aliased, which is what makes the rest
+        // of this function safe to repeat.
+        g.fillCircle(static_cast<int>(R.cx + R.r * cosf(rad) + 0.5f),
+                     static_cast<int>(R.cy + R.r * sinf(rad) + 0.5f),
+                     static_cast<int>(hw + 0.5f), _ringCol[idx]);
     }
 }
 
@@ -1365,52 +1369,62 @@ void DisplayService::animateFlow(uint32_t now)
     lgfx::LGFXBase &g = _impl->target();
     const uint32_t bg = _impl->bg;
     const float hw = kRingStroke / 2;
-    // Any ring a wipe or a dot lands on is restored afterwards, so the dot passes behind it
-    // the way the dashboard's SVG paints its circles over the line.
-    bool ringDirty[3] = {false, false, false};
-    auto mark = [&](float px, float py, float discR) {
-        for (int i = 0; i < 3; ++i)
-        {
-            const FlowRing &R = kFlowRings[i];
-            const float dx = px - R.cx, dy = py - R.cy;
-            const float D = sqrtf(dx * dx + dy * dy);
-            if (D + discR >= R.r - hw && D - discR <= R.r + hw) { ringDirty[i] = true; }
-        }
+    auto ringTouches = [&](float px, float py, float discR, int i) {
+        const FlowRing &R = kFlowRings[i];
+        const float dx = px - R.cx, dy = py - R.cy;
+        const float D = sqrtf(dx * dx + dy * dy);
+        return D + discR >= R.r - hw && D - discR <= R.r + hw;
     };
 
-    // Wipe first, and before any early return: when the last flow stops, the dot still on screen
-    // has to go, or it sits there as a leftover until the next full repaint.
-    int wx[3], wy[3], wn = 0;
+    // Everything repainted here is clipped to a box that was just filled with the background.
+    // drawWideLine and fillSmoothCircle blend with whatever is already in the frame buffer, so
+    // repainting a segment that was not cleared first lays anti-aliasing on top of its own
+    // residue - and after a few hundred ticks that is the speckle that creeps around the rings.
+    // Clearing a disc and repainting a slightly larger one, as this used to do, can never be
+    // made exact: a segment is drawn whole, so the repainted area always reaches past the
+    // cleared one. Clipping removes the conflict.
+    constexpr int kClipHalf = 9;   // dot r=5 plus its anti-aliased fringe, with room to spare
+    // Clip half plus two whole segments. Neighbouring segments overlap at their round caps, so a
+    // segment's pixels depend on the one before and after it; redrawing a run that extends two
+    // segments past the clip box makes everything inside the box blend exactly as a full repaint
+    // would. With only one segment of slack the pixels at the box edge came out ~20% off.
+    constexpr float kSegReach = 22.0f;
     for (int i = 0; i < 3; ++i)
     {
-        if (_flowDotX[i] >= 0)
+        if (_flowDotX[i] < 0) { continue; }
+        const int cxp = _flowDotX[i], cyp = _flowDotY[i];
+        _flowDotX[i] = -1;
+        const int bx = cxp - kClipHalf, by = cyp - kClipHalf, bs = kClipHalf * 2 + 1;
+        g.setClipRect(bx, by, bs, bs);
+        g.fillRect(bx, by, bs, bs, bg);
+        const int wx = cxp, wy = cyp;
+        drawFlowPaths(&wx, &wy, 1, kSegReach);
+        for (int r = 0; r < 3; ++r)
         {
-            g.fillSmoothCircle(_flowDotX[i], _flowDotY[i], 7, bg);
-            mark(_flowDotX[i], _flowDotY[i], 7.5f);
-            wx[wn] = _flowDotX[i];
-            wy[wn] = _flowDotY[i];
-            ++wn;
-            _flowDotX[i] = -1;
+            if (ringTouches(cxp, cyp, kClipHalf + 1.0f, r)) { strokeRing(r); }
         }
+        g.clearClipRect();
     }
-    // 7 px wipe + the 1.2 px half-width of the line, plus a little for the sampling step
-    if (wn > 0) { drawFlowPaths(wx, wy, wn, 11.0f); }
-    if (_flowOn[0] || _flowOn[1] || _flowOn[2])
+
+    if (!_flowOn[0] && !_flowOn[1] && !_flowOn[2]) { return; }
+    bool ringDirty[3] = {false, false, false};
+    for (int i = 0; i < 3; ++i)
     {
-        for (int i = 0; i < 3; ++i)
+        if (!_flowOn[i]) { continue; }
+        _flowPhase[i] += dt / _flowDur[i];
+        while (_flowPhase[i] >= 1.0f) { _flowPhase[i] -= 1.0f; }
+        float x = 0, y = 0;
+        flowPointAt(i, _flowPhase[i], x, y);
+        _flowDotX[i] = static_cast<int>(x + 0.5f);
+        _flowDotY[i] = static_cast<int>(y + 0.5f);
+        g.fillSmoothCircle(_flowDotX[i], _flowDotY[i], 5, _flowCol[i]); // SVG dot r=4, scaled
+        for (int r = 0; r < 3; ++r)
         {
-            if (!_flowOn[i]) { continue; }
-            _flowPhase[i] += dt / _flowDur[i];
-            while (_flowPhase[i] >= 1.0f) { _flowPhase[i] -= 1.0f; }
-            float x = 0, y = 0;
-            flowPointAt(i, _flowPhase[i], x, y);
-            _flowDotX[i] = static_cast<int>(x + 0.5f);
-            _flowDotY[i] = static_cast<int>(y + 0.5f);
-            g.fillSmoothCircle(_flowDotX[i], _flowDotY[i], 5, _flowCol[i]); // SVG dot r=4, scaled
-            mark(x, y, 5.5f);
+            if (ringTouches(x, y, 6.0f, r)) { ringDirty[r] = true; }
         }
     }
-    // Last, so the ring ends up on top of whatever just ran under it.
+    // Last, so a dot that ran under a ring comes out behind it. Safe to repeat unclipped now
+    // that nothing in strokeRing is anti-aliased.
     for (int i = 0; i < 3; ++i)
     {
         if (ringDirty[i]) { strokeRing(i); }
