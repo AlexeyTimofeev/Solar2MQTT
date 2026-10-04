@@ -54,6 +54,7 @@ private:
     static constexpr uint32_t kForceRedrawMs = 10000;
     static constexpr uint32_t kDebounceMs = 40;
     static constexpr uint32_t kTouchLockoutMs = 120; // one tap per 120 ms: fast tapping must not drop pages
+    static constexpr uint32_t kReturnToFlowMs = 60000; // any other page falls back to the power flow after a minute
     static constexpr uint32_t kTouchReleaseMs = 60;
 
     Button _btnPrev;
@@ -111,6 +112,7 @@ private:
     bool _ringShow[3] = {false, false, false};
     uint32_t _ringTrackCol = 0;
     uint32_t _lastPumpMs = 0;
+    uint32_t _pageSetMs = 0; // when the page was last chosen, by a tap or remotely
     uint32_t _dgPollLastMs = 0, _dgMaxPollGap = 0, _dgMaxRenderMs = 0, _dgLastRenderMs = 0;
     uint32_t _dgContacts = 0, _dgRising = 0, _dgAccepted = 0, _dgLockedOut = 0, _dgPolls = 0;
     uint32_t _dgRenders = 0, _dgRenderMsTotal = 0;

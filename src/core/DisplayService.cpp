@@ -777,6 +777,7 @@ void DisplayService::setLedOverride(int mode, int yellowGreen)
 void DisplayService::setPage(uint8_t page)
 {
     _page = static_cast<uint8_t>(page % TFT_DASH_PAGE_COUNT);
+    _pageSetMs = millis(); // a remote choice gets the same minute as a tap
     _forceRedraw = true;
 }
 
@@ -835,6 +836,15 @@ void DisplayService::loop(bool wifiConnected, bool apMode, bool inverterConnecte
         int page = (static_cast<int>(_page) + steps) % TFT_DASH_PAGE_COUNT;
         if (page < 0) { page += TFT_DASH_PAGE_COUNT; }
         _page = static_cast<uint8_t>(page);
+        _pageSetMs = now;
+        _forceRedraw = true;
+    }
+    // Leave the board on any other page and it comes back to the power flow on its own after a
+    // minute without a tap. Every tap changes the page, so the time the page was last chosen is
+    // also the time of the last interaction. Not while a reader holds the panel.
+    if (_page != TFT_DASH_FLOW_PAGE && !_holdRedraw && (now - _pageSetMs) >= kReturnToFlowMs)
+    {
+        _page = TFT_DASH_FLOW_PAGE;
         _forceRedraw = true;
     }
 #else
