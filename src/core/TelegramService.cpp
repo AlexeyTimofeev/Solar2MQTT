@@ -35,6 +35,22 @@ constexpr uint32_t kPollHttpTimeoutMs = (kLongPollSeconds + 15) * 1000;
 constexpr uint32_t kSendHttpTimeoutMs = 15000;
 constexpr uint32_t kSnapshotIntervalMs = 2000;
 constexpr uint32_t kMinSummaryGapMs = 3000;
+// One summary per chat: it is edited in place, and whenever a new one has to go out (an alert, /summary) the old one is
+// deleted. Telegram refuses to delete a message sent more than 48 h ago, and editing does not reset that clock, so the
+// summary is re-posted silently before it gets that old - from 30 h at a daytime hour, by 44 h whatever the time.
+constexpr uint32_t kSummaryRepostSoonS = 30UL * 3600UL;
+constexpr uint32_t kSummaryRepostLateS = 44UL * 3600UL;
+constexpr int kSummaryRepostFromHour = 9; // local time, used only once the clock is set
+constexpr int kSummaryRepostToHour = 21;
+// A send that got no reply may have been posted all the same, so no new summary for a while - longer each time in a row.
+constexpr uint32_t kNoAnswerBackoffMs[] = {120000, 600000, 1800000, 3600000};
+constexpr uint32_t kMaxRetryAfterS = 3600;
+constexpr uint32_t kLoudRetryMs = 15000; // an alert that could not even be tried (hold, 429) is tried again this often
+constexpr uint32_t kChatDeadHoldMs = 600000;        // blocked, kicked or chat gone: stop asking for a while
+constexpr uint8_t kOddEditFailLimit = 3;            // edits refused with an error we do not recognise, then replace
+constexpr size_t kStaleMax = 4;                     // replaced summaries waiting to be deleted
+constexpr const char *kTombstoneText = "\xE2\xA4\xB5\xEF\xB8\x8F Outdated - the current summary is below"; // ⤵️
+constexpr uint32_t kEditLogIntervalMs = 3600000;    // one log line an hour for edits, so the 6 KB crash log spans a night
 constexpr uint32_t kErrorBackoffMs = 15000;
 constexpr uint32_t kIdleDelayMs = 1000;
 constexpr const char *kApiHost = "https://api.telegram.org/bot";
@@ -362,9 +378,128 @@ struct TelegramService::Impl
         String id;
         int64_t lastMsgId = 0;
         uint32_t lastSummaryMs = 0;
+        // Age of the summary message from Telegram's own timestamps (its send date, and edit_date on every edit), so it
+        // needs neither NTP nor flash: the first edit after a restart recovers it.
+        bool ageKnown = false;
+        uint32_t ageBaseS = 0;
+        uint32_t ageBaseMs = 0;
+        std::vector<int64_t> stale; // replaced summaries still to delete, oldest first (persisted)
+        // Windows are start + length, never a deadline: a stored deadline compared as int32 reads as "in the future" once
+        // uptime passes 24.9 days - a zero one included - which would have muted every summary and alert for 25 days.
+        uint32_t holdSinceMs = 0;   // 429 or a dead chat: nothing to this chat while the window is open
+        uint32_t holdForMs = 0;     // 0 = no hold
+        uint32_t noNewSinceMs = 0;  // after a send that got no reply: it may be in the chat, so do not stack another
+        uint32_t noNewForMs = 0;
+        uint8_t noAnswerStreak = 0; // sends in a row whose reply never came; cleared only by a confirmed send
+        bool editsConfirmed = false; // the last edit got Telegram's answer: replies are getting through
+        bool loudPending = false;   // an alert summary this chat still has to get
+        std::vector<int64_t> pendingTriggers; // held-back /summary messages, removed once a loud summary goes out
+        uint32_t repostRetrySinceMs = 0;      // a re-post that certainly failed waits this out - re-posts only,
+        uint32_t repostRetryForMs = 0;        // so alerts and /summary are never held back by it
+        uint8_t oddEditFails = 0;
     };
     std::vector<ChatState> chats;
     uint32_t lastAutoSummaryMs = 0;
+    uint32_t editsSinceLog = 0; // task-owned
+    uint32_t lastEditLogMs = 0;
+    uint32_t loudDeferSinceMs = 0; // task-owned: alerts waiting on a hold are retried after this window
+    uint32_t loudDeferForMs = 0;
+
+    // What Telegram made of a request - just what the summary logic needs to choose between "edit it again next time",
+    // "replace it" and "leave this chat alone for a while".
+    enum class TgRes : uint8_t
+    {
+        Ok,
+        NotModified, // an edit with nothing new: as good as Ok
+        Gone,        // the message no longer exists or can no longer be edited: replacing it is right
+        TooOld,      // delete refused: past Telegram's 48 h limit (or the bot lacks the right in a group)
+        Content,     // Telegram refused what was sent; a new message would be refused the same way
+        ChatDead,    // blocked, kicked, chat gone or migrated
+        RateLimited, // 429: wait retry_after
+        Transient,   // no reply, or not Telegram's JSON: the request may or may not have taken effect
+        NotSent,     // never left the board (no connection, header or body not written): certainly not sent
+        Deferred     // not attempted (hold, no-reply window, 3 s gap): certainly not sent, so safe to try again
+    };
+
+    // Who asked for a summary decides what it may do. New: alerts, /summary, /start and the web test send a fresh one.
+    // Edit: the boot summary, Refresh, settings and upgrade results update the existing one. Auto: the 15 s refresh,
+    // the only one that re-posts on its own, before the message grows too old to delete.
+    enum class SummaryMode : uint8_t
+    {
+        New,
+        Edit,
+        Auto
+    };
+
+    static TgRes classify(bool ok, const JsonDocument &out, uint32_t *retryAfterS = nullptr)
+    {
+        if (ok)
+        {
+            return TgRes::Ok;
+        }
+        const int code = out["error_code"] | 0;
+        if (code == 0)
+        {
+            // post() marks requests that certainly never reached Telegram. Everything else without a reply - a read
+            // timeout, a connection lost after the body went out, an HTML error page - may have been acted on.
+            return (out["_notSent"] | false) ? TgRes::NotSent : TgRes::Transient;
+        }
+        if (code == 429)
+        {
+            if (retryAfterS)
+            {
+                *retryAfterS = out["parameters"]["retry_after"] | 5;
+            }
+            return TgRes::RateLimited;
+        }
+        if (code >= 500)
+        {
+            return TgRes::Transient;
+        }
+        const String d = out["description"] | "";
+        if (d.indexOf("not modified") >= 0)
+        {
+            return TgRes::NotModified;
+        }
+        if (code == 403 || d.indexOf("chat not found") >= 0 || !out["parameters"]["migrate_to_chat_id"].isNull())
+        {
+            return TgRes::ChatDead;
+        }
+        if (d.indexOf("message to edit not found") >= 0 || d.indexOf("message to delete not found") >= 0 ||
+            d.indexOf("MESSAGE_ID_INVALID") >= 0 || d.indexOf("message can't be edited") >= 0 ||
+            d.indexOf("MESSAGE_EDIT_TIME_EXPIRED") >= 0)
+        {
+            return TgRes::Gone;
+        }
+        // Private chats say "message can't be deleted for everyone", groups just "message can't be deleted".
+        if (d.indexOf("can't be deleted") >= 0 || d.indexOf("MESSAGE_DELETE_FORBIDDEN") >= 0)
+        {
+            return TgRes::TooOld;
+        }
+        return TgRes::Content;
+    }
+
+    static uint32_t ageOf(const ChatState &c)
+    {
+        return c.ageBaseS + (millis() - c.ageBaseMs) / 1000;
+    }
+
+    // Unsigned elapsed time is wrap-safe at any uptime; a length of 0 means no window.
+    static bool windowOpen(uint32_t sinceMs, uint32_t forMs)
+    {
+        return forMs != 0 && (millis() - sinceMs) < forMs;
+    }
+
+    static void holdChat(ChatState &c, uint32_t forMs)
+    {
+        c.holdSinceMs = millis();
+        c.holdForMs = forMs ? forMs : 1;
+    }
+
+    static uint32_t retryAfterMs(uint32_t retryAfterS)
+    {
+        return (retryAfterS > kMaxRetryAfterS ? kMaxRetryAfterS : retryAfterS) * 1000UL;
+    }
 
     // Runtime state.
     std::function<bool()> networkConnected;
@@ -399,6 +534,12 @@ struct TelegramService::Impl
     String lastError;
     uint32_t lastSummaryMs = 0;
     uint32_t summariesSent = 0;
+    // Copies of the summary state for statusJson, written by the bot task under the lock.
+    bool statusAgeKnown = false;
+    uint32_t statusAgeBaseS = 0;
+    uint32_t statusAgeBaseMs = 0;
+    uint8_t statusStale = 0;
+    String lastSummaryEvent;
     int64_t updateOffset = 0;
 
     WiFiClientSecure client;
@@ -799,11 +940,33 @@ struct TelegramService::Impl
         return chats.back();
     }
 
-    void broadcastSummary(bool silent, const String &headline, bool edit = false)
+    // Close windows as soon as they expire. windowOpen() is wrap-safe only while a window is younger than 49.7 days; one
+    // left set long after it ended would open again for its full length every time millis() comes round.
+    void expireWindows()
+    {
+        for (ChatState &c : chats)
+        {
+            if (c.holdForMs && !windowOpen(c.holdSinceMs, c.holdForMs)) c.holdForMs = 0;
+            if (c.noNewForMs && !windowOpen(c.noNewSinceMs, c.noNewForMs)) c.noNewForMs = 0;
+            if (c.repostRetryForMs && !windowOpen(c.repostRetrySinceMs, c.repostRetryForMs)) c.repostRetryForMs = 0;
+        }
+        if (loudDeferForMs && !windowOpen(loudDeferSinceMs, loudDeferForMs)) loudDeferForMs = 0;
+    }
+
+    bool anyLoudPending()
     {
         for (const String &id : chatList())
         {
-            sendSummary(id, 0, String(), silent, headline, edit);
+            if (stateFor(id).loudPending) return true;
+        }
+        return false;
+    }
+
+    void broadcastSummary(bool silent, const String &headline, SummaryMode mode = SummaryMode::New)
+    {
+        for (const String &id : chatList())
+        {
+            sendSummary(id, 0, String(), silent, headline, mode);
         }
     }
 
@@ -977,6 +1140,7 @@ struct TelegramService::Impl
 
     bool post(const char *method, const String &contentType, const uint8_t *payload, size_t length, JsonDocument &out, uint32_t timeoutMs)
     {
+        out.clear(); // classify() reads error_code from here: no reply must leave it empty, not stale
         String tokenCopy;
         lockTake();
         tokenCopy = token;
@@ -988,6 +1152,7 @@ struct TelegramService::Impl
         http.useHTTP10(false);
         if (!http.begin(client, url))
         {
+            out["_notSent"] = true;
             setError(String("HTTP begin failed for ") + method);
             return false;
         }
@@ -995,6 +1160,14 @@ struct TelegramService::Impl
         const int code = http.POST(const_cast<uint8_t *>(payload), length);
         if (code <= 0)
         {
+            // Only these are certain: refused (connect() failed before a byte went out), header not written, or body not
+            // fully written. NOT_CONNECTED is not one of them - HTTPClient returns it only after the whole body was
+            // written, so like a lost connection or a read timeout it may have been acted on.
+            if (code == HTTPC_ERROR_CONNECTION_REFUSED || code == HTTPC_ERROR_SEND_HEADER_FAILED ||
+                code == HTTPC_ERROR_SEND_PAYLOAD_FAILED)
+            {
+                out["_notSent"] = true;
+            }
             setError(String(method) + ": " + http.errorToString(code));
             http.end();
             return false;
@@ -1005,6 +1178,7 @@ struct TelegramService::Impl
         const DeserializationError err = deserializeJson(out, response);
         if (err)
         {
+            out.clear(); // a truncated reply can leave partial fields behind
             setError(String(method) + ": bad JSON (" + err.c_str() + ")");
             return false;
         }
@@ -1062,13 +1236,26 @@ struct TelegramService::Impl
     {
         JsonDocument doc;
         JsonObject obj = doc.to<JsonObject>();
+        JsonDocument staleDoc;
+        JsonObject staleObj = staleDoc.to<JsonObject>();
+        bool anyStale = false;
         for (const ChatState &c : chats)
         {
             if (c.lastMsgId != 0) obj[c.id] = c.lastMsgId;
+            if (!c.stale.empty())
+            {
+                JsonArray ids = staleObj[c.id].to<JsonArray>();
+                for (int64_t id : c.stale) ids.add(id);
+                anyStale = true;
+            }
         }
         String json;
         serializeJson(doc, json);
         prefs.putString("lastMsgs", json);
+        // A key of its own, so older firmware still reads "lastMsgs" exactly as before.
+        String staleJson;
+        if (anyStale) serializeJson(staleDoc, staleJson);
+        if (prefs.getString("staleMsgs", "") != staleJson) prefs.putString("staleMsgs", staleJson);
         prefs.putLong64("offset", updateOffset);
     }
 
@@ -1087,17 +1274,34 @@ struct TelegramService::Impl
                 c.lastMsgId = kv.value().as<long long>();
                 chats.push_back(c);
             }
-            return;
         }
-        // Migration from the single-chat key.
-        const int64_t legacy = prefs.getLong64("lastMsg", 0);
-        const std::vector<String> ids = chatList();
-        if (legacy != 0 && ids.size() == 1)
+        else
         {
-            ChatState c;
-            c.id = ids[0];
-            c.lastMsgId = legacy;
-            chats.push_back(c);
+            // Migration from the single-chat key.
+            const int64_t legacy = prefs.getLong64("lastMsg", 0);
+            const std::vector<String> ids = chatList();
+            if (legacy != 0 && ids.size() == 1)
+            {
+                ChatState c;
+                c.id = ids[0];
+                c.lastMsgId = legacy;
+                chats.push_back(c);
+            }
+        }
+        // Replaced summaries a restart interrupted before they were deleted.
+        const String staleJson = prefs.getString("staleMsgs", "");
+        JsonDocument staleDoc;
+        if (staleJson.length() && !deserializeJson(staleDoc, staleJson))
+        {
+            for (JsonPair kv : staleDoc.as<JsonObject>())
+            {
+                ChatState &c = stateFor(kv.key().c_str());
+                for (JsonVariant v : kv.value().as<JsonArray>())
+                {
+                    const int64_t id = v.as<long long>();
+                    if (id != 0 && id != c.lastMsgId && c.stale.size() < kStaleMax) c.stale.push_back(id);
+                }
+            }
         }
     }
 
@@ -1173,17 +1377,18 @@ struct TelegramService::Impl
         return head + "\n\n" + block;
     }
 
-    void deleteMessage(const String &chat, int64_t messageId)
+    TgRes deleteMessage(const String &chat, int64_t messageId)
     {
         if (messageId == 0)
         {
-            return;
+            return TgRes::Ok;
         }
         JsonDocument body;
         body["chat_id"] = chat;
         body["message_id"] = messageId;
         JsonDocument out;
-        api("deleteMessage", body, out, kSendHttpTimeoutMs); // failures (older than 48 h, already gone) are fine
+        const bool ok = api("deleteMessage", body, out, kSendHttpTimeoutMs);
+        return classify(ok, out); // past 48 h this is TooOld, and the message stays in the chat - not "fine"
     }
 
     void answerCallback(const String &callbackId, const char *text)
@@ -1227,6 +1432,30 @@ struct TelegramService::Impl
             *messageIdOut = out["result"]["message_id"].as<long long>();
         }
         return true;
+    }
+
+    // sendMessage for a summary, with the outcome classified and the id Telegram gave the message.
+    TgRes sendSummaryMessage(const String &chat, const String &text, JsonDocument *replyMarkup, bool silent,
+                             int64_t &messageIdOut, uint32_t *retryAfterS)
+    {
+        JsonDocument body;
+        body["chat_id"] = chat;
+        body["text"] = text;
+        body["parse_mode"] = "HTML";
+        body["disable_web_page_preview"] = true;
+        if (silent)
+        {
+            body["disable_notification"] = true;
+        }
+        if (replyMarkup)
+        {
+            body["reply_markup"] = replyMarkup->as<JsonVariantConst>();
+        }
+        JsonDocument out;
+        const bool ok = api("sendMessage", body, out, kSendHttpTimeoutMs);
+        const TgRes r = classify(ok, out, retryAfterS);
+        messageIdOut = r == TgRes::Ok ? static_cast<int64_t>(out["result"]["message_id"].as<long long>()) : 0;
+        return r;
     }
 
     // The summary's only button is Dashboard (the summary refreshes itself); Refresh appears only when there is no
@@ -1299,8 +1528,10 @@ struct TelegramService::Impl
         return true;
     }
 
-    // editMessageText for a summary; "message is not modified" (nothing changed since the last edit) counts as success.
-    bool editText(const String &chat, int64_t messageId, const String &text, JsonDocument *replyMarkup)
+    // editMessageText for a summary. On success Telegram returns the message, whose date (when it was first sent) and
+    // edit_date (now, on Telegram's clock) give its age without trusting the board's clock.
+    TgRes editText(const String &chat, int64_t messageId, const String &text, JsonDocument *replyMarkup,
+                   uint32_t *retryAfterS = nullptr, int64_t *sentAtOut = nullptr, int64_t *editedAtOut = nullptr)
     {
         JsonDocument body;
         body["chat_id"] = chat;
@@ -1313,24 +1544,110 @@ struct TelegramService::Impl
             body["reply_markup"] = replyMarkup->as<JsonVariantConst>();
         }
         JsonDocument out;
-        if (api("editMessageText", body, out, kSendHttpTimeoutMs))
+        const bool ok = api("editMessageText", body, out, kSendHttpTimeoutMs);
+        const TgRes r = classify(ok, out, retryAfterS);
+        if (r == TgRes::Ok)
         {
-            return true;
+            if (sentAtOut) *sentAtOut = out["result"]["date"].as<long long>();
+            if (editedAtOut) *editedAtOut = out["result"]["edit_date"].as<long long>();
         }
-        const String description = out["description"] | "";
-        if (description.indexOf("not modified") >= 0)
+        else if (r == TgRes::NotModified)
         {
             setError(""); // not an error: the summary was already up to date
-            return true;
         }
-        return false;
+        return r;
     }
 
-    // edit: update the last summary in place (automatic summaries, the Refresh button, after a restart) instead of
-    // sending a new one; falls back to a new message when there is none or it can no longer be edited.
-    void sendSummary(const String &chat, int64_t triggerMessageId, const String &callbackId, bool silent = false,
-                     const String &headline = String(), bool edit = false)
+    // Only the automatic refresh re-posts on its own, and only when the summary is close to Telegram's 48 h delete limit:
+    // from kSummaryRepostSoonS at a daytime hour (once the clock is set), by kSummaryRepostLateS regardless.
+    bool summaryWantsRepost(const ChatState &state) const
     {
+        if (!state.ageKnown || state.lastMsgId == 0)
+        {
+            return false;
+        }
+        const uint32_t age = ageOf(state);
+        if (age >= kSummaryRepostLateS)
+        {
+            return true;
+        }
+        if (age < kSummaryRepostSoonS)
+        {
+            return false;
+        }
+        const int64_t unix = unixNow();
+        if (unix == 0)
+        {
+            return false; // clock not set yet: wait for the hard deadline
+        }
+        const time_t local = static_cast<time_t>(unix + static_cast<int64_t>(_settings.get.tzOffsetHours()) * 3600);
+        struct tm parts;
+        gmtime_r(&local, &parts); // already shifted, so the UTC fields are the local ones
+        return parts.tm_hour >= kSummaryRepostFromHour && parts.tm_hour < kSummaryRepostToHour;
+    }
+
+    // Replaced summaries: settle one per call. Delete it; if Telegram says it is past the 48 h delete limit, blank it to a
+    // one-line pointer without the Dashboard button rather than leave a second, frozen summary in the chat.
+    void processStale(const String &chat, ChatState &state)
+    {
+        if (state.stale.empty() || windowOpen(state.holdSinceMs, state.holdForMs))
+        {
+            return;
+        }
+        const int64_t id = state.stale.front();
+        TgRes r = deleteMessage(chat, id);
+        const char *what = "deleted";
+        if (r == TgRes::TooOld)
+        {
+            r = editText(chat, id, kTombstoneText, nullptr); // no reply_markup, so the stale Dashboard button goes too
+            what = "too old to delete, blanked";
+        }
+        if (r == TgRes::Transient || r == TgRes::NotSent || r == TgRes::RateLimited)
+        {
+            return; // keep it and try again on the next summary
+        }
+        if (r == TgRes::Gone)
+        {
+            what = "already gone";
+        }
+        else if (r != TgRes::Ok && r != TgRes::NotModified)
+        {
+            what = "could not be removed, given up";
+        }
+        state.stale.erase(state.stale.begin());
+        persistState();
+        taskLog("[Telegram] Old summary " + String(static_cast<long long>(id)) + ": " + what);
+    }
+
+    // statusJson runs on the main thread, so it reads copies taken under the lock.
+    void noteSummaryState(const ChatState &state, const String &event)
+    {
+        lockTake();
+        statusAgeKnown = state.ageKnown;
+        statusAgeBaseS = state.ageBaseS;
+        statusAgeBaseMs = state.ageBaseMs;
+        statusStale = static_cast<uint8_t>(state.stale.size());
+        if (event.length())
+        {
+            lastSummaryEvent = event;
+        }
+        lockGive();
+    }
+
+    String stackHeapText() const
+    {
+        return "task stack free " + String(static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr))) + " B, heap " +
+               String(static_cast<unsigned>(ESP.getFreeHeap())) + " B (largest " + String(static_cast<unsigned>(ESP.getMaxAllocHeap())) + " B)";
+    }
+
+    // One summary per chat. Edit it in place when that is all that is needed; send a new one, and retire the old one, only
+    // when asked to, when there is none, when it is gone, or before it grows too old to delete. A failed edit used to fall
+    // straight through to a new message, and the delete of a summary older than 48 h is refused - that is what left
+    // duplicates in the chat overnight. Now a blip just means "edit it again next time".
+    TgRes sendSummary(const String &chat, int64_t triggerMessageId, const String &callbackId, bool silent = false,
+                      const String &headline = String(), SummaryMode mode = SummaryMode::New)
+    {
+        (void)headline;
         // Right after boot the main loop may not have built a snapshot yet; give it a few seconds.
         for (int i = 0; i < 20; ++i)
         {
@@ -1345,64 +1662,193 @@ struct TelegramService::Impl
         if (state.lastSummaryMs && (now - state.lastSummaryMs) < kMinSummaryGapMs)
         {
             answerCallback(callbackId, "Please wait a moment");
-            return;
+            return TgRes::Deferred;
+        }
+        if (windowOpen(state.holdSinceMs, state.holdForMs))
+        {
+            answerCallback(callbackId, "Please wait a moment");
+            return TgRes::Deferred;
         }
 
         // No headline any more: every alert has its own row in the Events list, so there is no reason to rewrite the
-        // summary with a "Grid off" / "Grid back" top line. The alert still arrives with sound - only the extra line
-        // is gone. The headline arguments are now unused and come out in a follow-up cleanup.
-        String body = snapshotWithFooter();
-        int64_t newId = 0;
-        bool edited = false;
-        bool sent = false;
+        // summary with a "Grid off" / "Grid back" top line. The alert still arrives with sound - only the extra line is
+        // gone. The headline arguments are now unused and come out in a follow-up cleanup.
+        const String body = snapshotWithFooter();
         bool withDashboard = !dashDisabled.load();
-        for (int attempt = 0; attempt < 2 && !sent; ++attempt)
+        bool wantEdit = mode != SummaryMode::New && state.lastMsgId != 0;
+        String reason = mode == SummaryMode::New ? (silent ? "requested" : "alert") : "none to edit";
+        bool isRepost = false;
+        // While a recent send's fate is unknown, keep editing the old summary rather than freezing it: it can still be
+        // deleted for hours, so the re-post simply waits for the window to close.
+        // After two sends in a row whose reply was lost, re-post only at the hard deadline, and only once edits show replies
+        // are getting through again: each send that lands unanswered is an orphan nobody can delete, but past 48 h the old
+        // summary can no longer be deleted at all, which is certain rather than a risk.
+        const bool repostAllowed = state.noAnswerStreak < 2 || (ageOf(state) >= kSummaryRepostLateS && state.editsConfirmed);
+        if (wantEdit && mode == SummaryMode::Auto && summaryWantsRepost(state) &&
+            !windowOpen(state.noNewSinceMs, state.noNewForMs) &&
+            !windowOpen(state.repostRetrySinceMs, state.repostRetryForMs) && repostAllowed)
         {
-            JsonDocument markup;
-            buildSummaryMarkup(markup, chat, withDashboard);
-            if (edit && state.lastMsgId != 0 && editText(chat, state.lastMsgId, body, &markup))
+            wantEdit = false;
+            silent = true;
+            isRepost = true;
+            reason = "re-post at " + String(ageOf(state) / 3600) + " h, before the 48 h delete limit";
+        }
+
+        uint32_t retryAfterS = 0;
+        TgRes r = TgRes::Transient;
+        bool edited = false;
+        if (wantEdit)
+        {
+            int64_t sentAt = 0;
+            int64_t editedAt = 0;
+            for (int attempt = 0; attempt < 2; ++attempt)
             {
-                newId = state.lastMsgId;
+                JsonDocument markup;
+                buildSummaryMarkup(markup, chat, withDashboard);
+                r = editText(chat, state.lastMsgId, body, &markup, &retryAfterS, &sentAt, &editedAt);
+                if (r == TgRes::Content && withDashboard && dashboardRejected())
+                {
+                    withDashboard = false; // edit again without the button
+                    continue;
+                }
+                break;
+            }
+            state.editsConfirmed = r == TgRes::Ok || r == TgRes::NotModified;
+            if (r == TgRes::Ok || r == TgRes::NotModified)
+            {
                 edited = true;
-                sent = true;
+                state.oddEditFails = 0;
+                const int64_t ref = editedAt > 0 ? editedAt : unixNow();
+                if (r == TgRes::Ok && sentAt > 0 && ref >= sentAt)
+                {
+                    state.ageKnown = true;
+                    state.ageBaseS = static_cast<uint32_t>(ref - sentAt);
+                    state.ageBaseMs = millis();
+                }
             }
-            else if (sendText(chat, body, &markup, &newId, silent))
+            else if (r == TgRes::Gone || (r == TgRes::Content && ++state.oddEditFails >= kOddEditFailLimit))
             {
-                sent = true;
-            }
-            else if (withDashboard && dashboardRejected())
-            {
-                withDashboard = false; // this summary goes out without the button; the next link is shorter
+                state.oddEditFails = 0;
+                reason = r == TgRes::Gone ? "the old one is gone" : "the old one keeps refusing edits";
             }
             else
             {
-                break;
+                // A blip, a rate limit or a refusal not yet seen often enough: keep the same message, edit it next time.
+                if (r == TgRes::RateLimited) holdChat(state, retryAfterMs(retryAfterS));
+                if (r == TgRes::ChatDead) holdChat(state, kChatDeadHoldMs);
+                answerCallback(callbackId, "Telegram did not answer, try again");
+                return r;
             }
         }
-        if (!sent)
+
+        int64_t newId = 0;
+        if (!edited)
         {
-            answerCallback(callbackId, "Failed to send summary");
-            return;
+            // Sends nobody asked for wait out the whole window; alerts, /summary and the test button wait at most its
+            // first step, so a lost reply never holds a loud alert back for an hour.
+            const uint32_t gateMs = mode == SummaryMode::New && state.noNewForMs > kNoAnswerBackoffMs[0] ? kNoAnswerBackoffMs[0]
+                                                                                                         : state.noNewForMs;
+            if (windowOpen(state.noNewSinceMs, gateMs))
+            {
+                answerCallback(callbackId, "Please wait a moment");
+                return TgRes::Deferred; // the last send may have landed after all: do not stack another on top of it yet
+            }
+            for (int attempt = 0; attempt < 2; ++attempt)
+            {
+                JsonDocument markup;
+                buildSummaryMarkup(markup, chat, withDashboard);
+                r = sendSummaryMessage(chat, body, &markup, silent, newId, &retryAfterS);
+                if (r == TgRes::Content && withDashboard && dashboardRejected())
+                {
+                    withDashboard = false; // this summary goes out without the button; the next link is shorter
+                    continue;
+                }
+                break;
+            }
+            if (r != TgRes::Ok || newId == 0)
+            {
+                if (r == TgRes::Transient || r == TgRes::Ok)
+                {
+                    const size_t step = state.noAnswerStreak < 3 ? state.noAnswerStreak : 3;
+                    state.noNewSinceMs = millis();
+                    state.noNewForMs = kNoAnswerBackoffMs[step];
+                    if (state.noAnswerStreak < 255) ++state.noAnswerStreak;
+                    taskLog("[Telegram] Summary send got no answer (" + reason + ") - it may be in the chat all the same; no new one for " +
+                            String(state.noNewForMs / 60000) + " min");
+                }
+                else if (r == TgRes::RateLimited)
+                {
+                    holdChat(state, retryAfterMs(retryAfterS));
+                }
+                else if (r == TgRes::ChatDead)
+                {
+                    holdChat(state, kChatDeadHoldMs);
+                }
+                if (isRepost && (r == TgRes::NotSent || r == TgRes::Content))
+                {
+                    // Certainly not posted, but do not try again every 15 s either: that would also stop the edits, since
+                    // a re-post cycle does not edit. Edit for a couple of minutes, then try again.
+                    state.repostRetrySinceMs = millis();
+                    state.repostRetryForMs = kNoAnswerBackoffMs[0];
+                }
+                if (r == TgRes::Transient && mode == SummaryMode::New && !silent)
+                {
+                    state.loudPending = false; // it may be in the chat already: never re-send a loud summary on a lost reply
+                }
+                answerCallback(callbackId, "Failed to send summary");
+                return r == TgRes::Ok ? TgRes::Transient : r;
+            }
         }
+
         answerCallback(callbackId, nullptr);
         state.lastSummaryMs = now;
         lastSummaryMs = now;
         ++summariesSent;
-        taskLog("[Telegram] Summary sent (" + String(edited ? "edited " : "") + "msg " + String(static_cast<long long>(newId)) + "); task stack free " +
-                String(static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr))) + " B, heap " +
-                String(static_cast<unsigned>(ESP.getFreeHeap())) + " B (largest " + String(static_cast<unsigned>(ESP.getMaxAllocHeap())) + " B)");
-
-        const int64_t previous = state.lastMsgId;
-        state.lastMsgId = newId;
-        if (previous != 0 && previous != newId)
+        if (edited)
         {
-            deleteMessage(chat, previous);
+            ++editsSinceLog;
+            if (lastEditLogMs == 0 || millis() - lastEditLogMs >= kEditLogIntervalMs)
+            {
+                taskLog("[Telegram] Summary " + String(static_cast<long long>(state.lastMsgId)) + ": " + String(editsSinceLog) +
+                        " edit(s), age " + (state.ageKnown ? String(ageOf(state) / 3600.0f, 1) + " h" : String("unknown")) +
+                        "; " + stackHeapText());
+                editsSinceLog = 0;
+                lastEditLogMs = millis();
+            }
+            processStale(chat, state); // one replaced summary per cycle, if any are still waiting
+            noteSummaryState(state, String());
+        }
+        else
+        {
+            const int64_t previous = state.lastMsgId;
+            state.lastMsgId = newId;
+            state.noAnswerStreak = 0; // a confirmed send: replies are getting through again
+            state.noNewForMs = 0;
+            std::vector<int64_t> heldTriggers; // deleted only after the new id is safely in flash, below
+            if (mode == SummaryMode::New && !silent)
+            {
+                state.loudPending = false; // this loud summary is exactly what a pending alert or held-back /summary owed
+                heldTriggers.swap(state.pendingTriggers);
+            }
+            state.ageKnown = true;
+            state.ageBaseS = 0;
+            state.ageBaseMs = millis();
+            if (previous != 0 && previous != newId)
+            {
+                if (state.stale.size() >= kStaleMax) state.stale.erase(state.stale.begin());
+                state.stale.push_back(previous);
+            }
+            persistState(); // before any delete: a restart mid-delete must not leave the old id as the live one
+            taskLog("[Telegram] New summary " + String(static_cast<long long>(newId)) + " (" + reason + "); " + stackHeapText());
+            for (int64_t trigger : heldTriggers)
+            {
+                if (trigger != triggerMessageId) removeTriggerMessage(chat, trigger); // this send removes its own below
+            }
+            processStale(chat, state);
+            noteSummaryState(state, reason);
         }
         removeTriggerMessage(chat, triggerMessageId);
-        if (!edited)
-        {
-            persistState(); // an edit keeps the same message id, so there is nothing new to store
-        }
+        return TgRes::Ok;
     }
 
     // Older firmware showed a persistent "Refresh" keyboard, which stays in the chat until a message removes it: send
@@ -1507,7 +1953,7 @@ struct TelegramService::Impl
             }
             taskLog(String("[Telegram] Upgrade: ") + (stage == 1 ? "check" : "download") + " failed: " + updater->lastError());
         }
-        sendSummary(upgradeChat, 0, String(), true, String(), true);
+        sendSummary(upgradeChat, 0, String(), true, String(), SummaryMode::Edit);
         return false;
     }
 
@@ -1689,7 +2135,7 @@ struct TelegramService::Impl
         {
             if (callbackData == "summary")
             {
-                sendSummary(chat, 0, callbackId, true, String(), true); // updates the summary the button belongs to
+                sendSummary(chat, 0, callbackId, true, String(), SummaryMode::Edit); // updates the summary the button belongs to
             }
             else if (callbackData == "upgrade")
             {
@@ -1797,7 +2243,17 @@ struct TelegramService::Impl
         }
         if (isSummaryText(command))
         {
-            sendSummary(chat, messageId, String());
+            const TgRes r = sendSummary(chat, messageId, String());
+            if (r == TgRes::Deferred || r == TgRes::NotSent || r == TgRes::RateLimited)
+            {
+                // Held back (a lost reply, a hold, no connection): the alert retry delivers a summary once the chat is free
+                // and removes this /summary along with it - deleting it now would go over the same failing path.
+                ChatState &st = stateFor(chat);
+                if (st.pendingTriggers.size() >= 4) st.pendingTriggers.erase(st.pendingTriggers.begin());
+                st.pendingTriggers.push_back(messageId);
+                st.loudPending = true;
+                loudDeferForMs = 0;
+            }
             return;
         }
         // Anything else: quietly ignore, keep the chat clean.
@@ -1905,11 +2361,21 @@ struct TelegramService::Impl
                 continue;
             }
 
+            expireWindows();
+
             if (summaryRequested.exchange(false))
             {
                 if (!chatList().empty())
                 {
-                    broadcastSummary(false, String());
+                    for (const String &id : chatList())
+                    {
+                        const TgRes r = sendSummary(id, 0, String(), false, String(), SummaryMode::New);
+                        if (r == TgRes::Deferred || r == TgRes::NotSent || r == TgRes::RateLimited)
+                        {
+                            stateFor(id).loudPending = true; // held back: the alert retry sends it once the chat is free
+                            loudDeferForMs = 0;
+                        }
+                    }
                 }
                 else
                 {
@@ -1929,24 +2395,48 @@ struct TelegramService::Impl
                 headline = settingsHeadline;
                 settingsHeadline = "";
                 lockGive();
-                broadcastSummary(true, headline, true); // silent; the next automatic edit drops the headline
+                broadcastSummary(true, headline, SummaryMode::Edit); // silent; the next automatic edit drops the headline
                 continue;
             }
 
-            if (loudSummaryRequested.load())
+            // Alerts: every chat gets one loud summary. A chat that could not even be tried (on hold, rate limited, a recent
+            // send's fate unknown) keeps it pending and is tried again, instead of the alert being dropped. One whose send got
+            // no reply is not re-tried: that alert may well be in the chat already.
+            if (loudSummaryRequested.exchange(false))
+            {
+                lockTake();
+                loudHeadline = ""; // headlines are no longer shown; see sendSummary
+                lockGive();
+                for (const String &id : chatList())
+                {
+                    stateFor(id).loudPending = true;
+                }
+                loudDeferForMs = 0;
+            }
+            if (!windowOpen(loudDeferSinceMs, loudDeferForMs) && anyLoudPending())
             {
                 const uint32_t sinceLast = millis() - lastSummaryMs;
                 if (lastSummaryMs != 0 && sinceLast < kMinSummaryGapMs)
                 {
                     vTaskDelay(pdMS_TO_TICKS(kMinSummaryGapMs - sinceLast));
                 }
-                loudSummaryRequested = false;
-                String headline;
-                lockTake();
-                headline = loudHeadline;
-                loudHeadline = "";
-                lockGive();
-                broadcastSummary(false, headline);
+                bool retry = false;
+                for (const String &id : chatList())
+                {
+                    if (!stateFor(id).loudPending)
+                    {
+                        continue;
+                    }
+                    const TgRes r = sendSummary(id, 0, String(), false, String(), SummaryMode::New); // removes pendingTriggers on success
+                    const bool again = r == TgRes::Deferred || r == TgRes::NotSent || r == TgRes::RateLimited;
+                    stateFor(id).loudPending = again; // re-fetched: never hold a ChatState reference across a send
+                    retry = retry || again;
+                }
+                if (retry)
+                {
+                    loudDeferSinceMs = millis();
+                    loudDeferForMs = kLoudRetryMs;
+                }
                 continue;
             }
 
@@ -1961,7 +2451,7 @@ struct TelegramService::Impl
                 {
                     bootSummaryPending = false;
                     lastAutoSummaryMs = up;
-                    broadcastSummary(true, String(), true);
+                    broadcastSummary(true, String(), SummaryMode::Edit); // also recovers the summary's age
                     continue;
                 }
                 const uint32_t remainingSec = (kBootSummaryDelayMs - up + 999) / 1000;
@@ -1984,7 +2474,7 @@ struct TelegramService::Impl
                     if (lastAutoSummaryMs == 0 || since >= kAutoSummaryIntervalMs)
                     {
                         lastAutoSummaryMs = millis();
-                        broadcastSummary(true, String(), true);
+                        broadcastSummary(true, String(), SummaryMode::Auto);
                         continue;
                     }
                     const uint32_t remainingSec = (kAutoSummaryIntervalMs - since + 999) / 1000;
@@ -3880,6 +4370,9 @@ String TelegramService::statusJson() const
         doc["chatCount"] = _impl->chatIds.size();
         doc["summariesSent"] = _impl->summariesSent;
         doc["lastSummaryAgo"] = _impl->lastSummaryMs ? static_cast<long>((millis() - _impl->lastSummaryMs) / 1000) : -1;
+        doc["summaryAgeS"] = _impl->statusAgeKnown ? static_cast<long>(_impl->statusAgeBaseS + (millis() - _impl->statusAgeBaseMs) / 1000) : -1;
+        doc["staleSummaries"] = _impl->statusStale;
+        doc["lastSummaryEvent"] = _impl->lastSummaryEvent;
         doc["dashboardUrl"] = _impl->dashboardUrl;
         snap = _impl->summarySnapshot;
         lead = _impl->summaryLead;
