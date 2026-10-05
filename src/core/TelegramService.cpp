@@ -50,6 +50,12 @@ constexpr uint32_t kChatDeadHoldMs = 600000;        // blocked, kicked or chat g
 constexpr uint8_t kOddEditFailLimit = 3;            // edits refused with an error we do not recognise, then replace
 constexpr size_t kStaleMax = 4;                     // replaced summaries waiting to be deleted
 constexpr const char *kTombstoneText = "\xE2\xA4\xB5\xEF\xB8\x8F Outdated - the current summary is below"; // ⤵️
+// /clear: Telegram cannot list a chat's history, so the bot deletes message ids going back from the newest. One id counter
+// is shared by all of the bot's private chats, ids missing from this chat are skipped, and a whole batch is refused if any
+// message in it is past the 48 h limit - so a refused batch is split to find where deletable messages end.
+constexpr uint32_t kClearScanIds = 1500; // how far back to look - far more than 48 h of this bot's traffic
+constexpr uint32_t kClearMaxCalls = 40;  // deleteMessages calls at most, splits included
+constexpr uint32_t kClearPaceMs = 200;   // between calls: under a flood wait deleteMessages answers true, deleting nothing
 constexpr uint32_t kEditLogIntervalMs = 3600000;    // one log line an hour for edits, so the 6 KB crash log spans a night
 constexpr uint32_t kErrorBackoffMs = 15000;
 constexpr uint32_t kIdleDelayMs = 1000;
@@ -540,6 +546,7 @@ struct TelegramService::Impl
     uint32_t statusAgeBaseMs = 0;
     uint8_t statusStale = 0;
     String lastSummaryEvent;
+    String lastClear; // outcome of the last /clear, for statusJson
     int64_t updateOffset = 0;
 
     WiFiClientSecure client;
@@ -1205,28 +1212,29 @@ struct TelegramService::Impl
         lastError = "";
         lockGive();
 
-        JsonDocument commands;
-        JsonArray list = commands["commands"].to<JsonArray>();
-        JsonObject summary = list.add<JsonObject>();
-        summary["command"] = "summary";
-        summary["description"] = "Inverter summary";
-        JsonObject start = list.add<JsonObject>();
-        start["command"] = "start";
-        start["description"] = "Show the Refresh button";
-        JsonObject restart = list.add<JsonObject>();
-        restart["command"] = "restart";
-        restart["description"] = "Reboot the Solar2MQTT board";
-        JsonObject upgrade = list.add<JsonObject>();
-        upgrade["command"] = "upgrade";
-        upgrade["description"] = "Install new firmware if available";
-        JsonObject diag = list.add<JsonObject>();
-        diag["command"] = "diag";
-        diag["description"] = "Board diagnostics";
-        JsonObject logCommand = list.add<JsonObject>();
-        logCommand["command"] = "log";
-        logCommand["description"] = "Recent board log as a file";
+        // Two lists: /clear is offered in private chats only - in a group it would reach other members' messages.
+        auto fillCommands = [](JsonArray list, bool withClear) {
+            auto add = [&list](const char *command, const char *description) {
+                JsonObject entry = list.add<JsonObject>();
+                entry["command"] = command;
+                entry["description"] = description;
+            };
+            add("summary", "Inverter summary");
+            if (withClear) add("clear", "Clear the chat and post a fresh summary");
+            add("start", "Show the Refresh button");
+            add("restart", "Reboot the Solar2MQTT board");
+            add("upgrade", "Install new firmware if available");
+            add("diag", "Board diagnostics");
+            add("log", "Recent board log as a file");
+        };
         JsonDocument ignore;
+        JsonDocument commands;
+        fillCommands(commands["commands"].to<JsonArray>(), false);
         api("setMyCommands", commands, ignore, kSendHttpTimeoutMs);
+        JsonDocument privateCommands;
+        fillCommands(privateCommands["commands"].to<JsonArray>(), true);
+        privateCommands["scope"]["type"] = "all_private_chats";
+        api("setMyCommands", privateCommands, ignore, kSendHttpTimeoutMs);
 
         taskLog("[Telegram] Bot @" + botUsername + " ready");
         return true;
@@ -1851,6 +1859,141 @@ struct TelegramService::Impl
         return TgRes::Ok;
     }
 
+    // "/name" or "/name@<this bot>" as the first word - not "/name@SomeOtherBot", not "/namexyz".
+    bool isBareCommand(const String &command, const char *name)
+    {
+        String first = command;
+        const int space = first.indexOf(' ');
+        if (space >= 0) first = first.substring(0, space);
+        const String bare = String("/") + name;
+        if (first == bare) return true;
+        String me;
+        lockTake();
+        me = botUsername;
+        lockGive();
+        return me.length() && first.equalsIgnoreCase(bare + "@" + me);
+    }
+
+    // deleteMessages: 1-100 ids, each >= 1. All or nothing - one message past the 48 h limit and Telegram refuses the whole
+    // batch (TooOld) - while ids that are not in this chat are skipped.
+    TgRes deleteMessagesBatch(const String &chat, const int64_t *ids, size_t n, uint32_t *retryAfterS = nullptr)
+    {
+        JsonDocument body;
+        body["chat_id"] = chat;
+        JsonArray list = body["message_ids"].to<JsonArray>();
+        for (size_t i = 0; i < n; ++i)
+        {
+            list.add(ids[i]);
+        }
+        JsonDocument out;
+        const bool ok = api("deleteMessages", body, out, kSendHttpTimeoutMs);
+        return classify(ok, out, retryAfterS);
+    }
+
+    enum class ClearStep : uint8_t
+    {
+        Done,     // every deletable message in the range is gone
+        Boundary, // reached the 48 h limit: everything older cannot be deleted either
+        Failed    // no answer, a rate limit, or out of calls
+    };
+
+    // Deletes ids[0..n), newest first. A batch refused as too old is split in two so its newer part still goes. A single
+    // refused message is skipped - Telegram refuses a dice under 24 h the same way as one past 48 h - and the second one
+    // marks the boundary: past the 48 h line every older id is refused too, so the next leaf gives it away.
+    ClearStep clearIds(const String &chat, ChatState &state, const int64_t *ids, size_t n, uint32_t &calls, uint8_t &refused)
+    {
+        if (n == 0)
+        {
+            return ClearStep::Done;
+        }
+        if (calls >= kClearMaxCalls)
+        {
+            return ClearStep::Failed;
+        }
+        if (calls++ > 0)
+        {
+            vTaskDelay(pdMS_TO_TICKS(kClearPaceMs));
+        }
+        uint32_t retryAfterS = 0;
+        const TgRes r = deleteMessagesBatch(chat, ids, n, &retryAfterS);
+        if (r == TgRes::Ok || r == TgRes::Gone)
+        {
+            return ClearStep::Done;
+        }
+        if (r == TgRes::RateLimited)
+        {
+            holdChat(state, retryAfterMs(retryAfterS));
+        }
+        if (r != TgRes::TooOld)
+        {
+            return ClearStep::Failed;
+        }
+        if (n == 1)
+        {
+            return ++refused >= 2 ? ClearStep::Boundary : ClearStep::Done;
+        }
+        const size_t half = n / 2;
+        const ClearStep newer = clearIds(chat, state, ids, half, calls, refused);
+        if (newer != ClearStep::Done)
+        {
+            return newer;
+        }
+        return clearIds(chat, state, ids + half, n - half, calls, refused);
+    }
+
+    // /clear: post a fresh summary FIRST, so the chat is never left without one, then delete every older message Telegram
+    // still allows a bot to delete - its own and the user's, up to 48 h old - the /clear itself included.
+    void clearChat(const String &chat)
+    {
+        // The 15 s refresh may have just run. Wait the 3 s gap out on millis() itself: one vTaskDelay can wake a tick early,
+        // and sendSummary would then refuse the fresh summary and the whole /clear would quietly do nothing.
+        for (int i = 0; i < 400; ++i)
+        {
+            const uint32_t last = stateFor(chat).lastSummaryMs;
+            if (last == 0 || millis() - last >= kMinSummaryGapMs) break;
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        const TgRes r = sendSummary(chat, 0, String(), true, String(), SummaryMode::New);
+        ChatState &state = stateFor(chat); // re-fetched after the send
+        if (r != TgRes::Ok || state.lastMsgId == 0)
+        {
+            // Nothing deleted, and the /clear stays in the chat as the sign of it; sending it again retries.
+            const String msg = "fresh summary could not be posted, nothing deleted";
+            taskLog("[Telegram] /clear: " + msg);
+            lockTake();
+            lastClear = msg;
+            lockGive();
+            return;
+        }
+        const int64_t fresh = state.lastMsgId;
+        // pendingTriggers stay: if the walk stops short, the next loud summary still removes them (an id already deleted
+        // here just comes back as gone).
+        const int64_t floorId = fresh - static_cast<int64_t>(kClearScanIds) > 1 ? fresh - static_cast<int64_t>(kClearScanIds) : 1;
+        uint32_t calls = 0;
+        uint8_t refused = 0;
+        int64_t top = fresh - 1;
+        ClearStep step = ClearStep::Done;
+        while (top >= floorId && step == ClearStep::Done)
+        {
+            int64_t ids[100];
+            size_t n = 0;
+            for (int64_t id = top; id >= floorId && n < 100; --id)
+            {
+                ids[n++] = id;
+            }
+            step = clearIds(chat, stateFor(chat), ids, n, calls, refused);
+            top -= static_cast<int64_t>(n);
+        }
+        const String msg = "fresh summary " + String(static_cast<long long>(fresh)) + ", " + String(calls) + " call(s), " +
+                           (step == ClearStep::Boundary ? String("stopped where Telegram refuses deletes (48 h limit)")
+                            : step == ClearStep::Failed ? String("stopped early (no answer, rate limit or call cap)")
+                                                        : String("scanned back to id ") + String(static_cast<long long>(floorId)));
+        taskLog("[Telegram] /clear: " + msg);
+        lockTake();
+        lastClear = msg;
+        lockGive();
+    }
+
     // Older firmware showed a persistent "Refresh" keyboard, which stays in the chat until a message removes it: send
     // one with remove_keyboard and delete it again, once per board.
     void removeOldKeyboardOnce()
@@ -1880,8 +2023,8 @@ struct TelegramService::Impl
         markup["remove_keyboard"] = true; // older firmware had a persistent Refresh keyboard
         sendText(chat,
                  "<b>Solar2MQTT</b> connected.\nThe summary below keeps itself up to date; tap <b>Dashboard</b> for charts "
-                 "and details. Send /summary for a fresh one at the bottom, /restart to reboot the board, /diag or /log for "
-                 "troubleshooting.",
+                 "and details. Send /summary for a fresh one at the bottom, /clear to empty the chat down to a fresh summary, "
+                 "/restart to reboot the board, /diag or /log for troubleshooting.",
                  &markup, nullptr);
     }
 
@@ -2208,6 +2351,17 @@ struct TelegramService::Impl
             sendWelcome(chat);
             sendSummary(chat, 0, String());
             removeTriggerMessage(chat, messageId);
+            return;
+        }
+        if (isBareCommand(command, "clear"))
+        {
+            if (chat.startsWith("-"))
+            {
+                taskLog("[Telegram] /clear ignored in group chat " + chat); // it would reach other members' messages
+                return;
+            }
+            taskLog("[Telegram] Clear requested from chat " + chat);
+            clearChat(chat);
             return;
         }
         if (command.startsWith("/diag"))
@@ -4373,6 +4527,7 @@ String TelegramService::statusJson() const
         doc["summaryAgeS"] = _impl->statusAgeKnown ? static_cast<long>(_impl->statusAgeBaseS + (millis() - _impl->statusAgeBaseMs) / 1000) : -1;
         doc["staleSummaries"] = _impl->statusStale;
         doc["lastSummaryEvent"] = _impl->lastSummaryEvent;
+        doc["lastClear"] = _impl->lastClear;
         doc["dashboardUrl"] = _impl->dashboardUrl;
         snap = _impl->summarySnapshot;
         lead = _impl->summaryLead;
