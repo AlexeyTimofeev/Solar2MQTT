@@ -1,6 +1,7 @@
 #include "core/WebServerHandler.h"
 
 #include <ArduinoJson.h>
+#include <atomic>
 #include <Update.h>
 #include <WiFi.h>
 
@@ -19,6 +20,24 @@
 
 extern Settings _settings;
 extern DisplayService displayService;
+#if HAS_TFT && DISPLAY_TOOLS
+// One panel capture at a time, each with its own token. Captures share a single redraw hold, so a capture may touch the
+// hold only while it still owns it. g_captureToken 0 = none; g_captureTouchMs is when the owner last refreshed the hold.
+// (A timestamp doubling as the "active" flag kept getting this wrong: a stamp from this very millisecond read as ~49 days
+// old to an unsigned age check and let a second capture in.)
+static std::atomic<uint32_t> g_captureToken {0};
+static std::atomic<uint32_t> g_captureTouchMs {0};
+static uint32_t g_captureSerial = 0; // async_tcp task only
+
+static void releaseCapture(uint32_t token)
+{
+    uint32_t expected = token;
+    if (g_captureToken.compare_exchange_strong(expected, 0u))
+    {
+        displayService.setRedrawHold(false);
+    }
+}
+#endif
 #if HAS_TELEGRAM
 extern TelegramService telegramService;
 #endif
@@ -659,12 +678,29 @@ void WebServerHandler::registerRoutes()
         const int W = displayService.panelWidth();
         const int H = displayService.panelHeight();
         if (W <= 0 || H <= 0) { return request->send(503, "text/plain", "no panel"); }
+        // Signed age, so a refresh from this very millisecond counts as fresh. A capture whose reader vanished stops
+        // refreshing, so after 20 s (the display drops the hold at 15 s) its claim is void.
+        if (g_captureToken.load() != 0 && static_cast<int32_t>(millis() - g_captureTouchMs.load()) < 20000)
+        {
+            return request->send(409, "text/plain", "capture in progress");
+        }
+        if (++g_captureSerial == 0) { ++g_captureSerial; }
+        const uint32_t token = g_captureSerial;
+        g_captureTouchMs = millis();
+        g_captureToken = token;
         displayService.setRedrawHold(true); // a read spans ~1.5 s: without this it mixes two frames
-        // The hold stops the main loop *starting* another touch read, but one may already be on
-        // the bus - touch and panel share SPI2. Since touch is now polled every ~3.5 ms that race
-        // is six times likelier than it was, and it shows up as a full-width colour band at an
-        // arbitrary row. A transaction is well under a millisecond, so waiting clears it.
-        delay(20);
+        // The hold only stops the loop *starting* a redraw or a touch read; one already running - a full repaint takes
+        // ~165 ms - would share SPI2 with this read, two tasks driving one panel at once. Wait for the loop to begin a
+        // new pass: that pass has seen the hold, and whatever the previous one was drawing is finished. The inverter
+        // exchange can keep the loop away for ~0.5 s, hence the generous timeout.
+        if (!displayService.waitForLoopPass(1500))
+        {
+            // The loop never came back (touch calibration blocks it, for one). Reading now would share the panel with it,
+            // and LovyanGFX's transaction count is not per task: one task can end the other's SPI transaction, which
+            // FreeRTOS asserts on - a crash. Refuse instead.
+            releaseCapture(token);
+            return request->send(503, "text/plain", "display busy");
+        }
         const size_t rowBytes = static_cast<size_t>(W) * 3;
         const size_t total = 54 + rowBytes * H;
         static uint8_t header[54];
@@ -680,8 +716,19 @@ void WebServerHandler::registerRoutes()
         memcpy(header + 18, &bw, 4);
         memcpy(header + 22, &bh, 4);
         memcpy(header + 26, &planesBits, 4);
+        request->onDisconnect([token]() { releaseCapture(token); }); // an aborted download frees the panel at once
         AsyncWebServerResponse *res = request->beginChunkedResponse("image/bmp",
-            [W, H, rowBytes, total](uint8_t *buf, size_t maxLen, size_t index) -> size_t {
+            [W, H, rowBytes, total, token](uint8_t *buf, size_t maxLen, size_t index) -> size_t {
+                // No longer ours, or our hold is about to lapse (a stalled reader) so the loop may draw: end the image here,
+                // truncated, rather than read the panel alongside it.
+                if (g_captureToken.load() != token || static_cast<int32_t>(millis() - g_captureTouchMs.load()) >= 14000)
+                {
+                    releaseCapture(token);
+                    return 0;
+                }
+                // Refresh the hold BEFORE reading rows: the display drops a hold that has not been refreshed for 15 s.
+                displayService.setRedrawHold(true);
+                g_captureTouchMs = millis();
                 static uint8_t row[520 * 3];
                 static int cachedY = -1;
                 if (index == 0) { cachedY = -1; }
@@ -696,12 +743,7 @@ void WebServerHandler::registerRoutes()
                     if (cachedY != y) { displayService.readRow(y, row, W); cachedY = y; }
                     buf[made++] = row[within]; // already B, G, R per pixel
                 }
-                // Refresh the hold on every chunk. It self-releases after 15 s so a reader that dies
-                // cannot freeze the panel, but a full 480x320 read takes far longer than that, and
-                // letting the redraw back in mid-read corrupts the rows still to come: the reader and
-                // the display would be on the shared SPI bus at once.
-                if (made == 0) { displayService.setRedrawHold(false); } // transfer finished
-                else { displayService.setRedrawHold(true); }
+                if (made == 0) { releaseCapture(token); } // transfer finished
                 return made; });
         request->send(res); });
 

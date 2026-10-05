@@ -762,9 +762,20 @@ bool DisplayService::calibrationValues(uint16_t *out) const
 
 void DisplayService::setRedrawHold(bool on)
 {
+    _holdSinceMs = millis(); // first: the loop must never see the new hold with the previous capture's time
     _holdRedraw = on;
-    _holdSinceMs = millis();
     if (!on) { _forceRedraw = true; } // repaint once the reader is done
+}
+
+bool DisplayService::waitForLoopPass(uint32_t timeoutMs)
+{
+    const uint32_t seq = _loopSeq.load();
+    const uint32_t start = millis();
+    while (_loopSeq.load() == seq && millis() - start < timeoutMs)
+    {
+        delay(1);
+    }
+    return _loopSeq.load() != seq;
 }
 
 void DisplayService::setLedOverride(int mode, int yellowGreen)
@@ -776,8 +787,9 @@ void DisplayService::setLedOverride(int mode, int yellowGreen)
 
 void DisplayService::setPage(uint8_t page)
 {
+    _pageSetMs = millis(); // before the page, so the loop never pairs the new page with an old time
+    std::atomic_thread_fence(std::memory_order_seq_cst);
     _page = static_cast<uint8_t>(page % TFT_DASH_PAGE_COUNT);
-    _pageSetMs = millis(); // a remote choice gets the same minute as a tap
     _forceRedraw = true;
 }
 
@@ -796,6 +808,7 @@ void DisplayService::latchTouch(uint32_t now)
 
 void DisplayService::loop(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress)
 {
+    _loopSeq.fetch_add(1); // before anything reads _holdRedraw: see waitForLoopPass()
     if (_impl == nullptr)
     {
         return;
@@ -803,7 +816,7 @@ void DisplayService::loop(bool wifiConnected, bool apMode, bool inverterConnecte
     const uint32_t now = millis();
 
 #if DISPLAY_TOOLS
-    if (_calibRequested)
+    if (_calibRequested && !_holdRedraw) // not while a capture is reading the panel: it waits for the hold to end
     {
         // LovyanGFX draws a target in each corner and waits for a tap; the eight values it returns map
         // raw touch readings to screen pixels for this panel and rotation. Bake them into the board class.
@@ -842,7 +855,10 @@ void DisplayService::loop(bool wifiConnected, bool apMode, bool inverterConnecte
     // Leave the board on any other page and it comes back to the power flow on its own after a
     // minute without a tap. Every tap changes the page, so the time the page was last chosen is
     // also the time of the last interaction. Not while a reader holds the panel.
-    if (_page != TFT_DASH_FLOW_PAGE && !_holdRedraw && (now - _pageSetMs) >= kReturnToFlowMs)
+    // Signed: setPage() runs on the web task and can stamp _pageSetMs a millisecond after this loop read `now`; unsigned,
+    // that difference would wrap to ~49 days and send the page straight back.
+    if (_page != TFT_DASH_FLOW_PAGE && !_holdRedraw &&
+        static_cast<int32_t>(now - _pageSetMs) >= static_cast<int32_t>(kReturnToFlowMs))
     {
         _page = TFT_DASH_FLOW_PAGE;
         _forceRedraw = true;
@@ -877,7 +893,10 @@ void DisplayService::loop(bool wifiConnected, bool apMode, bool inverterConnecte
 
     if (_holdRedraw)
     {
-        if (now - _holdSinceMs < 15000) { return; } // a reader is copying the panel; never freeze for long
+        // Signed, like the return-to-flow check: the web task re-stamps _holdSinceMs on every chunk and can land a
+        // millisecond after this loop read `now`. Unsigned, that wrapped to ~49 days, released the hold mid-capture and
+        // let this task draw while the web task was still reading the panel.
+        if (static_cast<int32_t>(now - _holdSinceMs) < 15000) { return; } // a reader is copying the panel; never freeze for long
         _holdRedraw = false;
         _forceRedraw = true;
     }
@@ -1732,7 +1751,7 @@ void DisplayService::renderDashboard(bool wifiConnected, bool apMode, bool inver
     setBoardLed(stateColor(s, nullptr), _ledOverride, _yellowGreen);
 #endif
     drawHeader(kTitles[_page], wifiConnected, apMode, inverterConnected);
-    latchTouch(millis());
+    pumpTouch(); // not latchTouch: pumpTouch respects a capture's hold on the shared SPI bus
     switch (_page)
     {
     case 1: drawSummary(s); break;
@@ -1740,7 +1759,7 @@ void DisplayService::renderDashboard(bool wifiConnected, bool apMode, bool inver
     case 3: drawAlerts(s); break;
     default: drawFlow(s); break; // page 0
     }
-    latchTouch(millis());
+    pumpTouch();
 }
 
 void DisplayService::render(bool wifiConnected, bool apMode, bool inverterConnected, const String &ipAddress)

@@ -16,6 +16,9 @@ public:
     int panelHeight() const;
     bool readRow(int y, uint8_t *bgr, int width);
     String touchDebug() const; // tap and repaint counters, for chasing missed taps
+    // Blocks until the display loop has started a fresh pass (or the timeout). After setRedrawHold(true) that pass has seen
+    // the hold, and the pass before it - which may have been drawing - is over, so the panel can be read safely.
+    bool waitForLoopPass(uint32_t timeoutMs);
     // Sample the touch controller outside DisplayService::loop's own once-per-iteration poll.
     // The XPT2046 only registers about 44% of polls during a press, so the cure for a missed
     // tap is more samples spread across the loop, not a longer press.
@@ -76,10 +79,11 @@ private:
     std::atomic<int> _tapSteps {0};
     void latchTouch(uint32_t now);
     volatile bool _calibRequested = false;
-    volatile bool _holdRedraw = false;
+    std::atomic<bool> _holdRedraw {false};
     volatile int _ledOverride = 0;
     volatile int _yellowGreen = 45; // green is far brighter than red, so yellow needs it turned well down
-    uint32_t _holdSinceMs = 0;
+    std::atomic<uint32_t> _holdSinceMs {0}; // written before _holdRedraw, so a new hold is never paired with an old time
+    std::atomic<uint32_t> _loopSeq {0};     // bumped at the start of every loop() pass: lets a reader wait for the loop
     bool _calibDone = false;
     uint16_t _calib[8] = {0, 0, 0, 0, 0, 0, 0, 0}; // sample the touch and remember the step, including mid-redraw
 
